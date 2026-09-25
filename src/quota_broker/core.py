@@ -57,7 +57,8 @@ class Broker:
                     fingerprint TEXT NOT NULL, target_id TEXT NOT NULL,
                     state TEXT NOT NULL, created_at TEXT NOT NULL,
                     expires_at TEXT NOT NULL, dispatched_at TEXT,
-                    provider_request_id TEXT, error_status INTEGER
+                    provider_request_id TEXT, error_status INTEGER,
+                    target_snapshot TEXT, shared_scope TEXT
                 );
                 CREATE TABLE IF NOT EXISTS charges (
                     reservation_id TEXT NOT NULL, bucket TEXT NOT NULL,
@@ -76,14 +77,55 @@ class Broker:
                 );
                 """
             )
+            # v0.1 databases created before route snapshots remain readable.
+            # Legacy unsent rows cannot dispatch; legacy active rows block admission
+            # until reconciled because their original route is unknowable.
+            columns = {row[1] for row in con.execute("PRAGMA table_info(reservations)")}
+            for name in ("target_snapshot", "shared_scope"):
+                if name not in columns:
+                    con.execute(f"ALTER TABLE reservations ADD COLUMN {name} TEXT")
 
     def _validate_shared(self) -> None:
         definitions = {}
+        shared_limits = {}
         for target in self.targets:
+            if (target.shared_concurrency_scope is None) != (
+                target.shared_concurrency_limit is None
+            ):
+                raise ValueError("shared concurrency scope and limit must be set together")
+            if target.shared_concurrency_scope is not None and (
+                not isinstance(target.shared_concurrency_scope, str)
+                or not target.shared_concurrency_scope
+                or type(target.shared_concurrency_limit) is not int
+                or target.shared_concurrency_limit < 1
+            ):
+                raise ValueError("invalid shared concurrency scope or limit")
             for q in target.quotas:
                 prior = definitions.setdefault(q.bucket, q)
                 if prior != q:
                     raise ValueError(f"conflicting shared bucket: {q.bucket}")
+            if target.shared_concurrency_scope is not None:
+                prior = shared_limits.setdefault(
+                    target.shared_concurrency_scope, target.shared_concurrency_limit
+                )
+                if prior != target.shared_concurrency_limit:
+                    raise ValueError("conflicting shared concurrency limit")
+
+    @staticmethod
+    def _snapshot(target: Target) -> str:
+        return canonical(
+            {
+                "provider": target.provider,
+                "model": target.model,
+                "account_id": target.account_id,
+                "endpoint": target.endpoint,
+                "quotas": sorted((q.__dict__ for q in target.quotas), key=lambda q: q["bucket"]),
+                "concurrency_limit": target.concurrency_limit,
+                "shared_concurrency_scope": target.shared_concurrency_scope,
+                "shared_concurrency_limit": target.shared_concurrency_limit,
+                "max_output_tokens": target.max_output_tokens,
+            }
+        )
 
     @contextmanager
     def _tx(self):
@@ -131,6 +173,9 @@ class Broker:
                     "billing_enabled": target.billing_enabled,
                     "available": target.available(now),
                     "quotas": [q.__dict__ for q in target.quotas],
+                    "concurrency_limit": target.concurrency_limit,
+                    "shared_concurrency_scope": target.shared_concurrency_scope,
+                    "shared_concurrency_limit": target.shared_concurrency_limit,
                 }
             )
         return result
@@ -191,18 +236,39 @@ class Broker:
         row = con.execute("SELECT * FROM reservations WHERE id=?", (reservation_id,)).fetchone()
         if row is None:
             raise BrokerError("not_found", "reservation not found")
+        snapshot = json.loads(row["target_snapshot"]) if row["target_snapshot"] else None
         target = next((t for t in self.targets if t.id == row["target_id"]), None)
-        if target is None:
-            raise BrokerError("unavailable", "target no longer configured")
+        route_current = bool(
+            snapshot and target and row["target_snapshot"] == self._snapshot(target)
+        )
+        # Never offer an obsolete route to an unsent client. Sent requests retain
+        # their original route for diagnosis and later usage reconciliation.
+        endpoint = (
+            snapshot["endpoint"]
+            if snapshot and (row["state"] != "reserved" or route_current)
+            else None
+        )
+        charges = con.execute(
+            "SELECT bucket,metric,amount,at,day_start FROM charges WHERE reservation_id=?",
+            (reservation_id,),
+        ).fetchall()
         return {
             "reservation_id": row["id"],
-            "target_id": target.id,
-            "provider": target.provider,
-            "model": target.model,
-            "endpoint": target.endpoint,
+            "target_id": row["target_id"],
+            "provider": snapshot["provider"] if snapshot else None,
+            "model": snapshot["model"] if snapshot else None,
+            "endpoint": endpoint,
+            "route_current": route_current,
+            "route_evidence": "snapshot" if snapshot else "legacy_missing",
+            "original_quotas": snapshot["quotas"] if snapshot else None,
+            "shared_concurrency_scope": snapshot["shared_concurrency_scope"] if snapshot else None,
+            "charges": [dict(charge) for charge in charges],
             "state": row["state"],
+            "created_at": row["created_at"],
             "expires_at": row["expires_at"],
+            "dispatched_at": row["dispatched_at"],
             "provider_request_id": row["provider_request_id"],
+            "error_status": row["error_status"],
         }
 
     def reserve(self, data: dict) -> dict:
@@ -243,6 +309,14 @@ class Broker:
                 if existing["fingerprint"] != fingerprint:
                     raise BrokerError("conflict", "request key used for different reservation")
                 return self._view(con, existing["id"])
+            legacy_active = con.execute(
+                "SELECT 1 FROM reservations WHERE target_snapshot IS NULL "
+                "AND state IN ('reserved','dispatched','unknown') LIMIT 1"
+            ).fetchone()
+            if legacy_active:
+                raise BrokerError(
+                    "unavailable", "legacy active reservation requires reconciliation"
+                )
             waits = []
             candidates = sorted(self.targets, key=lambda t: (t.priority, t.id))
             for target in candidates:
@@ -254,6 +328,14 @@ class Broker:
                     or input_bound + output_max > model.context_tokens
                     or output_max > target.max_output_tokens
                 ):
+                    continue
+                current_snapshot = self._snapshot(target)
+                changed_active = con.execute(
+                    "SELECT 1 FROM reservations WHERE target_id=? AND target_snapshot!=? "
+                    "AND state IN ('reserved','dispatched','unknown') LIMIT 1",
+                    (target.id, current_snapshot),
+                ).fetchone()
+                if changed_active:
                     continue
                 cooldown = con.execute(
                     "SELECT until_at FROM cooldowns WHERE target_id=?", (target.id,)
@@ -268,6 +350,14 @@ class Broker:
                 ).fetchone()[0]
                 if active >= target.concurrency_limit:
                     continue
+                if target.shared_concurrency_scope is not None:
+                    shared_active = con.execute(
+                        "SELECT count(*) FROM reservations WHERE shared_scope=? "
+                        "AND state IN ('reserved','dispatched','unknown')",
+                        (target.shared_concurrency_scope,),
+                    ).fetchone()[0]
+                    if shared_active >= target.shared_concurrency_limit:
+                        continue
                 costs = []
                 blocked_until = [cooldown_until] if cooldown_until else []
                 indefinite = False
@@ -288,8 +378,8 @@ class Broker:
                     reservation_id = str(uuid.uuid4())
                     expires = now + timedelta(seconds=30)
                     con.execute(
-                        "INSERT INTO reservations(id,request_key,fingerprint,target_id,state,created_at,expires_at) "
-                        "VALUES(?,?,?,?,?,?,?)",
+                        "INSERT INTO reservations(id,request_key,fingerprint,target_id,state,created_at,"
+                        "expires_at,target_snapshot,shared_scope) VALUES(?,?,?,?,?,?,?,?,?)",
                         (
                             reservation_id,
                             data["request_key"],
@@ -298,6 +388,8 @@ class Broker:
                             "reserved",
                             stamp(now),
                             stamp(expires),
+                            current_snapshot,
+                            target.shared_concurrency_scope,
                         ),
                     )
                     for q, cost in costs:
@@ -318,6 +410,8 @@ class Broker:
             view = self._view(con, reservation_id)
             if view["state"] != "reserved":
                 raise BrokerError("invalid_transition", "dispatch is allowed only once")
+            if not view["route_current"]:
+                raise BrokerError("configuration_changed", "reservation route or quota changed")
             target = next(t for t in self.targets if t.id == view["target_id"])
             if not target.available(now):
                 raise BrokerError("unavailable", "free eligibility no longer verified")

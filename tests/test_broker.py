@@ -335,3 +335,194 @@ def test_example_config_is_disabled_and_missing_quota_fails(tmp_path):
     bad.write_text(json.dumps(raw))
     with pytest.raises(ConfigError, match="RPD"):
         load_config(bad)
+
+
+def test_shared_concurrency_across_targets_is_atomic(tmp_path):
+    from dataclasses import replace
+
+    clock = Clock(datetime(2026, 9, 25, 12, tzinfo=UTC))
+    base = target(clock, rpm=50, tpm=100000, rpd=100, concurrent=2)
+    one = replace(
+        base,
+        id="one",
+        shared_concurrency_scope="google:project:account123",
+        shared_concurrency_limit=1,
+    )
+    two = replace(
+        base,
+        id="two",
+        priority=1,
+        quotas=tuple(replace(q, bucket=q.bucket + "-two") for q in base.quotas),
+        shared_concurrency_scope="google:project:account123",
+        shared_concurrency_limit=1,
+    )
+    broker = Broker(tmp_path / "state.db", (one, two), clock)
+    barrier = threading.Barrier(10)
+
+    def compete(i):
+        barrier.wait()
+        try:
+            return broker.reserve(request(f"shared-{i}"))
+        except BrokerError as exc:
+            return exc.code
+
+    with ThreadPoolExecutor(max_workers=10) as pool:
+        outcomes = list(pool.map(compete, range(10)))
+    wins = [item for item in outcomes if isinstance(item, dict)]
+    assert len(wins) == 1
+    assert outcomes.count("unavailable") == 9
+    winner = wins[0]
+    restarted = Broker(tmp_path / "state.db", (one, two), clock)
+    with pytest.raises(BrokerError, match="no verified free capacity"):
+        restarted.reserve(request("after-restart"))
+    broker.dispatch(winner["reservation_id"])
+    broker.report(report(winner, "shared-settle"))
+    assert broker.reserve(request("after-shared"))["state"] == "reserved"
+
+
+def test_same_id_config_drift_cannot_reroute_unsent_or_erase_sent(tmp_path):
+    from dataclasses import replace
+
+    clock = Clock(datetime(2026, 9, 25, 12, tzinfo=UTC))
+    db = tmp_path / "state.db"
+    original = target(clock)
+    broker = Broker(db, (original,), clock)
+    unsent = broker.reserve(request("unsent"))
+    sent = broker.reserve(request("sent"))
+    broker.dispatch(sent["reservation_id"])
+    broker.report(report(sent, "lost", state="unknown"))
+
+    changed = replace(
+        original,
+        provider="cloudflare",
+        model="@cf/meta/llama-3.2-1b-instruct",
+        quotas=(
+            Quota("new-neurons", "neurons", 100, "day"),
+            Quota("new-rpm", "requests", 10, "rolling_minute"),
+        ),
+    )
+    restarted = Broker(db, (changed,), clock)
+    old = restarted.status(unsent["reservation_id"])
+    assert old["model"] == "gemini-2.5-flash-lite"
+    assert old["endpoint"] is None
+    assert old["route_current"] is False
+    with pytest.raises(BrokerError) as exc:
+        restarted.dispatch(unsent["reservation_id"])
+    assert exc.value.code == "configuration_changed"
+    with pytest.raises(BrokerError, match="no verified free capacity"):
+        restarted.reserve(request("new-request", neurons=20))
+
+    unknown = restarted.status(sent["reservation_id"])
+    assert unknown["state"] == "unknown"
+    assert unknown["model"] == "gemini-2.5-flash-lite"
+    assert "generativelanguage.googleapis.com" in unknown["endpoint"]
+    assert unknown["route_current"] is False
+    assert unknown["original_quotas"]
+    assert {charge["metric"] for charge in unknown["charges"]} == {"requests", "input_tokens"}
+    settled = restarted.report(
+        report(sent, "reconciled", usage={"requests": 1, "input_tokens": 11})
+    )
+    assert settled["state"] == "completed"
+    removed = Broker(db, (), clock)
+    assert removed.status(sent["reservation_id"])["provider_request_id"] is None
+    assert removed.status(sent["reservation_id"])["model"] == "gemini-2.5-flash-lite"
+
+
+def test_legacy_sqlite_route_is_unknown_and_dispatched_can_reconcile(tmp_path):
+    import sqlite3
+
+    clock = Clock(datetime(2026, 9, 25, 12, tzinfo=UTC))
+    db = tmp_path / "legacy.db"
+    with sqlite3.connect(db) as con:
+        con.execute(
+            "CREATE TABLE reservations (id TEXT PRIMARY KEY, request_key TEXT UNIQUE NOT NULL,"
+            "fingerprint TEXT NOT NULL,target_id TEXT NOT NULL,state TEXT NOT NULL,"
+            "created_at TEXT NOT NULL,expires_at TEXT NOT NULL,dispatched_at TEXT,"
+            "provider_request_id TEXT,error_status INTEGER)"
+        )
+        con.execute(
+            "INSERT INTO reservations VALUES(?,?,?,?,?,?,?,?,?,?)",
+            (
+                "old",
+                "old-key",
+                "old-fingerprint",
+                "target",
+                "dispatched",
+                clock.now.isoformat(),
+                (clock.now + timedelta(minutes=1)).isoformat(),
+                clock.now.isoformat(),
+                None,
+                None,
+            ),
+        )
+        con.execute(
+            "CREATE TABLE charges (reservation_id TEXT,bucket TEXT,metric TEXT,"
+            "amount INTEGER,at TEXT,day_start TEXT,PRIMARY KEY(reservation_id,bucket))"
+        )
+        con.execute(
+            "INSERT INTO charges VALUES(?,?,?,?,?,?)",
+            ("old", "old-rpm", "requests", 1, clock.now.isoformat(), None),
+        )
+    broker = Broker(db, (target(clock),), clock)
+    status = broker.status("old")
+    assert status["state"] == "dispatched"
+    assert status["route_evidence"] == "legacy_missing"
+    assert status["endpoint"] is None
+    with pytest.raises(BrokerError, match="legacy active"):
+        broker.reserve(request("new"))
+    assert (
+        broker.report(
+            {
+                "reservation_id": "old",
+                "report_key": "legacy-report",
+                "state": "completed",
+                "usage": {"requests": 1},
+            }
+        )["state"]
+        == "completed"
+    )
+    assert broker.reserve(request("new"))["state"] == "reserved"
+
+
+def test_target_limit_still_applies_with_shared_scope(tmp_path):
+    from dataclasses import replace
+
+    clock = Clock(datetime(2026, 9, 25, 12, tzinfo=UTC))
+    base = target(clock, rpm=50, tpm=100000, rpd=100, concurrent=1)
+    one = replace(
+        base, id="one", shared_concurrency_scope="project-shared", shared_concurrency_limit=3
+    )
+    two = replace(
+        base,
+        id="two",
+        priority=1,
+        concurrency_limit=2,
+        quotas=tuple(replace(q, bucket=q.bucket + "-two") for q in base.quotas),
+        shared_concurrency_scope="project-shared",
+        shared_concurrency_limit=3,
+    )
+    broker = Broker(tmp_path / "state.db", (one, two), clock)
+    assert broker.reserve(request("a"))["target_id"] == "one"
+    assert broker.reserve(request("b"))["target_id"] == "two"
+    assert broker.reserve(request("c"))["target_id"] == "two"
+    with pytest.raises(BrokerError, match="no verified free capacity"):
+        broker.reserve(request("d"))
+
+
+def test_quota_only_drift_invalidates_unsent_route(tmp_path):
+    from dataclasses import replace
+
+    clock = Clock(datetime(2026, 9, 25, 12, tzinfo=UTC))
+    db = tmp_path / "state.db"
+    original = target(clock)
+    plan = Broker(db, (original,), clock).reserve(request("quota-drift"))
+    changed = replace(
+        original,
+        quotas=tuple(replace(q, limit=q.limit + 1) for q in original.quotas),
+    )
+    restarted = Broker(db, (changed,), clock)
+    assert restarted.status(plan["reservation_id"])["route_current"] is False
+    assert restarted.status(plan["reservation_id"])["endpoint"] is None
+    with pytest.raises(BrokerError) as exc:
+        restarted.dispatch(plan["reservation_id"])
+    assert exc.value.code == "configuration_changed"

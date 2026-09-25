@@ -38,6 +38,8 @@ class Target:
     max_output_tokens: int
     priority: int
     source: str
+    shared_concurrency_scope: str | None = None
+    shared_concurrency_limit: int | None = None
 
     def available(self, now: datetime) -> bool:
         return bool(
@@ -94,6 +96,8 @@ def load_config(path: str | Path) -> tuple[Target, ...]:
                 max_output_tokens=item["max_output_tokens"],
                 priority=item.get("priority", 0),
                 source=item["source"],
+                shared_concurrency_scope=item.get("shared_concurrency_scope"),
+                shared_concurrency_limit=item.get("shared_concurrency_limit"),
             )
         except (KeyError, TypeError) as exc:
             raise ConfigError(f"invalid target: {exc}") from exc
@@ -102,6 +106,15 @@ def load_config(path: str | Path) -> tuple[Target, ...]:
         ids.add(target.id)
         if not target.source or target.concurrency_limit < 1:
             raise ConfigError("source and positive concurrency limit required")
+        if (target.shared_concurrency_scope is None) != (target.shared_concurrency_limit is None):
+            raise ConfigError("shared concurrency scope and limit must be set together")
+        if target.shared_concurrency_scope is not None and (
+            not isinstance(target.shared_concurrency_scope, str)
+            or not target.shared_concurrency_scope
+            or type(target.shared_concurrency_limit) is not int
+            or target.shared_concurrency_limit < 1
+        ):
+            raise ConfigError("invalid shared concurrency scope or limit")
         if not 1 <= target.max_output_tokens <= model.max_output_tokens:
             raise ConfigError("invalid max output")
         if target.expires_at and target.verified_at and target.expires_at <= target.verified_at:

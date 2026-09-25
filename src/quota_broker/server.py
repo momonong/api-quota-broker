@@ -58,7 +58,11 @@ def make_server(
                     return
                 self._send(200, result)
             except BrokerError as exc:
-                code = 409 if exc.code in {"conflict", "invalid_transition"} else 400
+                code = (
+                    409
+                    if exc.code in {"conflict", "invalid_transition", "configuration_changed"}
+                    else 400
+                )
                 if exc.code == "unavailable":
                     code = 503
                 elif exc.code == "not_found":
