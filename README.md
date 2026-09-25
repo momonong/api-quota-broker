@@ -11,8 +11,9 @@ Requires Python 3.12 and [uv](https://docs.astral.sh/uv/).
     uv run --locked pytest -q
     uv run --locked ruff check .
     uv run --locked ruff format --check .
+    uv run --locked mypy src/quota_broker
 
-The demo uses a local HTTP broker, an in-process provider fixture, a temporary SQLite database, and a restart check. It sends no real provider request and needs no provider account, API key, or GPU.
+The demo uses a local HTTP broker, an in-process provider fixture, a temporary SQLite database, and a restart check. It sends no real provider request and needs no provider account, API key, or GPU. Mypy checks all package modules with explicit function signatures. Provider JSON, client requests and SQLite rows remain dynamic data at their boundaries; runtime validation and behavior tests cover those contracts, so a passing type check does not establish their correctness.
 
 ## Account setup
 
@@ -33,7 +34,7 @@ The server binds to loopback only. If BROKER_TOKEN is set, clients must send it 
 
 Rolling-minute and daily quotas, per-target and optional shared concurrent requests, and 429 Retry-After cooldowns are enforced in short BEGIN IMMEDIATE SQLite transactions. Google RPD uses America/Los_Angeles midnight; Cloudflare daily Neurons use UTC midnight. Requests and input tokens are separate metrics. Cloudflare responses do not establish actual Neurons; without authoritative Neuron usage, the client reports unknown and retains the hold for manual reconciliation. A real 429 or disconnect does not trigger a provider retry. The direct HTTP adapter disables redirects and implicit SDK retries; its exact official endpoint allowlist is independent of broker configuration.
 
-Existing SQLite files are migrated without inventing missing route history. A pre-snapshot unsent reservation cannot dispatch and expires normally. Pre-snapshot active sent/unknown records remain inspectable and reportable; new admission pauses until those active records are reconciled because their original routing scope cannot be proven.
+Existing SQLite files are migrated without inventing missing route history. A pre-snapshot unsent reservation cannot dispatch and expires normally. Pre-snapshot active sent/unknown records remain inspectable and reportable; new admission pauses while they remain active because their original routing scope cannot be proven. Settling those rows only removes that particular admission block. Before enabling a changed configuration, an operator must independently confirm prior provider usage, how old charges map to new buckets, and the applicable quota windows; the migration cannot infer or prove those facts.
 
 The broker observes only cooperating clients. External usage, server-side metering differences, accounting delay, provider changes, and requests that overrun estimates can exhaust a provider before this local ledger detects it. This is neither third-party exactly-once execution nor a guarantee against charges. Keep billing disabled and reverify account facts before use. On the intended future Ubuntu laptop (2 cores / 4 threads, 3.4 GiB RAM), this control flow is designed to be lightweight and needs no GPU; this hardware has not been tested or deployed in this phase.
 

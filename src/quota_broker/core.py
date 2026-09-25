@@ -4,6 +4,7 @@ import hashlib
 import json
 import sqlite3
 import uuid
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -44,7 +45,9 @@ def day_bounds(now: datetime, zone: str) -> tuple[datetime, datetime]:
 
 
 class Broker:
-    def __init__(self, db: str | Path, targets: tuple[Target, ...], clock=utcnow):
+    def __init__(
+        self, db: str | Path, targets: tuple[Target, ...], clock: Callable[[], datetime] = utcnow
+    ) -> None:
         self.db = str(db)
         self.targets = targets
         self.clock = clock
@@ -86,8 +89,8 @@ class Broker:
                     con.execute(f"ALTER TABLE reservations ADD COLUMN {name} TEXT")
 
     def _validate_shared(self) -> None:
-        definitions = {}
-        shared_limits = {}
+        definitions: dict[str, Quota] = {}
+        shared_limits: dict[str, int] = {}
         for target in self.targets:
             if (target.shared_concurrency_scope is None) != (
                 target.shared_concurrency_limit is None
@@ -105,10 +108,11 @@ class Broker:
                 if prior != q:
                     raise ValueError(f"conflicting shared bucket: {q.bucket}")
             if target.shared_concurrency_scope is not None:
-                prior = shared_limits.setdefault(
+                assert target.shared_concurrency_limit is not None
+                prior_limit = shared_limits.setdefault(
                     target.shared_concurrency_scope, target.shared_concurrency_limit
                 )
-                if prior != target.shared_concurrency_limit:
+                if prior_limit != target.shared_concurrency_limit:
                     raise ValueError("conflicting shared concurrency limit")
 
     @staticmethod
@@ -128,7 +132,7 @@ class Broker:
         )
 
     @contextmanager
-    def _tx(self):
+    def _tx(self) -> Iterator[sqlite3.Connection]:
         con = sqlite3.connect(self.db, timeout=15, isolation_level=None)
         con.row_factory = sqlite3.Row
         con.execute("PRAGMA foreign_keys=ON")
@@ -189,7 +193,9 @@ class Broker:
             raise BrokerError("invalid_request", "Cloudflare requires a conservative Neurons bound")
         return neuron_bound
 
-    def _used(self, con, q: Quota, now: datetime, cost: int) -> tuple[int, str | None]:
+    def _used(
+        self, con: sqlite3.Connection, q: Quota, now: datetime, cost: int
+    ) -> tuple[int, str | None]:
         if cost > q.limit:
             return q.limit, None
         if q.window == "rolling_minute":
@@ -220,7 +226,7 @@ class Broker:
             wait = reset
         return used, stamp(wait) if wait else None
 
-    def _expire_unsent(self, con, now: datetime) -> None:
+    def _expire_unsent(self, con: sqlite3.Connection, now: datetime) -> None:
         ids = [
             row["id"]
             for row in con.execute(
@@ -232,7 +238,7 @@ class Broker:
             con.execute("UPDATE reservations SET state='expired' WHERE id=?", (reservation_id,))
             con.execute("UPDATE charges SET amount=0 WHERE reservation_id=?", (reservation_id,))
 
-    def _view(self, con, reservation_id: str) -> dict:
+    def _view(self, con: sqlite3.Connection, reservation_id: str) -> dict:
         row = con.execute("SELECT * FROM reservations WHERE id=?", (reservation_id,)).fetchone()
         if row is None:
             raise BrokerError("not_found", "reservation not found")
@@ -496,6 +502,7 @@ class Broker:
                 (data["reservation_id"],),
             ).fetchall()
             if data["state"] != "unknown":
+                assert isinstance(usage, dict)
                 required = {row["metric"] for row in charges}
                 if set(usage) != required or any(
                     type(v) is not int or v < 0 for v in usage.values()

@@ -2,6 +2,7 @@
 
 import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from typing import Any
 from urllib.parse import urlsplit
 
 from .core import Broker, BrokerError
@@ -14,10 +15,10 @@ def make_server(
         raise ValueError("v0.1 binds loopback only")
 
     class Handler(BaseHTTPRequestHandler):
-        def log_message(self, *_args):
+        def log_message(self, *_args: object) -> None:
             pass
 
-        def _send(self, status: int, value: dict | list):
+        def _send(self, status: int, value: dict[str, Any] | list[dict[str, Any]]) -> None:
             body = json.dumps(value, separators=(",", ":")).encode()
             self.send_response(status)
             self.send_header("Content-Type", "application/json")
@@ -31,10 +32,11 @@ def make_server(
                 return False
             return True
 
-        def _route(self, body: dict | None = None):
+        def _route(self, body: dict[str, Any] | None = None) -> None:
             if not self._authorized():
                 return
             try:
+                result: dict | list[dict]
                 path = urlsplit(self.path)
                 if path.query or path.fragment:
                     raise BrokerError("invalid_request", "query parameters are not accepted")
@@ -43,6 +45,8 @@ def make_server(
                 elif self.command == "GET" and path.path.startswith("/v1/reservations/"):
                     result = broker.status(path.path.removeprefix("/v1/reservations/"))
                 elif self.command == "POST" and path.path == "/v1/reservations":
+                    if body is None:
+                        raise BrokerError("invalid_request", "missing body")
                     result = broker.reserve(body)
                 elif (
                     self.command == "POST"
@@ -52,6 +56,8 @@ def make_server(
                     rid = path.path.removeprefix("/v1/reservations/").removesuffix("/dispatch")
                     result = broker.dispatch(rid)
                 elif self.command == "POST" and path.path == "/v1/reports":
+                    if body is None:
+                        raise BrokerError("invalid_request", "missing body")
                     result = broker.report(body)
                 else:
                     self._send(404, {"error": "not_found"})
@@ -71,10 +77,10 @@ def make_server(
                     code, {"error": exc.code, "message": str(exc), "wait_until": exc.wait_until}
                 )
 
-        def do_GET(self):
+        def do_GET(self) -> None:
             self._route()
 
-        def do_POST(self):
+        def do_POST(self) -> None:
             try:
                 length = int(self.headers.get("Content-Length", "0"))
                 if not 0 < length <= 16_384:

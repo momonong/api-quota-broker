@@ -4,6 +4,7 @@ import json
 import urllib.error
 import urllib.request
 import uuid
+from collections.abc import Callable
 from urllib.parse import urlsplit
 
 from .catalog import MODELS, endpoint
@@ -14,7 +15,7 @@ class ClientError(RuntimeError):
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, *_args, **_kwargs):
+    def redirect_request(self, *_args: object, **_kwargs: object) -> None:
         return None
 
 
@@ -37,7 +38,9 @@ def _json_http(url: str, data: dict | None, headers: dict, timeout: float = 15) 
         raise ClientError(f"broker HTTP {exc.code}: {detail.get('error')}") from exc
 
 
-def _provider_http(url: str, headers: dict, payload: dict, timeout: float):
+def _provider_http(
+    url: str, headers: dict[str, str], payload: dict[str, object], timeout: float
+) -> tuple[int, dict[str, str], bytes]:
     request = urllib.request.Request(
         url,
         data=json.dumps(payload).encode(),
@@ -53,7 +56,8 @@ def _provider_http(url: str, headers: dict, payload: dict, timeout: float):
 
 
 def _check_official(plan: dict) -> str:
-    model = MODELS.get(plan.get("model"))
+    model_id = plan.get("model")
+    model = MODELS.get(model_id) if isinstance(model_id, str) else None
     if model is None or model.provider != plan.get("provider"):
         raise ClientError("unrecognized provider/model")
     url = plan.get("endpoint")
@@ -78,10 +82,18 @@ def _check_official(plan: dict) -> str:
     return url
 
 
+ProviderTransport = Callable[
+    [str, dict[str, str], dict[str, object], float], tuple[int, dict[str, str], bytes]
+]
+
+
 class DirectClient:
     def __init__(
-        self, broker_url: str, broker_token: str | None = None, provider_transport=_provider_http
-    ):
+        self,
+        broker_url: str,
+        broker_token: str | None = None,
+        provider_transport: ProviderTransport = _provider_http,
+    ) -> None:
         parsed = urlsplit(broker_url)
         if parsed.scheme != "http" or parsed.hostname not in {"127.0.0.1", "localhost", "::1"}:
             raise ClientError("broker must be local loopback HTTP")
@@ -127,6 +139,8 @@ class DirectClient:
         if dispatched["state"] != "dispatched":
             raise ClientError("dispatch not authorized")
         provider = plan["provider"]
+        headers: dict[str, str]
+        payload: dict[str, object]
         if provider == "google":
             headers = {"x-goog-api-key": provider_secret}
             payload = {

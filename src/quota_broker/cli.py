@@ -45,7 +45,9 @@ def demo() -> None:
         thread.start()
         calls = []
 
-        def fixture_transport(url, headers, payload, _timeout):
+        def fixture_transport(
+            url: str, headers: dict[str, str], payload: dict[str, object], _timeout: float
+        ) -> tuple[int, dict[str, str], bytes]:
             calls.append(1)
             return (
                 200,
