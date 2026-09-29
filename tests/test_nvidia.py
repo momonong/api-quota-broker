@@ -332,7 +332,7 @@ def test_fixed_transport_and_doppler_lookup_without_fallback(tmp_path, monkeypat
 
     monkeypatch.setattr(urllib.request, "build_opener", lambda *_: Opener())
     token_file = tmp_path / "service-token"
-    token_file.write_text("fixture service token")
+    token_file.write_text("dp.st.dev." + "a" * 40)
     resolver = doppler_resolver(token_file, "approved", "dev")
     assert resolver("NVIDIA_API_KEY") == "provider fixture key"
     assert resolver("NVIDIA_API_KEY") == "provider fixture key"
@@ -398,3 +398,10 @@ def test_concurrent_same_key_sends_once(tmp_path):
     worker.join(timeout=3)
     assert outcome[0]["state"] == "completed"
     assert len(calls) == 1
+
+
+def test_runtime_doppler_adapter_rejects_personal_cli_token():
+    from quota_broker.nvidia import doppler_resolver_from_token
+
+    with pytest.raises(ValueError, match="Service Token"):
+        doppler_resolver_from_token("dp.ct." + "a" * 40, "api-provider-nvidia", "dev")

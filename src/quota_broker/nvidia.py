@@ -38,12 +38,21 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 def doppler_resolver(token_file: str | Path, project: str, config: str) -> Callable[[str], str]:
-    """Fetch one secret directly; no CLI cache, environment scan or fallback snapshot."""
-    if not project or not config or not Path(token_file).is_file():
+    """Read a service token from a protected runtime credential file."""
+    if not Path(token_file).is_file():
         raise ValueError("Doppler bootstrap configuration is incomplete")
     token = Path(token_file).read_text(encoding="utf-8").strip()
-    if not token:
-        raise ValueError("empty Doppler service token")
+    return doppler_resolver_from_token(token, project, config)
+
+
+def doppler_resolver_from_token(token: str, project: str, config: str) -> Callable[[str], str]:
+    """Fetch one secret directly; no CLI cache, environment scan or fallback snapshot."""
+    if (
+        not project
+        or not config
+        or not re.fullmatch(r"dp\.st\.(?:[a-z0-9_-]{2,35}\.)?[A-Za-z0-9]{40,44}", token)
+    ):
+        raise ValueError("A config-scoped Doppler Service Token is required")
     opener = urllib.request.build_opener(NoRedirect())
 
     def resolve(name: str) -> str:

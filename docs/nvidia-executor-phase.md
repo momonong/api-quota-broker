@@ -30,7 +30,15 @@ Doppler 讀取僅使用明確 project/config/name 的 HTTPS API `GET /v3/configs
 
 在管理者帳號已完成登入、目的地 project/config 已由人工核對後，可審查執行 `python scripts/set_nvidia_doppler_secret.py`。腳本要求輸入並再次確認 project/config，固定設定 `NVIDIA_API_KEY`，先以 `doppler --no-read-env --silent --project ... --config ... secrets --only-names` 檢查存取，再以相同顯式目的地執行 `secrets set NVIDIA_API_KEY`。金鑰由隱藏 TTY 提示取得、只經子程序 stdin 傳送；不在 argv、shell history、一般 stdout/stderr 或本地檔案。更新失敗只回報錯誤類別，不印出 CLI 輸出。此 helper 對未來 provider 可依相同安全模式另行擴充，但本階段不批量建立秘密，也不實際呼叫 Doppler。
 
-不使用 `doppler run` 作為執行層秘密來源。官方文件指出其 encrypted fallback 快照可能在 token 撤銷後繼續供應舊資料；runtime 採每次向 Doppler API 直取、失敗關閉。管理端 CLI 的 project/config 指定也不代替 Service Token 的 config-scoped read-only 權限。此工作環境未安裝 Doppler CLI；目前只有 subprocess fixture 驗證命令、目的地與 stdin，不宣稱 CLI 實際相容或遠端更新成功。
+不使用 `doppler run` 作為執行層秘密來源。官方文件指出其 encrypted fallback 快照可能在 token 撤銷後繼續供應舊資料；runtime 採每次向 Doppler API 直取、失敗關閉。管理端 CLI 的 project/config 指定也不代替 Service Token 的 config-scoped read-only 權限。本機於 2026-09-29 在使用者範圍安裝 Doppler CLI v3.76.6，官方 installer 完成 `gpgv` 發行簽章驗證，公鑰指紋核對官方 INSTALL.md；尚未完成 CLI 登入。管理端 set helper 仍只有 subprocess fixture 驗證，不宣稱遠端更新成功。
+
+## 本機真接入的待核准短時驗證
+
+為先驗證 Doppler 而不依賴目標主機 TPM，管理者可在本機完成 Doppler CLI 互動登入（只限管理者；scope 不代表 OS 隔離）。先執行 `secrets --only-names --json` 並顯式指定 `api-provider-nvidia/dev`，只判斷 `NVIDIA_API_KEY` 名稱是否存在；不得執行會顯示值的 `secrets`、`secrets get --plain` 或 `doppler run`。網頁登入不等於 CLI 已登入。此步目前尚未取得真實 metadata 成功證據。
+
+`scripts/verify_doppler_executor_read.py` 是**待 main／使用者核准後**才可執行的一次性候選：要求互動 TTY 再次確認；以已登入的管理端 CLI 明確指定 project `api-provider-nvidia`、config `dev`、`--access read`、`--max-age 5m` 建立單一短時 Service Token（名稱帶隨機後綴），CLI stdout 只被 Python 捕獲於記憶體，不出現在 shell argv/history/log/chat 或明文檔。接著用與 executor 相同的直接 HTTPS API adapter 讀取 `NVIDIA_API_KEY`，只印成功／失敗，絕不印 token 或秘密值，也不呼叫 NVIDIA。程序退出後不保留 token；該 access 在最多 5 分鐘內自動到期。若建立結果不明，必須於 Doppler Access 的 metadata 核對是否出現短時 token，不以重試建立新 token 代替核對。這個候選不是常駐服務的 credential bootstrap，也不變更前述 TPM 部署候選。
+
+建立此 access 是外部權限變更，需另行明確核准。核准前可只執行 CLI 安裝、互動登入與唯讀名稱查詢；不能把個人 CLI token 交給 executor 充當 runtime token。官方 Service Token 預設唯讀但本候選仍顯式指定 `read`，並用 `--max-age 5m` 控制期限。真實 API 讀取成功只證明當次憑證與指定秘密可讀，不能證明 NVIDIA 金鑰有效或免費資格，也不能替代真實推論驗收。
 
 ## 目前可驗證與未知
 
@@ -43,6 +51,6 @@ selfhost-servers 文件於 2026-09-29 的快照：HP 是 Cloudflare Tunnel + Cad
 ## 來源
 
 - [NVIDIA LLM API](https://docs.api.nvidia.com/nim/reference/llm-apis)、[模型端點](https://docs.api.nvidia.com/nim/reference/meta-llama-3_1-8b-infer)、[模型卡與 128k context](https://docs.api.nvidia.com/nim/reference/meta-llama-3_1-8b)、[Run Anywhere / hosted preview](https://docs.api.nvidia.com/nim/docs/run-anywhere)
-- [Doppler 單一秘密查詢](https://docs.doppler.com/reference/secrets-get)、[Service Tokens](https://docs.doppler.com/docs/service-tokens)、[Service Account Identities](https://docs.doppler.com/docs/service-account-identities)、[CLI Guide](https://docs.doppler.com/docs/cli)、[Secrets Setting](https://docs.doppler.com/docs/setting-secrets)、[CLI scope](https://docs.doppler.com/docs/multiple-workplaces)、[CLI fallback](https://docs.doppler.com/docs/automatic-fallbacks)
+- [Doppler 單一秘密查詢](https://docs.doppler.com/reference/secrets-get)、[Service Tokens](https://docs.doppler.com/docs/service-tokens)、[Service Account Identities](https://docs.doppler.com/docs/service-account-identities)、[CLI Guide](https://docs.doppler.com/docs/cli)、[官方 CLI 安裝與簽章](https://github.com/DopplerHQ/cli/blob/master/INSTALL.md)、[Secrets Setting](https://docs.doppler.com/docs/setting-secrets)、[CLI scope](https://docs.doppler.com/docs/multiple-workplaces)、[CLI fallback](https://docs.doppler.com/docs/automatic-fallbacks)
 - [systemd-creds 手冊](https://www.man7.org/linux/man-pages/man1/systemd-creds.1.html)
 - 共用基礎設施：`selfhost-servers/AGENTS.md`、`README.md`、`docs/infrastructure.md`、`docs/operations.md`，僅唯讀參考其文件快照。
