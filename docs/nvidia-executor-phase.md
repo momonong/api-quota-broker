@@ -1,6 +1,6 @@
 # NVIDIA 執行層階段規格與驗證界線
 
-狀態：2026-09-29 本地候選實作；尚未取得任何帳號事實、實際金鑰、人工驗收或部署授權。起始版本 `0f2ad46529f0a22db35541bc02c737a5c046635e`，工作分支 `feat/nvidia-executor-admin`。本階段保留原 Google / Cloudflare 直連客戶端與配額服務，新增獨立 NVIDIA 執行服務及同源管理頁。
+狀態：2026-09-29 本地候選實作；已驗證一次短時唯讀 Doppler executor 秘密讀取，尚未驗證 NVIDIA 帳號、金鑰有效性、人工驗收或部署授權。起始版本 `0f2ad46529f0a22db35541bc02c737a5c046635e`，工作分支 `feat/nvidia-executor-admin`。本階段保留原 Google / Cloudflare 直連客戶端與配額服務，新增獨立 NVIDIA 執行服務及同源管理頁。
 
 ## 行為契約
 
@@ -32,17 +32,17 @@ Doppler 讀取僅使用明確 project/config/name 的 HTTPS API `GET /v3/configs
 
 不使用 `doppler run` 作為執行層秘密來源。官方文件指出其 encrypted fallback 快照可能在 token 撤銷後繼續供應舊資料；runtime 採每次向 Doppler API 直取、失敗關閉。管理端 CLI 的 project/config 指定也不代替 Service Token 的 config-scoped read-only 權限。本機於 2026-09-29 在使用者範圍安裝 Doppler CLI v3.76.6，官方 installer 完成 `gpgv` 發行簽章驗證，公鑰指紋核對官方 INSTALL.md；使用者後續已在本機完成 CLI 互動登入。管理端 set helper 仍只有 subprocess fixture 驗證，不宣稱遠端更新成功。
 
-## 本機真接入的待核准短時驗證
+## 本機短時唯讀驗證
 
-為先驗證 Doppler 而不依賴目標主機 TPM，管理者可在本機完成 Doppler CLI 互動登入（只限管理者；scope 不代表 OS 隔離）。先執行 `secrets --only-names --json` 並顯式指定 `api-provider-nvidia/dev`，只判斷 `NVIDIA_API_KEY` 名稱是否存在；不得執行會顯示值的 `secrets`、`secrets get --plain` 或 `doppler run`。網頁登入不等於 CLI 已登入。本機於 2026-09-29 使用上述顯式 project/config、`--no-read-env` 的唯讀名稱查詢，CLI exit=0；回應可解析為 4 個名稱，含 `NVIDIA_API_KEY`。原始 CLI 輸出已攔截而未顯示，也未讀取秘密值。這只證實當次管理端 CLI 可查該 config 的名稱 metadata，尚未驗證 Service Token 或 executor 真讀。
+為先驗證 Doppler 而不依賴目標主機 TPM，管理者可在本機完成 Doppler CLI 互動登入（只限管理者；scope 不代表 OS 隔離）。先執行 `secrets --only-names --json` 並顯式指定 `api-provider-nvidia/dev`，只判斷 `NVIDIA_API_KEY` 名稱是否存在；不得執行會顯示值的 `secrets`、`secrets get --plain` 或 `doppler run`。網頁登入不等於 CLI 已登入。本機於 2026-09-29 使用上述顯式 project/config、`--no-read-env` 的唯讀名稱查詢，CLI exit=0；回應可解析為 4 個名稱，含 `NVIDIA_API_KEY`。原始 CLI 輸出已攔截而未顯示，也未讀取秘密值。這證實當次管理端 CLI 可查該 config 的名稱 metadata。
 
-`scripts/verify_doppler_executor_read.py` 是**待 main／使用者核准後**才可執行的一次性候選：要求互動 TTY 再次確認；以已登入的管理端 CLI 明確指定 project `api-provider-nvidia`、config `dev`、`--access read`、`--max-age 5m` 建立單一短時 Service Token（名稱帶隨機後綴），CLI stdout 只被 Python 捕獲於記憶體，不出現在 shell argv/history/log/chat 或明文檔。接著用與 executor 相同的直接 HTTPS API adapter 讀取 `NVIDIA_API_KEY`，只印成功／失敗，絕不印 token 或秘密值，也不呼叫 NVIDIA。程序退出後不保留 token；該 access 在最多 5 分鐘內自動到期。若建立結果不明，必須於 Doppler Access 的 metadata 核對是否出現短時 token，不以重試建立新 token 代替核對。這個候選不是常駐服務的 credential bootstrap，也不變更前述 TPM 部署候選。
+`scripts/verify_doppler_executor_read.py` 是須經 main／使用者核准的一次性工具：要求互動 TTY 再次確認；以已登入的管理端 CLI 明確指定 project `api-provider-nvidia`、config `dev`、`--access read`、`--max-age 5m` 建立單一短時 Service Token（名稱帶隨機後綴），CLI stdout 只被 Python 捕獲於記憶體，不出現在 shell argv/history/log/chat 或明文檔。接著用與 executor 相同的直接 HTTPS API adapter 讀取 `NVIDIA_API_KEY`，只印成功／失敗，絕不印 token 或秘密值，也不呼叫 NVIDIA。程序退出後不保留 token；該 access 在最多 5 分鐘內自動到期。若建立結果不明，必須於 Doppler Access 的 metadata 核對是否出現短時 token，不以重試建立新 token 代替核對。這個工具不是常駐服務的 credential bootstrap，也不變更前述 TPM 部署候選。
 
-建立此 access 是外部權限變更，需另行明確核准。核准前可只執行 CLI 安裝、互動登入與唯讀名稱查詢；不能把個人 CLI token 交給 executor 充當 runtime token。官方 Service Token 預設唯讀但本候選仍顯式指定 `read`，並用 `--max-age 5m` 控制期限。真實 API 讀取成功只證明當次憑證與指定秘密可讀，不能證明 NVIDIA 金鑰有效或免費資格，也不能替代真實推論驗收。
+使用者於 2026-09-29 明確核准本機一次性建立及讀取。本機執行工具 exit=0，僅回報 `metadata_name_present: yes`、`executor_secret_read: success`、`temporary_access_expiry: 5m from creation`。隨後只查 Doppler access metadata：符合本次 one-shot 名稱的紀錄恰為 1 個，`access=read`、project/config 為 `api-provider-nvidia/dev`、`expires_at=2026-09-29T09:08:37.000Z`。token 與秘密值均未輸出或保存；沒有呼叫 NVIDIA，也沒有部署。這只證明當次短時憑證可經 executor 的直接 HTTPS API adapter 讀取指定秘密，不能證明 NVIDIA 金鑰有效、免費資格或真實推論品質。此 Service Token 五分鐘到期，不能作為常駐服務 credential。
 
 ## 目前可驗證與未知
 
-離線 fixture 可驗證固定路由、配額、生命週期、重啟去重、認證、CSRF/Origin、資料庫無 prompt/answer/key 明文，並以真實 HTTP 表單和 HTML 回應檢查登入後列表、狀態、合法 profile 儲存、用量摘要及手動測試流程。它不能證明 NVIDIA 帳號免費資格、真實計量、Doppler 權限、真實網路行為、跨主機瀏覽器路徑或人工 UI 驗收。官方 NVIDIA 文件描述 API Catalog hosted preview 為 prototype 用途；不得把它等同正式生產免費承諾。任何 profile 限額皆須使用帳號當下的證據填入，本 repo 不預設公開限額。
+離線 fixture 可驗證固定路由、配額、生命週期、重啟去重、認證、CSRF/Origin、資料庫無 prompt/answer/key 明文，並以真實 HTTP 表單和 HTML 回應檢查登入後列表、狀態、合法 profile 儲存、用量摘要及手動測試流程。它本身不能證明 NVIDIA 帳號免費資格、真實計量、Doppler 權限、真實網路行為、跨主機瀏覽器路徑或人工 UI 驗收；上述一次性真讀只補足特定 Doppler project/config、Service Token 和秘密讀取路徑的證據。官方 NVIDIA 文件描述 API Catalog hosted preview 為 prototype 用途；不得把它等同正式生產免費承諾。任何 profile 限額皆須使用帳號當下的證據填入，本 repo 不預設公開限額。
 
 ## 部署候選（僅文件評估）
 
