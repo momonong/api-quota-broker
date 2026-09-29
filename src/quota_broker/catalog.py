@@ -21,19 +21,19 @@ class Model:
 
 
 MODELS = {
-    "meta/llama-3.1-8b-instruct": Model(
+    "google/gemma-4-31b-it": Model(
         provider="nvidia",
-        model="meta/llama-3.1-8b-instruct",
-        author="Meta",
+        model="google/gemma-4-31b-it",
+        author="Google",
         host="NVIDIA API Catalog",
-        context_tokens=131_072,
+        context_tokens=262_144,
         max_output_tokens=4096,
         capability="text_generation",
         origin="https://integrate.api.nvidia.com",
         endpoint_template="https://integrate.api.nvidia.com/v1/chat/completions",
         free_kind="developer_prototyping_subject_to_verified_account_limits",
         use_restrictions="Verify account eligibility and limits; catalog preview is for prototyping.",
-        source="https://docs.api.nvidia.com/nim/reference/meta-llama-3_1-8b-infer",
+        source="https://docs.api.nvidia.com/nim/reference/google-gemma-4-31b-it-infer",
         verified_at="2026-09-29",
     ),
     "gemini-2.5-flash-lite": Model(

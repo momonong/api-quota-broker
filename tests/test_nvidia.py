@@ -279,7 +279,7 @@ def test_legacy_direct_config_cannot_enable_nvidia(tmp_path):
 
     path = tmp_path / "config.json"
     path.write_text(
-        json.dumps({"targets": [{"provider": "nvidia", "model": "meta/llama-3.1-8b-instruct"}]})
+        json.dumps({"targets": [{"provider": "nvidia", "model": "google/gemma-4-31b-it"}]})
     )
     with pytest.raises(ConfigError, match="authenticated executor"):
         load_config(path)
@@ -348,8 +348,9 @@ def test_fixed_transport_and_doppler_lookup_without_fallback(tmp_path, monkeypat
     assert seen[-1][0].full_url == URL and seen[-1][0].get_method() == "POST"
     sent = json.loads(seen[-1][0].data)
     assert sent == {
-        "model": "meta/llama-3.1-8b-instruct",
+        "model": "google/gemma-4-31b-it",
         "messages": [{"role": "user", "content": "hi"}],
+        "chat_template_kwargs": {"enable_thinking": False},
         "max_tokens": 8,
         "stream": False,
     }

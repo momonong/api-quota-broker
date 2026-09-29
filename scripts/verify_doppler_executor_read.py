@@ -53,7 +53,7 @@ def checked_metadata(binary: str) -> bool:
     return SECRET_NAME in names if isinstance(names, (list, dict)) else False
 
 
-def create_and_read(binary: str) -> bool:
+def create_service_token(binary: str) -> str:
     token_name = "broker-one-shot-" + uuid.uuid4().hex[:12]
     command = [
         binary,
@@ -80,7 +80,11 @@ def create_and_read(binary: str) -> bool:
     result = subprocess.run(command, capture_output=True, timeout=15, check=False)
     if result.returncode != 0:
         raise RuntimeError("Service Token creation failed or is uncertain; inspect Access metadata")
-    token = result.stdout.decode("utf-8").strip()
+    return result.stdout.decode("utf-8").strip()
+
+
+def create_and_read(binary: str) -> bool:
+    token = create_service_token(binary)
     resolver = doppler_resolver_from_token(token, PROJECT, CONFIG)
     value = resolver(SECRET_NAME)
     return bool(value)

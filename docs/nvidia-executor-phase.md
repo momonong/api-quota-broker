@@ -4,9 +4,9 @@
 
 ## 行為契約
 
-- 客戶端只帶 broker 的獨立 bearer token，呼叫 `POST /v1/nvidia/text`，JSON 為 `request_key`（穩定不含敏感資料、只用 URI unreserved 字元的 opaque ID）、`prompt`、`max_output_tokens`。固定模型 `meta/llama-3.1-8b-instruct`，固定 `https://integrate.api.nvidia.com/v1/chat/completions`；客戶端不能提供網址、模型、金鑰或標頭。僅支援單則純文字 user message、非串流。成功時回傳文字及供應商 usage；後續同鍵只回傳狀態，不重送或保存回答。
+- 客戶端只帶 broker 的獨立 bearer token，呼叫 `POST /v1/nvidia/text`，JSON 為 `request_key`（穩定不含敏感資料、只用 URI unreserved 字元的 opaque ID）、`prompt`、`max_output_tokens`。固定模型 `google/gemma-4-31b-it`、關閉推理（`enable_thinking=false`），固定 `https://integrate.api.nvidia.com/v1/chat/completions`；客戶端不能提供網址、模型、金鑰或標頭。僅支援單則純文字 user message、非串流。成功時回傳文字及供應商 usage；後續同鍵只回傳狀態，不重送或保存回答。
 - `GET /v1/nvidia/requests/{request_key}` 回傳狀態、非內容用量與帳本 input token 數，不回傳 prompt/answer。`usage` 在供應商回報可核對時含 `prompt_tokens`、`completion_tokens`，未收到可信供應商用量時為 `null`；若已收到用量但帳本核銷失敗，狀態可仍為 `unknown` 且用量已知。`accounted_input_tokens` 在未核銷狀態是保留估算，完成後為帳本入帳值。不同 payload 使用同一鍵回 409。HMAC 摘要金鑰須跨重啟保留；請求內容、供應商金鑰及回答不進入 SQLite、一般日誌或管理頁。
-- 輸入 token 預留使用 `4 × UTF-8 位元組數 + 256`，其中 256 為 chat 模板與特殊 token 的緩衝；輸出上限為請求 `max_output_tokens`、profile 上限及模型 4096 三重約束。這是保守估算政策，不是 NVIDIA tokenizer 或實際計量保證；服務回報的 prompt usage 仍用於帳本核銷，外部使用與供應商計量差異仍可能使帳號超限。
+- 輸入 token 預留使用 `4 × UTF-8 位元組數 + 256`，其中 256 為 chat 模板與特殊 token 的緩衝；輸出上限為請求 `max_output_tokens`、profile 上限及本地政策 4096 三重約束。這是保守估算政策，不是 NVIDIA tokenizer 或實際計量保證；服務回報的 prompt usage 仍用於帳本核銷，外部使用與供應商計量差異仍可能使帳號超限。
 - 承襲 broker 的 reserve → dispatch → report。派送前取得 Doppler 金鑰並檢查資格；派送可能已發生後遇到逾時、斷線、無 usage 或不明回應，保留 `unknown` 與占用額度，不自動重試。`preparing`/`dispatched` 若因程序中斷而留下，也不能自動重送。營運人員應對照供應商紀錄後再決定如何另行處置。
 - 執行服務只接受 loopback，client 與 admin 是不同長 token。管理員經同源登入取得 HttpOnly、SameSite=Strict 記憶體 session；修改與測試需 Origin、Host、CSRF 都通過。管理頁只保存單一 profile 的中繼資料；初始表單可貼入 `nvidia-profile.example.json` 再填入已驗證事實。中繼資料包括：Doppler `secret_ref`、金鑰 ID/名稱、到期狀態（`unknown`、`never`、`at`）、scope、資格與配額驗證時間、來源、啟用與計費旗標、RPM/RPD/input TPM、並行與最大輸出。未知到期或未驗證免費資格一律拒絕執行。金鑰值只在 Doppler UI 編輯。
 - 管理頁提供唯讀供應商列表：Google/Cloudflare 的帳號狀態明標「未知（本頁無帳號資料）」；NVIDIA 顯示待設定、有效、金鑰到期未知／已過期、免費資格待驗證／已過期等可辨識狀態。頁面顯示服務啟動時指定的 Doppler project/config 與 secret ref 名稱，供管理者核對編輯目的地；不顯示秘密值。此狀態摘要以本地中繼資料計算，並非即時查詢 provider 或 Doppler 成功的證據。
@@ -40,6 +40,14 @@ Doppler 讀取僅使用明確 project/config/name 的 HTTPS API `GET /v3/configs
 
 使用者於 2026-09-29 明確核准本機一次性建立及讀取。本機執行工具 exit=0，僅回報 `metadata_name_present: yes`、`executor_secret_read: success`、`temporary_access_expiry: 5m from creation`。隨後只查 Doppler access metadata：符合本次 one-shot 名稱的紀錄恰為 1 個，`access=read`、project/config 為 `api-provider-nvidia/dev`、`expires_at=2026-09-29T09:08:37.000Z`。token 與秘密值均未輸出或保存；沒有呼叫 NVIDIA，也沒有部署。這只證明當次短時憑證可經 executor 的直接 HTTPS API adapter 讀取指定秘密，不能證明 NVIDIA 金鑰有效、免費資格或真實推論品質。此 Service Token 五分鐘到期，不能作為常駐服務 credential。
 
+## 本機一次性 smoke（與正式 admission 隔離）
+
+2026-09-29 核對 NVIDIA 官方 [Gemma 4 31B IT 頁面](https://build.nvidia.com/google/gemma-4-31b-it)：`google/gemma-4-31b-it` 的 Free Endpoint 顯示 Available，範例使用固定的 `https://integrate.api.nvidia.com/v1/chat/completions`；[API reference](https://docs.api.nvidia.com/nim/reference/google-gemma-4-31b-it-infer) 支援純文字 message，並明示 `chat_template_kwargs.enable_thinking=false` 可關閉推理。原固定模型 `meta/llama-3.1-8b-instruct` 的官方 Free Endpoint 已顯示 Deprecated，因此改用此仍有免費端點的固定模型。這是產品頁的公開證據，不代表本帳號可用、剩餘額度或不會收費。
+
+`uv run --locked python -m scripts.nvidia_smoke_once` 是僅供已授權、在本機 TTY 執行的一次性檢查。它沿用已登入的 Doppler 管理端 CLI，先只查 `NVIDIA_API_KEY` 名稱；以 `api-provider-nvidia/dev` 的整個 config 建立 5 分鐘到期唯讀 Service Token，記憶體中經 executor 的 HTTPS adapter 讀取秘密一次，再用相同固定路由 transport 送出 `Reply with OK.`，關閉推理，`max_tokens=16`。此路徑不使用 `NvidiaExecutor` 的正式配額 admission，也不填入猜測的 RPM、RPD 或 input TPM；程序只送一次、同時最多一個請求、無重試或付費 fallback。發送前建立忽略 Git 的 `.state/nvidia-smoke-once.json`，僅保存模型、狀態、時間、HTTP status 與可核對的 usage/request ID；不保存 token、供應商金鑰、prompt 或回答文字。檔案存在即拒絕再跑；超時、斷線或 HTTP 202 保留 unknown/pending，絕不再 POST。若 202 回傳可辨識 request ID，僅保存該 ID 供人工另行核對。CLI 只回報安全狀態與用量，不輸出秘密或原始 provider 回應。
+
+使用者提供的 NVIDIA API Keys 頁截圖顯示名稱 `API Quota Broker`、狀態 `ACTIVE`、到期日期 `2027-09-29`；完整 key ID、精確到期時區、模型權限、帳號計費狀態及剩餘額度仍未知。目前無已知帳號證據與官方 Free Endpoint Available 矛盾，但這不等於已核定帳號免費資格。日期離本次測試逾一年，僅用於排除「顯示日期已過」的情形，不寫成正式 profile 的精確 expiry。若執行前出現計費或免費資格相矛盾的證據，必須在 provider 呼叫前停止。正式服務保持預設停用，沒有完整帳號專屬 profile 仍拒絕執行。
+
 ## 目前可驗證與未知
 
 離線 fixture 可驗證固定路由、配額、生命週期、重啟去重、認證、CSRF/Origin、資料庫無 prompt/answer/key 明文，並以真實 HTTP 表單和 HTML 回應檢查登入後列表、狀態、合法 profile 儲存、用量摘要及手動測試流程。它本身不能證明 NVIDIA 帳號免費資格、真實計量、Doppler 權限、真實網路行為、跨主機瀏覽器路徑或人工 UI 驗收；上述一次性真讀只補足特定 Doppler project/config、Service Token 和秘密讀取路徑的證據。官方 NVIDIA 文件描述 API Catalog hosted preview 為 prototype 用途；不得把它等同正式生產免費承諾。任何 profile 限額皆須使用帳號當下的證據填入，本 repo 不預設公開限額。
@@ -50,7 +58,7 @@ selfhost-servers 文件於 2026-09-29 的快照：HP 是 Cloudflare Tunnel + Cad
 
 ## 來源
 
-- [NVIDIA LLM API](https://docs.api.nvidia.com/nim/reference/llm-apis)、[模型端點](https://docs.api.nvidia.com/nim/reference/meta-llama-3_1-8b-infer)、[模型卡與 128k context](https://docs.api.nvidia.com/nim/reference/meta-llama-3_1-8b)、[Run Anywhere / hosted preview](https://docs.api.nvidia.com/nim/docs/run-anywhere)
+- [NVIDIA LLM API](https://docs.api.nvidia.com/nim/reference/llm-apis)、[Gemma 4 模型與 Free Endpoint 狀態](https://build.nvidia.com/google/gemma-4-31b-it)、[Gemma 4 API 與關閉推理參數](https://docs.api.nvidia.com/nim/reference/google-gemma-4-31b-it-infer)、[Run Anywhere / hosted preview](https://docs.api.nvidia.com/nim/docs/run-anywhere)
 - [Doppler 單一秘密查詢](https://docs.doppler.com/reference/secrets-get)、[Service Tokens](https://docs.doppler.com/docs/service-tokens)、[Service Account Identities](https://docs.doppler.com/docs/service-account-identities)、[CLI Guide](https://docs.doppler.com/docs/cli)、[官方 CLI 安裝與簽章](https://github.com/DopplerHQ/cli/blob/master/INSTALL.md)、[Secrets Setting](https://docs.doppler.com/docs/setting-secrets)、[CLI scope](https://docs.doppler.com/docs/multiple-workplaces)、[CLI fallback](https://docs.doppler.com/docs/automatic-fallbacks)
 - [systemd-creds 手冊](https://www.man7.org/linux/man-pages/man1/systemd-creds.1.html)
 - 共用基礎設施：`selfhost-servers/AGENTS.md`、`README.md`、`docs/infrastructure.md`、`docs/operations.md`，僅唯讀參考其文件快照。

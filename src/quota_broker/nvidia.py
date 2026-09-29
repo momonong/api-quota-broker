@@ -18,7 +18,7 @@ from typing import Any
 from .config import Quota, Target
 from .core import Broker, BrokerError, canonical, stamp, utcnow
 
-MODEL = "meta/llama-3.1-8b-instruct"
+MODEL = "google/gemma-4-31b-it"
 URL = "https://integrate.api.nvidia.com/v1/chat/completions"
 MAX_PROMPT_BYTES = 32_768
 CHAT_TEMPLATE_BUFFER_TOKENS = 256
@@ -89,6 +89,7 @@ def nvidia_transport(key: str, prompt: str, max_tokens: int) -> tuple[int, dict[
         {
             "model": MODEL,
             "messages": [{"role": "user", "content": prompt}],
+            "chat_template_kwargs": {"enable_thinking": False},
             "max_tokens": max_tokens,
             "stream": False,
         }

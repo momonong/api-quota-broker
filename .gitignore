@@ -221,3 +221,6 @@ __marimo__/
 *.db
 *.db-*
 config.local.json
+
+# Local non-secret smoke receipt; preserve uncertain dispatch state.
+.state/
