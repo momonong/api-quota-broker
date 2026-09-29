@@ -106,6 +106,43 @@ def make_nvidia_server(
                 if profile is None
                 else html.escape(json.dumps(profile, indent=2, ensure_ascii=False))
             )
+            if profile is None:
+                quota_summary = "<p>官方限額／剩餘：未知；本地安全上限：未設定。</p>"
+            elif "local_safety_caps" not in profile:
+                quota_summary = (
+                    "<p>舊版 quotas 欄位：來源類型未標示。請顯式遷移至 "
+                    "local_safety_caps 與 provider_quota_facts。</p>"
+                )
+            else:
+                caps = profile["local_safety_caps"]
+                cap_text = html.escape(
+                    f"RPM {caps['rpm']}、RPD {caps['rpd']}、input TPM {caps['input_tpm']}"
+                )
+                evidence_rows = ""
+                for fact in profile["provider_quota_facts"]:
+                    dimension = html.escape(f"{fact['metric']}/{fact['window']}")
+                    cells = [dimension]
+                    for name in ("limit", "remaining"):
+                        evidence = fact[name]
+                        value = "未知" if evidence["value"] is None else str(evidence["value"])
+                        detail = (
+                            f"{value}（{evidence['provenance']}；"
+                            f"{evidence['as_of'] or '時間未知'}；"
+                            f"{evidence['source'] or '來源未知'}；"
+                            f"{evidence['scope'] or '範圍未知'}；"
+                            f"有效至 {evidence['valid_until'] or '未知'}）"
+                        )
+                        cells.append(html.escape(detail))
+                    evidence_rows += (
+                        "<tr>" + "".join(f"<td>{cell}</td>" for cell in cells) + "</tr>"
+                    )
+                if not evidence_rows:
+                    evidence_rows = "<tr><td colspan=3>供應商限額與剩餘：未知</td></tr>"
+                quota_summary = (
+                    f"<p>本地安全上限（非官方 quota）：{cap_text}。</p>"
+                    "<table><tr><th>維度</th><th>供應商 limit 證據</th>"
+                    f"<th>供應商 remaining 證據</th></tr>{evidence_rows}</table>"
+                )
             rows = ""
             for row in executor.list_status():
                 usage = row["usage"]
@@ -151,6 +188,7 @@ def make_nvidia_server(
 <h2>供應商與狀態</h2><table><tr><th>供應商</th><th>模型</th><th>狀態</th></tr>{providers}</table>
 <p>Doppler project/config：<strong>{project}/{config}</strong>；secret ref：<strong>{secret_ref}</strong>（僅名稱）。</p>
 <p>僅保存金鑰識別、名稱、到期類型、範圍、驗證與配額中繼資料。實際金鑰只能在 Doppler 修改。</p>
+{quota_summary}
 <form method="post" action="/admin/profile"><input type="hidden" name="csrf" value="{csrf_session}">
 <label>設定中繼資料（JSON）<textarea name="profile">{fields}</textarea></label><button>儲存</button></form>
 <h2>手動連線測試</h2><p>按下會傳送一筆真實 NVIDIA 請求、消耗配額；可能計費。只在確認目前為免費資格時執行。</p>

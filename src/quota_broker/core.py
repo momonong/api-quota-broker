@@ -76,7 +76,8 @@ class Broker:
                     fingerprint TEXT NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS cooldowns (
-                    target_id TEXT PRIMARY KEY, until_at TEXT NOT NULL
+                    target_id TEXT PRIMARY KEY, until_at TEXT NOT NULL,
+                    backoff_level INTEGER NOT NULL DEFAULT 0
                 );
                 """
             )
@@ -87,6 +88,11 @@ class Broker:
             for name in ("target_snapshot", "shared_scope"):
                 if name not in columns:
                     con.execute(f"ALTER TABLE reservations ADD COLUMN {name} TEXT")
+            cooldown_columns = {row[1] for row in con.execute("PRAGMA table_info(cooldowns)")}
+            if "backoff_level" not in cooldown_columns:
+                con.execute(
+                    "ALTER TABLE cooldowns ADD COLUMN backoff_level INTEGER NOT NULL DEFAULT 0"
+                )
 
     def _validate_shared(self) -> None:
         definitions: dict[str, Quota] = {}
@@ -176,7 +182,19 @@ class Broker:
                     "free_eligible": target.free_eligible,
                     "billing_enabled": target.billing_enabled,
                     "available": target.available(now),
-                    "quotas": [q.__dict__ for q in target.quotas],
+                    "quota_basis": target.quota_basis,
+                    "quotas": (
+                        [q.__dict__ for q in target.quotas]
+                        if target.quota_basis == "legacy_v1"
+                        else []
+                    ),
+                    "local_safety_caps": (
+                        [q.__dict__ for q in target.quotas]
+                        if target.quota_basis == "local_safety_cap"
+                        else []
+                    ),
+                    "provider_quota_facts": [f.view() for f in target.provider_quota_facts],
+                    "capacity": target.capacity.view(),
                     "concurrency_limit": target.concurrency_limit,
                     "shared_concurrency_scope": target.shared_concurrency_scope,
                     "shared_concurrency_limit": target.shared_concurrency_limit,
@@ -324,17 +342,25 @@ class Broker:
                     "unavailable", "legacy active reservation requires reconciliation"
                 )
             waits = []
-            candidates = sorted(self.targets, key=lambda t: (t.priority, t.id))
+            candidates = [
+                target
+                for target in self.targets
+                if data.get("model") in (None, target.model)
+                and target.available(now)
+                and MODELS[target.model].capability == data["capability"]
+                and input_bound + output_max <= MODELS[target.model].context_tokens
+                and output_max <= target.max_output_tokens
+            ]
+            capacity_order = {"short_renewable": 0, "unknown": 1, "one_time_gift": 2}
+            candidates.sort(
+                key=lambda t: (
+                    capacity_order[t.capacity.kind],
+                    t.capacity.refresh_seconds or 0,
+                    t.priority,
+                    t.id,
+                )
+            )
             for target in candidates:
-                model = MODELS[target.model]
-                if (
-                    data.get("model") not in (None, target.model)
-                    or not target.available(now)
-                    or model.capability != data["capability"]
-                    or input_bound + output_max > model.context_tokens
-                    or output_max > target.max_output_tokens
-                ):
-                    continue
                 current_snapshot = self._snapshot(target)
                 changed_active = con.execute(
                     "SELECT 1 FROM reservations WHERE target_id=? AND target_snapshot!=? "
@@ -522,18 +548,31 @@ class Broker:
                 (data["state"], data.get("provider_request_id"), status, data["reservation_id"]),
             )
             if status == 429:
-                # No automatic retry. A missing Retry-After uses a conservative one-minute cooldown.
-                seconds = retry if retry is not None else 60
-                until = stamp(now + timedelta(seconds=seconds))
                 prior = con.execute(
-                    "SELECT until_at FROM cooldowns WHERE target_id=?", (view["target_id"],)
+                    "SELECT until_at,backoff_level FROM cooldowns WHERE target_id=?",
+                    (view["target_id"],),
                 ).fetchone()
-                if prior is None or until > prior["until_at"]:
-                    con.execute(
-                        "INSERT INTO cooldowns(target_id,until_at) VALUES(?,?) "
-                        "ON CONFLICT(target_id) DO UPDATE SET until_at=excluded.until_at",
-                        (view["target_id"], until),
+                if retry is None:
+                    prior_level = (
+                        prior["backoff_level"]
+                        if prior
+                        and datetime.fromisoformat(prior["until_at"]) >= now - timedelta(days=1)
+                        else 0
                     )
+                    seconds = min(60 * (2 ** min(prior_level, 6)), 3600)
+                    backoff_level = min(prior_level + 1, 7)
+                else:
+                    seconds = max(retry, 1)
+                    backoff_level = 0
+                until = stamp(now + timedelta(seconds=seconds))
+                if prior and prior["until_at"] > until:
+                    until = prior["until_at"]
+                con.execute(
+                    "INSERT INTO cooldowns(target_id,until_at,backoff_level) VALUES(?,?,?) "
+                    "ON CONFLICT(target_id) DO UPDATE SET "
+                    "until_at=excluded.until_at,backoff_level=excluded.backoff_level",
+                    (view["target_id"], until, backoff_level),
+                )
             con.execute(
                 "INSERT INTO reports VALUES(?,?,?)",
                 (data["report_key"], data["reservation_id"], fingerprint),

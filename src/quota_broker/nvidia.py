@@ -15,8 +15,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from .config import Quota, Target
+from .config import Capacity, ConfigError, Quota, Target, parse_capacity, parse_quota_facts
 from .core import Broker, BrokerError, canonical, stamp, utcnow
+from .retry import parse_retry_after
 
 MODEL = "google/gemma-4-31b-it"
 URL = "https://integrate.api.nvidia.com/v1/chat/completions"
@@ -111,15 +112,23 @@ def nvidia_transport(key: str, prompt: str, max_tokens: int) -> tuple[int, dict[
         response = exc
     with response:
         status = response.status
+        retry_header = response.headers.get("Retry-After") if status == 429 else None
         raw = response.read(MAX_PROVIDER_BYTES + 1)
     if len(raw) > MAX_PROVIDER_BYTES:
         raise ExecutionError("provider_unknown", "provider response too large")
     try:
         data = json.loads(raw)
     except (ValueError, TypeError) as exc:
-        raise ExecutionError("provider_unknown", "invalid provider response") from exc
+        if status < 400:
+            raise ExecutionError("provider_unknown", "invalid provider response") from exc
+        data = {}
     if not isinstance(data, dict):
-        raise ExecutionError("provider_unknown", "invalid provider response")
+        if status < 400:
+            raise ExecutionError("provider_unknown", "invalid provider response")
+        data = {}
+    if status == 429:
+        # Private transport metadata; never trust a provider body to set this value.
+        data["_retry_after_seconds"] = parse_retry_after(retry_header, utcnow())
     return status, data
 
 
@@ -180,8 +189,25 @@ class NvidiaExecutor:
             "concurrency_limit",
             "max_output_tokens",
         }
-        if set(data) != required:
+        modern_required = (required - {"rpm", "rpd", "input_tpm"}) | {
+            "local_safety_caps",
+            "provider_quota_facts",
+            "capacity",
+        }
+        modern = set(data) == modern_required
+        if not modern and set(data) != required:
             raise ExecutionError("invalid_request", "profile fields incomplete")
+        if modern:
+            caps = data["local_safety_caps"]
+            if not isinstance(caps, dict) or set(caps) != {"rpm", "rpd", "input_tpm"}:
+                raise ExecutionError("invalid_request", "local safety caps incomplete")
+            if any(type(caps[k]) is not int or caps[k] < 1 for k in caps):
+                raise ExecutionError("invalid_request", "local safety caps must be positive")
+            try:
+                parse_quota_facts(data["provider_quota_facts"])
+                parse_capacity(data["capacity"])
+            except (ConfigError, TypeError, KeyError) as exc:
+                raise ExecutionError("invalid_request", "invalid provider quota evidence") from exc
         for field in ("secret_ref", "key_id", "key_name", "scope", "source"):
             if not isinstance(data[field], str) or not 0 < len(data[field]) <= 256:
                 raise ExecutionError("invalid_request", f"invalid {field}")
@@ -204,7 +230,10 @@ class NvidiaExecutor:
         for field in ("enabled", "free_eligible", "billing_enabled"):
             if type(data[field]) is not bool:
                 raise ExecutionError("invalid_request", f"invalid {field}")
-        for field in ("rpm", "rpd", "input_tpm", "concurrency_limit", "max_output_tokens"):
+        limit_fields = ["concurrency_limit", "max_output_tokens"]
+        if not modern:
+            limit_fields += ["rpm", "rpd", "input_tpm"]
+        for field in limit_fields:
             if type(data[field]) is not int or data[field] < 1:
                 raise ExecutionError("invalid_request", f"invalid {field}")
         if data["max_output_tokens"] > 4096:
@@ -252,6 +281,16 @@ class NvidiaExecutor:
             return "免費資格未確認"
         if not profile["enabled"]:
             return "已停用"
+        if "provider_quota_facts" in profile and any(
+            fact["remaining"]["provenance"] == "official"
+            and fact["remaining"]["value"] == 0
+            and fact["remaining"]["as_of"] is not None
+            and datetime.fromisoformat(fact["remaining"]["as_of"]).astimezone(UTC) <= now
+            and fact["remaining"]["valid_until"] is not None
+            and datetime.fromisoformat(fact["remaining"]["valid_until"]).astimezone(UTC) > now
+            for fact in profile["provider_quota_facts"]
+        ):
+            return "當前官方剩餘為零"
         return "有效（限本地中繼資料）"
 
     def _target(self, profile: dict[str, Any]) -> Target:
@@ -269,6 +308,8 @@ class NvidiaExecutor:
             if profile["eligibility_expires_at"]
             else None
         )
+        modern = "local_safety_caps" in profile
+        caps = profile["local_safety_caps"] if modern else profile
         return Target(
             id="nvidia:primary",
             provider="nvidia",
@@ -280,12 +321,12 @@ class NvidiaExecutor:
             verified_at=verified,
             expires_at=expires,
             quotas=(
-                Quota("nvidia:primary:rpm", "requests", profile["rpm"], "rolling_minute"),
-                Quota("nvidia:primary:rpd", "requests", profile["rpd"], "day"),
+                Quota("nvidia:primary:rpm", "requests", caps["rpm"], "rolling_minute"),
+                Quota("nvidia:primary:rpd", "requests", caps["rpd"], "day"),
                 Quota(
                     "nvidia:primary:input_tpm",
                     "input_tokens",
-                    profile["input_tpm"],
+                    caps["input_tpm"],
                     "rolling_minute",
                 ),
             ),
@@ -293,6 +334,11 @@ class NvidiaExecutor:
             max_output_tokens=profile["max_output_tokens"],
             priority=0,
             source=profile["source"],
+            quota_basis="local_safety_cap" if modern else "legacy_v1",
+            provider_quota_facts=(
+                parse_quota_facts(profile["provider_quota_facts"]) if modern else ()
+            ),
+            capacity=parse_capacity(profile["capacity"]) if modern else Capacity(),
         )
 
     def _status(self, request_key: str) -> dict[str, Any]:
@@ -516,6 +562,11 @@ class NvidiaExecutor:
                         "state": "failed",
                         "usage": {"requests": 1, "input_tokens": usage["prompt_tokens"]},
                         "error_status": status,
+                        **(
+                            {"retry_after_seconds": response["_retry_after_seconds"]}
+                            if status == 429 and response.get("_retry_after_seconds") is not None
+                            else {}
+                        ),
                     }
                 )
                 self._update(
@@ -537,6 +588,8 @@ class NvidiaExecutor:
                     }
                     if status == 429:
                         unknown_report["error_status"] = 429
+                        if response.get("_retry_after_seconds") is not None:
+                            unknown_report["retry_after_seconds"] = response["_retry_after_seconds"]
                     broker.report(unknown_report)
                 except BrokerError:
                     pass

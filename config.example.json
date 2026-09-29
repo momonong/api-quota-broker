@@ -10,17 +10,105 @@
       "billing_enabled": false,
       "verified_at": null,
       "expires_at": null,
-      "source": "Manual AI Studio project tier and rate-limit check required",
+      "source": "Manual free-eligibility and billing check required",
       "priority": 0,
       "concurrency_limit": 1,
       "shared_concurrency_scope": "google:project:replace",
       "shared_concurrency_limit": 1,
       "max_output_tokens": 256,
-      "quotas": [
-        {"bucket": "google:project:replace:rpm", "metric": "requests", "limit": 1, "window": "rolling_minute", "timezone": "UTC"},
-        {"bucket": "google:project:replace:tpm", "metric": "input_tokens", "limit": 1, "window": "rolling_minute", "timezone": "UTC"},
-        {"bucket": "google:project:replace:rpd", "metric": "requests", "limit": 1, "window": "day", "timezone": "America/Los_Angeles"}
-      ]
+      "local_safety_caps": [
+        {
+          "bucket": "google:project:replace:rpm",
+          "metric": "requests",
+          "limit": 1,
+          "window": "rolling_minute",
+          "timezone": "UTC"
+        },
+        {
+          "bucket": "google:project:replace:tpm",
+          "metric": "input_tokens",
+          "limit": 1024,
+          "window": "rolling_minute",
+          "timezone": "UTC"
+        },
+        {
+          "bucket": "google:project:replace:rpd",
+          "metric": "requests",
+          "limit": 1,
+          "window": "day",
+          "timezone": "America/Los_Angeles"
+        }
+      ],
+      "provider_quota_facts": [
+        {
+          "metric": "requests",
+          "window": "rolling_minute",
+          "limit": {
+            "value": null,
+            "provenance": "unknown",
+            "as_of": null,
+            "source": null,
+            "scope": null,
+            "valid_until": null
+          },
+          "remaining": {
+            "value": null,
+            "provenance": "unknown",
+            "as_of": null,
+            "source": null,
+            "scope": null,
+            "valid_until": null
+          }
+        },
+        {
+          "metric": "input_tokens",
+          "window": "rolling_minute",
+          "limit": {
+            "value": null,
+            "provenance": "unknown",
+            "as_of": null,
+            "source": null,
+            "scope": null,
+            "valid_until": null
+          },
+          "remaining": {
+            "value": null,
+            "provenance": "unknown",
+            "as_of": null,
+            "source": null,
+            "scope": null,
+            "valid_until": null
+          }
+        },
+        {
+          "metric": "requests",
+          "window": "day",
+          "limit": {
+            "value": null,
+            "provenance": "unknown",
+            "as_of": null,
+            "source": null,
+            "scope": null,
+            "valid_until": null
+          },
+          "remaining": {
+            "value": null,
+            "provenance": "unknown",
+            "as_of": null,
+            "source": null,
+            "scope": null,
+            "valid_until": null
+          }
+        }
+      ],
+      "capacity": {
+        "kind": "unknown",
+        "refresh_seconds": null,
+        "as_of": null,
+        "source": null,
+        "scope": null,
+        "expires_at": null
+      }
     },
     {
       "id": "cloudflare-account-unverified",
@@ -32,16 +120,105 @@
       "billing_enabled": false,
       "verified_at": null,
       "expires_at": null,
-      "source": "Manual Workers plan, remaining Neurons and model access check required",
+      "source": "Manual free-eligibility and billing check required",
       "priority": 1,
       "concurrency_limit": 1,
       "shared_concurrency_scope": "cloudflare:account:replace",
       "shared_concurrency_limit": 1,
       "max_output_tokens": 256,
-      "quotas": [
-        {"bucket": "cloudflare:account:replace:neurons", "metric": "neurons", "limit": 1, "window": "day", "timezone": "UTC"},
-        {"bucket": "cloudflare:account:replace:text-rpm", "metric": "requests", "limit": 1, "window": "rolling_minute", "timezone": "UTC"}
-      ]
+      "local_safety_caps": [
+        {
+          "bucket": "cloudflare:account:replace:neurons",
+          "metric": "neurons",
+          "limit": 1,
+          "window": "day",
+          "timezone": "UTC"
+        },
+        {
+          "bucket": "cloudflare:account:replace:text-rpm",
+          "metric": "requests",
+          "limit": 1,
+          "window": "rolling_minute",
+          "timezone": "UTC"
+        },
+        {
+          "bucket": "cloudflare:account:replace:text-rpd",
+          "metric": "requests",
+          "limit": 1,
+          "window": "day",
+          "timezone": "UTC"
+        }
+      ],
+      "provider_quota_facts": [
+        {
+          "metric": "neurons",
+          "window": "day",
+          "limit": {
+            "value": null,
+            "provenance": "unknown",
+            "as_of": null,
+            "source": null,
+            "scope": null,
+            "valid_until": null
+          },
+          "remaining": {
+            "value": null,
+            "provenance": "unknown",
+            "as_of": null,
+            "source": null,
+            "scope": null,
+            "valid_until": null
+          }
+        },
+        {
+          "metric": "requests",
+          "window": "rolling_minute",
+          "limit": {
+            "value": null,
+            "provenance": "unknown",
+            "as_of": null,
+            "source": null,
+            "scope": null,
+            "valid_until": null
+          },
+          "remaining": {
+            "value": null,
+            "provenance": "unknown",
+            "as_of": null,
+            "source": null,
+            "scope": null,
+            "valid_until": null
+          }
+        },
+        {
+          "metric": "requests",
+          "window": "day",
+          "limit": {
+            "value": null,
+            "provenance": "unknown",
+            "as_of": null,
+            "source": null,
+            "scope": null,
+            "valid_until": null
+          },
+          "remaining": {
+            "value": null,
+            "provenance": "unknown",
+            "as_of": null,
+            "source": null,
+            "scope": null,
+            "valid_until": null
+          }
+        }
+      ],
+      "capacity": {
+        "kind": "unknown",
+        "refresh_seconds": null,
+        "as_of": null,
+        "source": null,
+        "scope": null,
+        "expires_at": null
+      }
     }
   ]
 }

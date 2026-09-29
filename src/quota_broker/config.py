@@ -1,4 +1,4 @@
-"""Human-confirmed account facts. Unknown or stale facts never admit traffic."""
+"""Account eligibility, provider evidence, and distinct local admission caps."""
 
 import json
 from dataclasses import dataclass
@@ -23,6 +23,62 @@ class Quota:
 
 
 @dataclass(frozen=True)
+class Evidence:
+    value: int | None
+    provenance: str
+    as_of: datetime | None
+    source: str | None
+    scope: str | None
+    valid_until: datetime | None
+
+    def view(self) -> dict:
+        return {
+            "value": self.value,
+            "provenance": self.provenance,
+            "as_of": self.as_of.isoformat() if self.as_of else None,
+            "source": self.source,
+            "scope": self.scope,
+            "valid_until": self.valid_until.isoformat() if self.valid_until else None,
+        }
+
+
+@dataclass(frozen=True)
+class QuotaFact:
+    metric: str
+    window: str
+    limit: Evidence
+    remaining: Evidence
+
+    def view(self) -> dict:
+        return {
+            "metric": self.metric,
+            "window": self.window,
+            "limit": self.limit.view(),
+            "remaining": self.remaining.view(),
+        }
+
+
+@dataclass(frozen=True)
+class Capacity:
+    kind: str = "unknown"
+    refresh_seconds: int | None = None
+    as_of: datetime | None = None
+    source: str | None = None
+    scope: str | None = None
+    expires_at: datetime | None = None
+
+    def view(self) -> dict:
+        return {
+            "kind": self.kind,
+            "refresh_seconds": self.refresh_seconds,
+            "as_of": self.as_of.isoformat() if self.as_of else None,
+            "source": self.source,
+            "scope": self.scope,
+            "expires_at": self.expires_at.isoformat() if self.expires_at else None,
+        }
+
+
+@dataclass(frozen=True)
 class Target:
     id: str
     provider: str
@@ -40,6 +96,9 @@ class Target:
     source: str
     shared_concurrency_scope: str | None = None
     shared_concurrency_limit: int | None = None
+    quota_basis: str = "legacy_v1"
+    provider_quota_facts: tuple[QuotaFact, ...] = ()
+    capacity: Capacity = Capacity()
 
     def available(self, now: datetime) -> bool:
         return bool(
@@ -50,6 +109,17 @@ class Target:
             and self.expires_at
             and self.verified_at <= now < self.expires_at
             and self.quotas
+            and all(
+                not (
+                    f.remaining.provenance == "official"
+                    and f.remaining.value == 0
+                    and f.remaining.as_of is not None
+                    and f.remaining.as_of <= now
+                    and f.remaining.valid_until is not None
+                    and now < f.remaining.valid_until
+                )
+                for f in self.provider_quota_facts
+            )
         )
 
     @property
@@ -69,6 +139,103 @@ def _instant(value: str | None) -> datetime | None:
     return parsed.astimezone(UTC)
 
 
+def parse_evidence(raw: dict) -> Evidence:
+    if not isinstance(raw, dict) or set(raw) != {
+        "value",
+        "provenance",
+        "as_of",
+        "source",
+        "scope",
+        "valid_until",
+    }:
+        raise ConfigError("invalid quota evidence")
+    value = raw["value"]
+    kind = raw["provenance"]
+    as_of = _instant(raw["as_of"])
+    valid_until = _instant(raw["valid_until"])
+    source, scope = raw["source"], raw["scope"]
+    if kind not in {"official", "observed", "estimated", "unknown"}:
+        raise ConfigError("invalid quota evidence provenance")
+    if kind == "unknown":
+        if any(item is not None for item in (value, as_of, source, scope, valid_until)):
+            raise ConfigError("unknown quota evidence must have null fields")
+    elif (
+        type(value) is not int
+        or value < 0
+        or as_of is None
+        or not isinstance(source, str)
+        or not source
+        or not isinstance(scope, str)
+        or not scope
+    ):
+        raise ConfigError("known quota evidence needs value, time, source and scope")
+    if valid_until is not None and (as_of is None or valid_until <= as_of):
+        raise ConfigError("evidence validity must follow observation")
+    return Evidence(value, kind, as_of, source, scope, valid_until)
+
+
+def parse_quota_facts(raw: list) -> tuple[QuotaFact, ...]:
+    if not isinstance(raw, list):
+        raise ConfigError("provider_quota_facts must be an array")
+    facts = []
+    seen = set()
+    for item in raw:
+        if not isinstance(item, dict) or set(item) != {"metric", "window", "limit", "remaining"}:
+            raise ConfigError("invalid provider quota fact")
+        metric, window = item["metric"], item["window"]
+        if metric not in {"requests", "input_tokens", "neurons"} or window not in {
+            "rolling_minute",
+            "day",
+            "one_time",
+            "unknown",
+        }:
+            raise ConfigError("invalid provider quota dimension")
+        if (metric, window) in seen:
+            raise ConfigError("duplicate provider quota fact")
+        seen.add((metric, window))
+        facts.append(
+            QuotaFact(
+                metric, window, parse_evidence(item["limit"]), parse_evidence(item["remaining"])
+            )
+        )
+    return tuple(facts)
+
+
+def parse_capacity(raw: dict) -> Capacity:
+    if not isinstance(raw, dict) or set(raw) != {
+        "kind",
+        "refresh_seconds",
+        "as_of",
+        "source",
+        "scope",
+        "expires_at",
+    }:
+        raise ConfigError("invalid capacity evidence")
+    kind = raw["kind"]
+    seconds = raw["refresh_seconds"]
+    as_of = _instant(raw["as_of"])
+    expires = _instant(raw["expires_at"])
+    source, scope = raw["source"], raw["scope"]
+    if kind not in {"short_renewable", "unknown", "one_time_gift"}:
+        raise ConfigError("invalid capacity kind")
+    if kind == "short_renewable":
+        if type(seconds) is not int or not 1 <= seconds <= 86_400:
+            raise ConfigError("renewable capacity requires known short refresh")
+    elif seconds is not None:
+        raise ConfigError("unknown or gift capacity cannot claim refresh")
+    if kind != "unknown" and (
+        as_of is None
+        or not isinstance(source, str)
+        or not source
+        or not isinstance(scope, str)
+        or not scope
+    ):
+        raise ConfigError("known capacity requires time, source and scope")
+    if kind == "unknown" and (as_of is not None or source is not None or scope is not None):
+        raise ConfigError("unknown capacity cannot claim a source")
+    return Capacity(kind, seconds, as_of, source, scope, expires)
+
+
 def load_config(path: str | Path) -> tuple[Target, ...]:
     raw = json.loads(Path(path).read_text(encoding="utf-8"))
     if set(raw) != {"targets"} or not isinstance(raw["targets"], list):
@@ -82,7 +249,12 @@ def load_config(path: str | Path) -> tuple[Target, ...]:
                 raise ConfigError("provider/model mismatch")
             if model.provider == "nvidia":
                 raise ConfigError("NVIDIA is available only through the authenticated executor")
-            quotas = tuple(Quota(**q) for q in item["quotas"])
+            legacy = "quotas" in item
+            if legacy == ("local_safety_caps" in item):
+                raise ConfigError("use exactly one of quotas or local_safety_caps")
+            quotas = tuple(Quota(**q) for q in item["quotas" if legacy else "local_safety_caps"])
+            official_facts = () if legacy else parse_quota_facts(item["provider_quota_facts"])
+            capacity = Capacity() if legacy else parse_capacity(item["capacity"])
             target = Target(
                 id=item["id"],
                 provider=item["provider"],
@@ -100,6 +272,9 @@ def load_config(path: str | Path) -> tuple[Target, ...]:
                 source=item["source"],
                 shared_concurrency_scope=item.get("shared_concurrency_scope"),
                 shared_concurrency_limit=item.get("shared_concurrency_limit"),
+                quota_basis="legacy_v1" if legacy else "local_safety_cap",
+                provider_quota_facts=official_facts,
+                capacity=capacity,
             )
         except (KeyError, TypeError) as exc:
             raise ConfigError(f"invalid target: {exc}") from exc
@@ -134,7 +309,11 @@ def load_config(path: str | Path) -> tuple[Target, ...]:
             except KeyError as exc:
                 raise ConfigError("invalid timezone") from exc
         dimensions = {(q.metric, q.window) for q in quotas}
-        if target.provider == "google":
+        if not legacy and not {("requests", "rolling_minute"), ("requests", "day")}.issubset(
+            dimensions
+        ):
+            raise ConfigError("local safety caps require request minute and day limits")
+        if legacy and target.provider == "google":
             required = {
                 ("requests", "rolling_minute"),
                 ("input_tokens", "rolling_minute"),
@@ -147,7 +326,7 @@ def load_config(path: str | Path) -> tuple[Target, ...]:
                 for q in quotas
             ):
                 raise ConfigError("Google RPD resets at Pacific midnight")
-        if target.provider == "cloudflare":
+        if legacy and target.provider == "cloudflare":
             required = {("neurons", "day"), ("requests", "rolling_minute")}
             if not required.issubset(dimensions):
                 raise ConfigError("Cloudflare requires daily Neurons and request RPM")

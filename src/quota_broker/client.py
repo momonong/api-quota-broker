@@ -5,9 +5,11 @@ import urllib.error
 import urllib.request
 import uuid
 from collections.abc import Callable
+from datetime import UTC, datetime
 from urllib.parse import urlsplit
 
 from .catalog import MODELS, endpoint
+from .retry import parse_retry_after
 
 
 class ClientError(RuntimeError):
@@ -182,8 +184,9 @@ class DirectClient:
                     retry = response_headers.get("Retry-After") or response_headers.get(
                         "retry-after"
                     )
-                    if retry and retry.isdecimal():
-                        report["retry_after_seconds"] = min(int(retry), 86_400)
+                    delay = parse_retry_after(retry, datetime.now(UTC))
+                    if delay is not None:
+                        report["retry_after_seconds"] = delay
             result = {
                 "status": status,
                 "response": response,

@@ -3,7 +3,8 @@ import json
 import re
 import sqlite3
 import threading
-from datetime import timedelta
+from datetime import datetime, timedelta
+from pathlib import Path
 from urllib.parse import urlencode
 
 import pytest
@@ -249,6 +250,21 @@ def test_http_roles_origin_csrf_and_profile(tmp_path):
         assert json.loads(body)["usage"] == {"prompt_tokens": 4, "completion_tokens": 2}
         status, _, page = request("GET", "/admin", headers={"Cookie": cookie})
         assert status == 200 and "4 / 2" in page and "配額帳本 input" in page
+        modern = json.loads(
+            (Path(__file__).resolve().parents[1] / "nvidia-profile.example.json").read_text()
+        )
+        modern["key_expires_kind"] = "never"
+        modern["enabled"] = True
+        modern["free_eligible"] = True
+        modern["verified_at"] = stamp(utcnow())
+        modern["eligibility_expires_at"] = stamp(utcnow() + timedelta(hours=1))
+        service.put_profile(modern)
+        status, _, page = request("GET", "/admin", headers={"Cookie": cookie})
+        assert status == 200
+        assert "本地安全上限（非官方 quota）" in page
+        assert "供應商 remaining 證據" in page
+        assert "未知（unknown" in page
+        assert service._target(modern).quota_basis == "local_safety_cap"
         assert (
             request(
                 "GET", "/v1/nvidia/requests/http", headers={"Authorization": "Bearer " + "a" * 40}
@@ -406,3 +422,45 @@ def test_runtime_doppler_adapter_rejects_personal_cli_token():
 
     with pytest.raises(ValueError, match="Service Token"):
         doppler_resolver_from_token("dp.ct." + "a" * 40, "api-provider-nvidia", "dev")
+
+
+def test_nvidia_429_header_metadata_and_cooldown(tmp_path, monkeypatch):
+    import urllib.request
+
+    from quota_broker.nvidia import nvidia_transport
+
+    class Response:
+        status = 429
+
+        def __init__(self):
+            self.headers = {"Retry-After": "120"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return None
+
+        def read(self, _limit):
+            return b"not JSON"
+
+    class Opener:
+        def open(self, _request, _timeout=None, **_kwargs):
+            return Response()
+
+    monkeypatch.setattr(urllib.request, "build_opener", lambda *_: Opener())
+    status, response = nvidia_transport("fixture key", "hi", 8)
+    assert status == 429
+    assert response == {"_retry_after_seconds": 120}
+
+    service, calls = executor(tmp_path, lambda *_: (429, {"_retry_after_seconds": 120}))
+    before = utcnow()
+    with pytest.raises(ExecutionError):
+        service.execute({"request_key": "rate-header", "prompt": "hi", "max_output_tokens": 8})
+    assert len(calls) == 1
+    assert service.status("rate-header")["state"] == "unknown"
+    with sqlite3.connect(service.db) as con:
+        until = con.execute(
+            "SELECT until_at FROM cooldowns WHERE target_id='nvidia:primary'"
+        ).fetchone()[0]
+    assert 118 <= (datetime.fromisoformat(until) - before).total_seconds() <= 123

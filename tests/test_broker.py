@@ -330,10 +330,10 @@ def test_example_config_is_disabled_and_missing_quota_fails(tmp_path):
     assert len(facts) == 2
     assert not any(fact.available(datetime.now(UTC)) for fact in facts)
     raw = json.loads(example.read_text())
-    raw["targets"][0]["quotas"] = raw["targets"][0]["quotas"][:2]
+    raw["targets"][0]["local_safety_caps"] = raw["targets"][0]["local_safety_caps"][:2]
     bad = tmp_path / "bad.json"
     bad.write_text(json.dumps(raw))
-    with pytest.raises(ConfigError, match="RPD"):
+    with pytest.raises(ConfigError, match="local safety caps require"):
         load_config(bad)
 
 
@@ -526,3 +526,187 @@ def test_quota_only_drift_invalidates_unsent_route(tmp_path):
     with pytest.raises(BrokerError) as exc:
         restarted.dispatch(plan["reservation_id"])
     assert exc.value.code == "configuration_changed"
+
+
+def test_local_caps_and_unknown_provider_facts_do_not_claim_official_quota(tmp_path):
+    from pathlib import Path
+
+    from quota_broker.config import load_config
+
+    now = datetime.now(UTC)
+    raw = json.loads((Path(__file__).resolve().parents[1] / "config.example.json").read_text())
+    item = raw["targets"][0]
+    item["local_safety_caps"][0]["limit"] = 2
+    item["local_safety_caps"][1]["limit"] = 1000
+    item["local_safety_caps"][2]["limit"] = 2
+    item["capacity"] = {
+        "kind": "unknown",
+        "refresh_seconds": None,
+        "as_of": None,
+        "source": None,
+        "scope": None,
+        "expires_at": None,
+    }
+    unknown = {
+        "value": None,
+        "provenance": "unknown",
+        "as_of": None,
+        "source": None,
+        "scope": None,
+        "valid_until": None,
+    }
+    item["provider_quota_facts"] = [
+        {"metric": "requests", "window": "day", "limit": unknown, "remaining": unknown}
+    ]
+    item["enabled"] = True
+    item["free_eligible"] = True
+    item["verified_at"] = now.isoformat()
+    item["expires_at"] = (now + timedelta(hours=1)).isoformat()
+    item["source"] = "fixture free-eligibility evidence"
+    raw["targets"] = [item]
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps(raw))
+    loaded = load_config(path)
+    catalog = Broker(tmp_path / "broker.db", loaded).catalog()[0]
+    assert catalog["quota_basis"] == "local_safety_cap"
+    assert catalog["quotas"] == []
+    assert catalog["local_safety_caps"][0]["limit"] == 2
+    assert catalog["provider_quota_facts"][0]["remaining"] == unknown
+    assert catalog["available"] is True
+
+
+def test_capacity_order_and_current_official_zero(tmp_path):
+    from dataclasses import replace
+
+    from quota_broker.config import Capacity, Evidence, QuotaFact
+
+    clock = Clock(datetime(2026, 9, 25, 12, tzinfo=UTC))
+    base = target(clock, rpm=20, rpd=20, tpm=10000)
+
+    def variant(name, kind, priority, seconds=None, facts=()):
+        return replace(
+            base,
+            id=name,
+            priority=priority,
+            capacity=Capacity(kind, seconds, clock.now, "fixture", "account")
+            if kind != "unknown"
+            else Capacity(),
+            provider_quota_facts=facts,
+            quotas=tuple(replace(q, bucket=q.bucket + "-" + name) for q in base.quotas),
+        )
+
+    fresh = Evidence(
+        0,
+        "official",
+        clock.now,
+        "provider account page",
+        "account",
+        clock.now + timedelta(minutes=5),
+    )
+    observed = Evidence(
+        0, "observed", clock.now, "manual note", "account", clock.now + timedelta(minutes=5)
+    )
+    stale = Evidence(
+        0,
+        "official",
+        clock.now - timedelta(days=1),
+        "provider account page",
+        "account",
+        clock.now - timedelta(hours=1),
+    )
+    fact = lambda value: (QuotaFact("requests", "day", value, value),)
+    assert not variant("blocked", "unknown", 0, facts=fact(fresh)).available(clock.now)
+    assert variant("observed", "unknown", 0, facts=fact(observed)).available(clock.now)
+    assert variant("stale", "unknown", 0, facts=fact(stale)).available(clock.now)
+    candidates = (
+        variant("gift", "one_time_gift", -20),
+        variant("unknown", "unknown", -10),
+        variant("slow", "short_renewable", 0, 3600),
+        variant("fast", "short_renewable", 10, 60),
+    )
+    broker = Broker(tmp_path / "order.db", candidates, clock)
+    assert broker.reserve(request("ranked"))["target_id"] == "fast"
+
+
+def test_retry_after_http_date_and_persistent_fallback_backoff(tmp_path):
+    import sqlite3
+
+    from quota_broker.retry import parse_retry_after
+
+    clock = Clock(datetime(2026, 9, 25, 12, tzinfo=UTC))
+    assert parse_retry_after("90", clock.now) == 90
+    assert parse_retry_after("Fri, 25 Sep 2026 12:02:00 GMT", clock.now) == 120
+    assert parse_retry_after("invalid", clock.now) is None
+    assert parse_retry_after("9" * 10000, clock.now) is None
+    broker = Broker(tmp_path / "backoff.db", (target(clock, rpm=20, rpd=20, tpm=10000),), clock)
+    first = broker.reserve(request("first"))
+    broker.dispatch(first["reservation_id"])
+    broker.report(report(first, "rate-1", state="failed", error_status=429))
+    with sqlite3.connect(broker.db) as con:
+        assert con.execute("SELECT backoff_level FROM cooldowns").fetchone()[0] == 1
+    clock.advance(seconds=61)
+    restarted = Broker(tmp_path / "backoff.db", (target(clock, rpm=20, rpd=20, tpm=10000),), clock)
+    second = restarted.reserve(request("second"))
+    restarted.dispatch(second["reservation_id"])
+    restarted.report(report(second, "rate-2", state="failed", error_status=429))
+    with sqlite3.connect(broker.db) as con:
+        until, level = con.execute("SELECT until_at,backoff_level FROM cooldowns").fetchone()
+    assert level == 2
+    assert until == (clock.now + timedelta(seconds=120)).isoformat()
+
+
+def test_existing_cooldown_table_migrates_without_losing_deadline(tmp_path):
+    import sqlite3
+
+    clock = Clock(datetime(2026, 9, 25, 12, tzinfo=UTC))
+    db = tmp_path / "old-cooldown.db"
+    deadline = (clock.now + timedelta(minutes=3)).isoformat()
+    with sqlite3.connect(db) as con:
+        con.execute("CREATE TABLE cooldowns(target_id TEXT PRIMARY KEY, until_at TEXT NOT NULL)")
+        con.execute("INSERT INTO cooldowns VALUES(?,?)", ("google:test", deadline))
+    broker = Broker(db, (target(clock),), clock)
+    with sqlite3.connect(db) as con:
+        row = con.execute("SELECT until_at,backoff_level FROM cooldowns").fetchone()
+    assert row == (deadline, 0)
+    assert broker.catalog()[0]["available"] is True
+
+
+def test_direct_client_http_date_429_sets_cooldown_without_replay(tmp_path):
+    from email.utils import format_datetime
+
+    clock = Clock(datetime.now(UTC))
+    broker = Broker(tmp_path / "date-429.db", (target(clock, rpm=20, rpd=20),), clock)
+    server = make_server(broker, port=0)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    calls = []
+
+    def provider(_url, _headers, _payload, _timeout):
+        calls.append(1)
+        return (
+            429,
+            {
+                "Retry-After": format_datetime(
+                    datetime.now(UTC) + timedelta(seconds=120), usegmt=True
+                )
+            },
+            b"rate limited",
+        )
+
+    try:
+        client = DirectClient(f"http://127.0.0.1:{server.server_port}", provider_transport=provider)
+        result = client.run_text("hi", "date-429", "fixture-key", model="gemini-2.5-flash-lite")
+        assert result["state"] == "unknown"
+        with pytest.raises(BrokerError) as exc:
+            broker.reserve(request("during-date-cooldown"))
+        assert exc.value.code == "unavailable"
+        assert (
+            115 <= (datetime.fromisoformat(exc.value.wait_until) - clock.now).total_seconds() <= 121
+        )
+        with pytest.raises(ClientError, match="will not be repeated"):
+            client.run_text("hi", "date-429", "fixture-key", model="gemini-2.5-flash-lite")
+        assert len(calls) == 1
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)

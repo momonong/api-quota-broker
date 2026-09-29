@@ -8,7 +8,7 @@
 - `GET /v1/nvidia/requests/{request_key}` 回傳狀態、非內容用量與帳本 input token 數，不回傳 prompt/answer。`usage` 在供應商回報可核對時含 `prompt_tokens`、`completion_tokens`，未收到可信供應商用量時為 `null`；若已收到用量但帳本核銷失敗，狀態可仍為 `unknown` 且用量已知。`accounted_input_tokens` 在未核銷狀態是保留估算，完成後為帳本入帳值。不同 payload 使用同一鍵回 409。HMAC 摘要金鑰須跨重啟保留；請求內容、供應商金鑰及回答不進入 SQLite、一般日誌或管理頁。
 - 輸入 token 預留使用 `4 × UTF-8 位元組數 + 256`，其中 256 為 chat 模板與特殊 token 的緩衝；輸出上限為請求 `max_output_tokens`、profile 上限及本地政策 4096 三重約束。這是保守估算政策，不是 NVIDIA tokenizer 或實際計量保證；服務回報的 prompt usage 仍用於帳本核銷，外部使用與供應商計量差異仍可能使帳號超限。
 - 承襲 broker 的 reserve → dispatch → report。派送前取得 Doppler 金鑰並檢查資格；派送可能已發生後遇到逾時、斷線、無 usage 或不明回應，保留 `unknown` 與占用額度，不自動重試。`preparing`/`dispatched` 若因程序中斷而留下，也不能自動重送。營運人員應對照供應商紀錄後再決定如何另行處置。
-- 執行服務只接受 loopback，client 與 admin 是不同長 token。管理員經同源登入取得 HttpOnly、SameSite=Strict 記憶體 session；修改與測試需 Origin、Host、CSRF 都通過。管理頁只保存單一 profile 的中繼資料；初始表單可貼入 `nvidia-profile.example.json` 再填入已驗證事實。中繼資料包括：Doppler `secret_ref`、金鑰 ID/名稱、到期狀態（`unknown`、`never`、`at`）、scope、資格與配額驗證時間、來源、啟用與計費旗標、RPM/RPD/input TPM、並行與最大輸出。未知到期或未驗證免費資格一律拒絕執行。金鑰值只在 Doppler UI 編輯。
+- 執行服務只接受 loopback，client 與 admin 是不同長 token。管理員經同源登入取得 HttpOnly、SameSite=Strict 記憶體 session；修改與測試需 Origin、Host、CSRF 都通過。管理頁只保存單一 profile 的中繼資料；初始表單可貼入 `nvidia-profile.example.json` 再填入已驗證事實。中繼資料包括：Doppler `secret_ref`、金鑰 ID/名稱、到期狀態（`unknown`、`never`、`at`）、scope、免費資格驗證時間與來源、啟用與計費旗標、本地安全上限（RPM/RPD/input TPM）、供應商配額證據、容量類別、並行與最大輸出。`local_safety_caps` 不代表官方限額；`provider_quota_facts` 的 limit/remaining 分別帶 provenance、as_of、source、scope 與 valid_until，未知值保留 null。未知到期或未驗證免費資格一律拒絕執行。金鑰值只在 Doppler UI 編輯。
 - 管理頁提供唯讀供應商列表：Google/Cloudflare 的帳號狀態明標「未知（本頁無帳號資料）」；NVIDIA 顯示待設定、有效、金鑰到期未知／已過期、免費資格待驗證／已過期等可辨識狀態。頁面顯示服務啟動時指定的 Doppler project/config 與 secret ref 名稱，供管理者核對編輯目的地；不顯示秘密值。此狀態摘要以本地中繼資料計算，並非即時查詢 provider 或 Doppler 成功的證據。
 - 管理頁「手動連線測試」會送出真實請求，可能消耗額度或計費；介面直接顯示此副作用。本階段只以 fixture 測試，沒有按下真實測試。
 
@@ -50,7 +50,7 @@ Doppler 讀取僅使用明確 project/config/name 的 HTTPS API `GET /v3/configs
 
 ## 目前可驗證與未知
 
-離線 fixture 可驗證固定路由、配額、生命週期、重啟去重、認證、CSRF/Origin、資料庫無 prompt/answer/key 明文，並以真實 HTTP 表單和 HTML 回應檢查登入後列表、狀態、合法 profile 儲存、用量摘要及手動測試流程。它本身不能證明 NVIDIA 帳號免費資格、真實計量、Doppler 權限、真實網路行為、跨主機瀏覽器路徑或人工 UI 驗收；上述一次性真讀只補足特定 Doppler project/config、Service Token 和秘密讀取路徑的證據。官方 NVIDIA 文件描述 API Catalog hosted preview 為 prototype 用途；不得把它等同正式生產免費承諾。任何 profile 限額皆須使用帳號當下的證據填入，本 repo 不預設公開限額。
+離線 fixture 可驗證固定路由、配額、生命週期、重啟去重、認證、CSRF/Origin、資料庫無 prompt/answer/key 明文，並以真實 HTTP 表單和 HTML 回應檢查登入後列表、狀態、合法 profile 儲存、用量摘要及手動測試流程。它本身不能證明 NVIDIA 帳號免費資格、真實計量、Doppler 權限、真實網路行為、跨主機瀏覽器路徑或人工 UI 驗收；上述一次性真讀只補足特定 Doppler project/config、Service Token 和秘密讀取路徑的證據。官方 NVIDIA 文件描述 API Catalog hosted preview 為 prototype 用途；不得把它等同正式生產免費承諾。正式 profile 的免費資格與計費狀態須有當下帳號證據；本地安全上限由操作者設定，不宣稱為 NVIDIA 官方限額。官方限額與剩餘額度若無證據就保持 unknown；只有仍在有效期內、官方來源確認的剩餘零額度才阻擋。舊版 profile 的 `rpm`/`rpd`/`input_tpm` 仍可讀取，但管理頁標示為 legacy；遷移時改置於 `local_safety_caps` 並加入 `provider_quota_facts`、`capacity`。本 repo 不預設公開限額。
 
 ## 部署候選（僅文件評估）
 
