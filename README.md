@@ -44,6 +44,12 @@ Existing SQLite files are migrated without inventing missing route history. A pr
 
 The broker observes only cooperating clients. External usage, server-side metering differences, accounting delay, provider changes, and requests that overrun estimates can exhaust a provider before this local ledger detects it. This is neither third-party exactly-once execution nor a guarantee against charges. Keep billing disabled and reverify account facts before use. The NVIDIA executor is a small HTTP/SQLite process and needs no GPU. HP is the documented deployment candidate, subject to live host and port checks; no host deployment has occurred.
 
+## Usage records and current evidence
+
+The normal broker persists accounting in the SQLite file passed to `--db`: `reservations` records request lifecycle, `charges` holds per-bucket estimated amounts and later replaces them with reported usage, `reports` records idempotent settlements, and `cooldowns` records rate-limit waits. The separate NVIDIA executor uses its own `serve-nvidia --db` path and adds `nvidia_executions` with provider-reported prompt/completion tokens. Its authenticated `GET /v1/nvidia/requests/{request_key}` and admin recent-request table read these records; the admin also shows the ledger's accounted input tokens. These paths are implemented and tested locally, but require a configured, running service and verified account profile before they can record real admitted traffic.
+
+The one-shot Gemma and Riva scripts bypass that formal admission and SQLite ledger. They write only Git-ignored private `.state/*.json` no-replay receipts. The Riva translation probe's actual provider usage (22 prompt, 3 completion tokens) is in its receipt, **not** in `nvidia_executions` or `charges`; the older Gemma attempt remains `unknown` with no provider usage. There is no evidence of a running production database or deployed usage monitor for this repository. A successful isolated translation proves only that the Riva endpoint responded to that one request, not that the formal executor or usage dashboard has accepted a real request.
+
 ## Source and scope
 
 See [provider sources](docs/provider-sources.md) for primary source links and the 2026-09-25 review. Google Gemini Developer API and Cloudflare Workers AI retain their direct-client v0.1 behavior. NVIDIA now has a separate fixed-route, non-streaming executor candidate, disabled until verified metadata is entered. No prompt/answer persistence, provider key storage, Redis, LLM ranking, paid fallback, or remote deployment is included.
