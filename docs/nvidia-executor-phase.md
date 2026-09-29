@@ -46,6 +46,14 @@ Doppler 讀取僅使用明確 project/config/name 的 HTTPS API `GET /v3/configs
 
 `uv run --locked python -m scripts.nvidia_smoke_once` 是僅供已授權、在本機 TTY 執行的一次性檢查。它沿用已登入的 Doppler 管理端 CLI，先只查 `NVIDIA_API_KEY` 名稱；以 `api-provider-nvidia/dev` 的整個 config 建立 5 分鐘到期唯讀 Service Token，記憶體中經 executor 的 HTTPS adapter 讀取秘密一次，再用相同固定路由 transport 送出 `Reply with OK.`，關閉推理，`max_tokens=16`。此路徑不使用 `NvidiaExecutor` 的正式配額 admission，也不填入猜測的 RPM、RPD 或 input TPM；程序只送一次、同時最多一個請求、無重試或付費 fallback。發送前建立忽略 Git 的 `.state/nvidia-smoke-once.json`，僅保存模型、狀態、時間、HTTP status 與可核對的 usage/request ID；不保存 token、供應商金鑰、prompt 或回答文字。檔案存在即拒絕再跑；超時、斷線或 HTTP 202 保留 unknown/pending，絕不再 POST。若 202 回傳可辨識 request ID，僅保存該 ID 供人工另行核對。CLI 只回報安全狀態與用量，不輸出秘密或原始 provider 回應。
 
+### 2026-09-29 單次真實 smoke 的逾時收尾
+
+使用者在本 task 直接批准後，執行前確認固定模型的[官方頁面](https://build.nvidia.com/google/gemma-4-31b-it)仍標示 Free Endpoint Available、工作樹為 `00976205e01c88d9bcd91ac92ea773801aa3e9c9` 且 `.state/nvidia-smoke-once.json` 不存在。只執行一次 `uv run --locked python -m scripts.nvidia_smoke_once`。流程通過 Doppler 名稱查詢、建立 5 分鐘整個 config 唯讀 Service Token、經 executor adapter 讀取 `NVIDIA_API_KEY` 一次，隨後進入固定路由 transport；程序回報 `state=unknown`、`transport_error=TimeoutError`，exit=1。Token 與秘密值未輸出或寫入收據，未部署、未重試。
+
+本次防重送收據 `.state/nvidia-smoke-once.json`（Git 忽略）由同一流程在送出前建立，最後 `updated_at=2026-09-29T09:57:47.719967+00:00`，僅有 `model=google/gemma-4-31b-it`、`state=unknown`、`transport_error=TimeoutError`、`updated_at`。無 HTTP status、response header、request ID、usage 或回答內容。`nvidia_transport` 在 `opener.open(request, timeout=20)` 設定 20 秒；[Python 官方文件](https://docs.python.org/3/library/urllib.request.html)說明此 timeout 用於連線等阻塞操作。現有程式沒有記錄逾時階段，且在 `open` 及 `response.read` 取得完整結果前不把 status/header 回傳，因此不能判定 POST 是否送達、NVIDIA 是否執行、是否計量，也不能把 unknown 改成 failed。20 秒可能限制本次等待，但沒有官方證據證明它是根因或應使用特定更長值。
+
+[NVIDIA 模型 API reference](https://docs.api.nvidia.com/nim/reference/google-gemma-4-31b-it-infer)顯示登入後的 `Recent Requests` 區，可供人工嘗試唯讀比對本次時間與帳號；本 task 可用的瀏覽器中沒有已登入的 NVIDIA 頁面，也沒有供應商紀錄，也未證實該頁涵蓋外部 API POST。同頁的 202 後續查詢需要 `requestId`，本次未取得 202 回應或 request ID，無法用它查詢這筆結果。下一步先由有帳號權限的人唯讀核對近期請求與計量；若仍無法釐清，下一筆必須是另行批准、使用新識別與新收據的獨立測試，絕不重送本次。最小程式改進候選是對未來請求記錄無秘密的 transport 階段（連線／已收標頭／讀取 body），並將單次測試的等待時間設為有界可設定值；例如較長等待只能作為待驗假設，不宣稱可修復本次逾時。
+
 使用者提供的 NVIDIA API Keys 頁截圖顯示名稱 `API Quota Broker`、狀態 `ACTIVE`、到期日期 `2027-09-29`；完整 key ID、精確到期時區、模型權限、帳號計費狀態及剩餘額度仍未知。目前無已知帳號證據與官方 Free Endpoint Available 矛盾，但這不等於已核定帳號免費資格。日期離本次測試逾一年，僅用於排除「顯示日期已過」的情形，不寫成正式 profile 的精確 expiry。若執行前出現計費或免費資格相矛盾的證據，必須在 provider 呼叫前停止。正式服務保持預設停用，沒有完整帳號專屬 profile 仍拒絕執行。
 
 ## 目前可驗證與未知
