@@ -12,6 +12,8 @@ from pathlib import Path
 from .client import DirectClient
 from .config import Quota, Target, load_config
 from .core import Broker, utcnow
+from .nvidia import NvidiaExecutor, doppler_resolver
+from .nvidia_server import make_nvidia_server
 from .server import make_server
 
 
@@ -96,6 +98,15 @@ def main() -> None:
     serve.add_argument("--config", required=True)
     serve.add_argument("--db", required=True)
     serve.add_argument("--port", type=int, default=18081)
+    nvidia = sub.add_parser("serve-nvidia")
+    nvidia.add_argument("--db", required=True)
+    nvidia.add_argument("--port", type=int, default=18083)
+    nvidia.add_argument("--digest-key-file", required=True)
+    nvidia.add_argument("--client-token-file", required=True)
+    nvidia.add_argument("--admin-token-file", required=True)
+    nvidia.add_argument("--doppler-token-file", required=True)
+    nvidia.add_argument("--doppler-project", required=True)
+    nvidia.add_argument("--doppler-config", required=True)
     catalog = sub.add_parser("catalog")
     catalog.add_argument("--config", required=True)
     catalog.add_argument("--db", required=True)
@@ -103,6 +114,28 @@ def main() -> None:
     args = parser.parse_args()
     if args.command == "demo":
         demo()
+        return
+    if args.command == "serve-nvidia":
+        digest_key = Path(args.digest_key_file).read_bytes()
+        client_token = Path(args.client_token_file).read_text(encoding="utf-8").strip()
+        admin_token = Path(args.admin_token_file).read_text(encoding="utf-8").strip()
+        resolver = doppler_resolver(
+            args.doppler_token_file, args.doppler_project, args.doppler_config
+        )
+        executor = NvidiaExecutor(
+            args.db,
+            digest_key,
+            resolver,
+            doppler_project=args.doppler_project,
+            doppler_config=args.doppler_config,
+        )
+        server = make_nvidia_server(executor, "127.0.0.1", args.port, client_token, admin_token)
+        try:
+            server.serve_forever()
+        except KeyboardInterrupt:
+            pass
+        finally:
+            server.server_close()
         return
     broker = Broker(args.db, load_config(args.config))
     if args.command == "catalog":

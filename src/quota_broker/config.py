@@ -80,6 +80,8 @@ def load_config(path: str | Path) -> tuple[Target, ...]:
             model = MODELS[item["model"]]
             if item["provider"] != model.provider:
                 raise ConfigError("provider/model mismatch")
+            if model.provider == "nvidia":
+                raise ConfigError("NVIDIA is available only through the authenticated executor")
             quotas = tuple(Quota(**q) for q in item["quotas"])
             target = Target(
                 id=item["id"],

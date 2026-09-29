@@ -1,6 +1,6 @@
-# API Quota Broker v0.1
+# API Quota Broker
 
-Local control plane for trusted, cooperative clients using official text-generation APIs. It selects a manually verified free target, atomically reserves every configured shared quota, authorizes one dispatch, and records actual usage. The client calls the official provider directly. The broker receives no prompt, response body, or provider secret and does not proxy streams. There is no paid fallback.
+Local control plane for trusted, cooperative clients using official text-generation APIs. It selects a manually verified free target, atomically reserves every configured shared quota, authorizes one dispatch, and records actual usage. The original Google/Cloudflare client calls the official provider directly; its broker receives no prompt, response body, or provider secret. The separate NVIDIA executor accepts text, holds its provider key only in memory, and uses a fixed official endpoint. There is no paid fallback.
 
 ## Reproduce locally
 
@@ -22,7 +22,7 @@ Copy config.example.json to config.local.json (ignored by Git). Each target star
     uv run --locked quota-broker catalog --config config.local.json --db broker.db
     BROKER_TOKEN='a-local-secret' uv run --locked quota-broker serve --config config.local.json --db broker.db --port 18081
 
-The server binds to loopback only. If BROKER_TOKEN is set, clients must send it as a bearer token; keep it outside Git and logs. Provider credentials stay in each client process. Use DirectClient from quota_broker.client; pass a stable request_key, the provider secret in process memory, a text prompt, and optional model. For Cloudflare, also pass a conservative neuron_bound established from account/model evidence. Do not treat the client's byte-based input estimate as a token guarantee. There is no deployment profile, external ingress, or real-account configuration in this repository.
+The server binds to loopback only. If BROKER_TOKEN is set, clients must send it as a bearer token; keep it outside Git and logs. Provider credentials stay in each client process. Use DirectClient from quota_broker.client; pass a stable request_key, the provider secret in process memory, a text prompt, and optional model. For Cloudflare, also pass a conservative neuron_bound established from account/model evidence. Do not treat the client's byte-based input estimate as a token guarantee. The NVIDIA candidate has a separate command and security contract in [the phase document](docs/nvidia-executor-phase.md). No real-account configuration or external ingress is included.
 
 ## Contract
 
@@ -36,8 +36,8 @@ Rolling-minute and daily quotas, per-target and optional shared concurrent reque
 
 Existing SQLite files are migrated without inventing missing route history. A pre-snapshot unsent reservation cannot dispatch and expires normally. Pre-snapshot active sent/unknown records remain inspectable and reportable; new admission pauses while they remain active because their original routing scope cannot be proven. Settling those rows only removes that particular admission block. Before enabling a changed configuration, an operator must independently confirm prior provider usage, how old charges map to new buckets, and the applicable quota windows; the migration cannot infer or prove those facts.
 
-The broker observes only cooperating clients. External usage, server-side metering differences, accounting delay, provider changes, and requests that overrun estimates can exhaust a provider before this local ledger detects it. This is neither third-party exactly-once execution nor a guarantee against charges. Keep billing disabled and reverify account facts before use. On the intended future Ubuntu laptop (2 cores / 4 threads, 3.4 GiB RAM), this control flow is designed to be lightweight and needs no GPU; this hardware has not been tested or deployed in this phase.
+The broker observes only cooperating clients. External usage, server-side metering differences, accounting delay, provider changes, and requests that overrun estimates can exhaust a provider before this local ledger detects it. This is neither third-party exactly-once execution nor a guarantee against charges. Keep billing disabled and reverify account facts before use. The NVIDIA executor is a small HTTP/SQLite process and needs no GPU. HP is the documented deployment candidate, subject to live host and port checks; no host deployment has occurred.
 
 ## Source and scope
 
-See [provider sources](docs/provider-sources.md) for primary source links and the 2026-09-25 review. Google Gemini Developer API and Cloudflare Workers AI are the only dispatchable providers in v0.1, and both are disabled until account facts are confirmed. NVIDIA is tracked only as a trial candidate requiring further review. No prompt/answer persistence, provider key storage, Redis, proxy, LLM ranking, paid fallback, or remote deployment is included.
+See [provider sources](docs/provider-sources.md) for primary source links and the 2026-09-25 review. Google Gemini Developer API and Cloudflare Workers AI retain their direct-client v0.1 behavior. NVIDIA now has a separate fixed-route, non-streaming executor candidate, disabled until verified metadata is entered. No prompt/answer persistence, provider key storage, Redis, LLM ranking, paid fallback, or remote deployment is included.
