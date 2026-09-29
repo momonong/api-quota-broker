@@ -44,13 +44,13 @@ def _receipt_write(path: Path, data: dict[str, Any], *, new: bool = False) -> No
         os.fsync(stream.fileno())
 
 
-def _claim_receipt(path: Path) -> dict[str, Any]:
+def _claim_receipt(path: Path, model: str = MODEL) -> dict[str, Any]:
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     info = path.parent.stat()
     if path.parent.is_symlink() or info.st_uid != os.geteuid() or info.st_mode & 0o077:
         raise RuntimeError("Private receipt directory required")
     data: dict[str, Any] = {
-        "model": MODEL,
+        "model": model,
         "state": "claimed",
         "updated_at": datetime.now(UTC).isoformat(),
     }

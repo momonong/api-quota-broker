@@ -54,6 +54,12 @@ Doppler 讀取僅使用明確 project/config/name 的 HTTPS API `GET /v3/configs
 
 [NVIDIA 模型 API reference](https://docs.api.nvidia.com/nim/reference/google-gemma-4-31b-it-infer)顯示登入後的 `Recent Requests` 區，可供人工嘗試唯讀比對本次時間與帳號；本 task 可用的瀏覽器中沒有已登入的 NVIDIA 頁面，也沒有供應商紀錄，也未證實該頁涵蓋外部 API POST。同頁的 202 後續查詢需要 `requestId`，本次未取得 202 回應或 request ID，無法用它查詢這筆結果。下一步先由有帳號權限的人唯讀核對近期請求與計量；若仍無法釐清，下一筆必須是另行批准、使用新識別與新收據的獨立測試，絕不重送本次。最小程式改進候選是對未來請求記錄無秘密的 transport 階段（連線／已收標頭／讀取 body），並將單次測試的等待時間設為有界可設定值；例如較長等待只能作為待驗假設，不宣稱可修復本次逾時。
 
+### 獨立輕量翻譯連通測試（2026-09-30 授權範圍）
+
+使用者另行批准改找較輕量、官方列為免費端點的模型做**新的一筆**連通測試。選擇 [NVIDIA Riva Translate 4B v2 官方頁](https://build.nvidia.com/nvidia/riva-translate-4b-instruct-v2)，當次顯示 `Free Endpoint` 與 `Using free API`；[API reference](https://docs.api.nvidia.com/nim/reference/nvidia-riva-translate-4b-instruct-v2-infer) 指定 `POST https://integrate.api.nvidia.com/v1/chat/completions`、model `nvidia/riva-translate-4b-instruct-v2`、非串流與 `max_tokens` 範圍；[模型卡](https://docs.api.nvidia.com/nim/reference/nvidia-riva-translate-4b-instruct-v2)指出它是 4B 翻譯模型，推薦以 system `en-zh-cn` 指示語言對。因此 `scripts/nvidia_riva_translate_once.py` 固定用 system `en-zh-cn`、user `Hello.`、`max_tokens=16`、`stream=false`、`temperature=0`。此結果僅驗證翻譯端點連通，不等於原 Gemma 模型或通用聊天服務已通過。
+
+新腳本使用同一安全的 Doppler 名稱查詢、5 分鐘整個 config 唯讀 Service Token 與記憶體中單次秘密讀取，固定 HTTPS POST 且無 redirect/retry；`urllib` 阻塞操作 timeout 為 60 秒、response 上限 64 KiB。它先建立**不同**的忽略 Git 收據 `.state/nvidia-riva-translate-once.json`，記錄實際模型與非秘密 transport 階段；取得標頭後可安全記錄 HTTP status 與格式受限的 request ID，逾時仍保留 `unknown`。只有實際 200 且具文字內容時才回報翻譯文字；usage 未提供時標示 `completed_usage_unknown`。舊 Gemma 收據 `.state/nvidia-smoke-once.json` 的 `unknown` 永不改寫或重送。正式 NVIDIA executor 仍固定原 Gemma，未因這次 probe 變更模型或 admission。60 秒是這次有界測試設定，不是官方建議或逾時根因的結論。
+
 使用者提供的 NVIDIA API Keys 頁截圖顯示名稱 `API Quota Broker`、狀態 `ACTIVE`、到期日期 `2027-09-29`；完整 key ID、精確到期時區、模型權限、帳號計費狀態及剩餘額度仍未知。目前無已知帳號證據與官方 Free Endpoint Available 矛盾，但這不等於已核定帳號免費資格。日期離本次測試逾一年，僅用於排除「顯示日期已過」的情形，不寫成正式 profile 的精確 expiry。若執行前出現計費或免費資格相矛盾的證據，必須在 provider 呼叫前停止。正式服務保持預設停用，沒有完整帳號專屬 profile 仍拒絕執行。
 
 ## 目前可驗證與未知
