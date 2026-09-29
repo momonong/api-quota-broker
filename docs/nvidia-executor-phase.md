@@ -60,6 +60,8 @@ Doppler 讀取僅使用明確 project/config/name 的 HTTPS API `GET /v3/configs
 
 新腳本使用同一安全的 Doppler 名稱查詢、5 分鐘整個 config 唯讀 Service Token 與記憶體中單次秘密讀取，固定 HTTPS POST 且無 redirect/retry；`urllib` 阻塞操作 timeout 為 60 秒、response 上限 64 KiB。它先建立**不同**的忽略 Git 收據 `.state/nvidia-riva-translate-once.json`，記錄實際模型與非秘密 transport 階段；取得標頭後可安全記錄 HTTP status 與格式受限的 request ID，逾時仍保留 `unknown`。只有實際 200 且具文字內容時才回報翻譯文字；usage 未提供時標示 `completed_usage_unknown`。舊 Gemma 收據 `.state/nvidia-smoke-once.json` 的 `unknown` 永不改寫或重送。正式 NVIDIA executor 仍固定原 Gemma，未因這次 probe 變更模型或 admission。60 秒是這次有界測試設定，不是官方建議或逾時根因的結論。
 
+本機於台北時間 2026-09-30 00:21，以提交 `c35aa28f329673bc33f68260d87e2f6b76411877` 執行此獨立 probe **一次**，程序 exit=0。收到 HTTP 200、翻譯文字 `你好。`、供應商 `usage.prompt_tokens=22` 與 `usage.completion_tokens=3`；安全 request ID 為 `33261f70-69f9-45fb-93e8-ffc0cb588685`。新收據 `.state/nvidia-riva-translate-once.json` 為 `model=nvidia/riva-translate-4b-instruct-v2`、`state=completed`、`http_status=200`，記錄 usage 與 request ID，不含 Token、供應商金鑰、prompt 或回答文字。舊 Gemma `unknown` 收據在執行前後 SHA-256 皆為 `2a3258d38962ca649b51bf8038e78872a0fcbf45e4654057c374feb21c896102`，未重放或更改。這證明當次 Doppler 讀取與 Riva 翻譯固定端點可完成一筆有回應及可核對 usage 的呼叫；不證明 Gemma 31B 那筆逾時的結果、一般聊天能力、正式服務 admission、帳號長期免費資格或人工品質驗收。沒有部署、合併或推送。
+
 使用者提供的 NVIDIA API Keys 頁截圖顯示名稱 `API Quota Broker`、狀態 `ACTIVE`、到期日期 `2027-09-29`；完整 key ID、精確到期時區、模型權限、帳號計費狀態及剩餘額度仍未知。目前無已知帳號證據與官方 Free Endpoint Available 矛盾，但這不等於已核定帳號免費資格。日期離本次測試逾一年，僅用於排除「顯示日期已過」的情形，不寫成正式 profile 的精確 expiry。若執行前出現計費或免費資格相矛盾的證據，必須在 provider 呼叫前停止。正式服務保持預設停用，沒有完整帳號專屬 profile 仍拒絕執行。
 
 ## 目前可驗證與未知
