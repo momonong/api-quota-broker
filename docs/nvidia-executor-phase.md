@@ -30,11 +30,11 @@ Doppler 讀取僅使用明確 project/config/name 的 HTTPS API `GET /v3/configs
 
 在管理者帳號已完成登入、目的地 project/config 已由人工核對後，可審查執行 `python scripts/set_nvidia_doppler_secret.py`。腳本要求輸入並再次確認 project/config，固定設定 `NVIDIA_API_KEY`，先以 `doppler --no-read-env --silent --project ... --config ... secrets --only-names` 檢查存取，再以相同顯式目的地執行 `secrets set NVIDIA_API_KEY`。金鑰由隱藏 TTY 提示取得、只經子程序 stdin 傳送；不在 argv、shell history、一般 stdout/stderr 或本地檔案。更新失敗只回報錯誤類別，不印出 CLI 輸出。此 helper 對未來 provider 可依相同安全模式另行擴充，但本階段不批量建立秘密，也不實際呼叫 Doppler。
 
-不使用 `doppler run` 作為執行層秘密來源。官方文件指出其 encrypted fallback 快照可能在 token 撤銷後繼續供應舊資料；runtime 採每次向 Doppler API 直取、失敗關閉。管理端 CLI 的 project/config 指定也不代替 Service Token 的 config-scoped read-only 權限。本機於 2026-09-29 在使用者範圍安裝 Doppler CLI v3.76.6，官方 installer 完成 `gpgv` 發行簽章驗證，公鑰指紋核對官方 INSTALL.md；尚未完成 CLI 登入。管理端 set helper 仍只有 subprocess fixture 驗證，不宣稱遠端更新成功。
+不使用 `doppler run` 作為執行層秘密來源。官方文件指出其 encrypted fallback 快照可能在 token 撤銷後繼續供應舊資料；runtime 採每次向 Doppler API 直取、失敗關閉。管理端 CLI 的 project/config 指定也不代替 Service Token 的 config-scoped read-only 權限。本機於 2026-09-29 在使用者範圍安裝 Doppler CLI v3.76.6，官方 installer 完成 `gpgv` 發行簽章驗證，公鑰指紋核對官方 INSTALL.md；使用者後續已在本機完成 CLI 互動登入。管理端 set helper 仍只有 subprocess fixture 驗證，不宣稱遠端更新成功。
 
 ## 本機真接入的待核准短時驗證
 
-為先驗證 Doppler 而不依賴目標主機 TPM，管理者可在本機完成 Doppler CLI 互動登入（只限管理者；scope 不代表 OS 隔離）。先執行 `secrets --only-names --json` 並顯式指定 `api-provider-nvidia/dev`，只判斷 `NVIDIA_API_KEY` 名稱是否存在；不得執行會顯示值的 `secrets`、`secrets get --plain` 或 `doppler run`。網頁登入不等於 CLI 已登入。此步目前尚未取得真實 metadata 成功證據。
+為先驗證 Doppler 而不依賴目標主機 TPM，管理者可在本機完成 Doppler CLI 互動登入（只限管理者；scope 不代表 OS 隔離）。先執行 `secrets --only-names --json` 並顯式指定 `api-provider-nvidia/dev`，只判斷 `NVIDIA_API_KEY` 名稱是否存在；不得執行會顯示值的 `secrets`、`secrets get --plain` 或 `doppler run`。網頁登入不等於 CLI 已登入。本機於 2026-09-29 使用上述顯式 project/config、`--no-read-env` 的唯讀名稱查詢，CLI exit=0；回應可解析為 4 個名稱，含 `NVIDIA_API_KEY`。原始 CLI 輸出已攔截而未顯示，也未讀取秘密值。這只證實當次管理端 CLI 可查該 config 的名稱 metadata，尚未驗證 Service Token 或 executor 真讀。
 
 `scripts/verify_doppler_executor_read.py` 是**待 main／使用者核准後**才可執行的一次性候選：要求互動 TTY 再次確認；以已登入的管理端 CLI 明確指定 project `api-provider-nvidia`、config `dev`、`--access read`、`--max-age 5m` 建立單一短時 Service Token（名稱帶隨機後綴），CLI stdout 只被 Python 捕獲於記憶體，不出現在 shell argv/history/log/chat 或明文檔。接著用與 executor 相同的直接 HTTPS API adapter 讀取 `NVIDIA_API_KEY`，只印成功／失敗，絕不印 token 或秘密值，也不呼叫 NVIDIA。程序退出後不保留 token；該 access 在最多 5 分鐘內自動到期。若建立結果不明，必須於 Doppler Access 的 metadata 核對是否出現短時 token，不以重試建立新 token 代替核對。這個候選不是常駐服務的 credential bootstrap，也不變更前述 TPM 部署候選。
 
