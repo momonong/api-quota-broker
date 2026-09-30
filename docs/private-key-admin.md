@@ -23,6 +23,8 @@ uv run --locked quota-broker key-admin-serve \
 
 ## 安全與驗證
 
-HTTP 強制精確 loopback Host；POST 強制同源 Origin，登入後使用 30 分鐘記憶體 session、HttpOnly/SameSite=Strict cookie 與 CSRF token。所有回應 `Cache-Control: no-store`，停用 request log，CSP 限制內容及表單。頁面永不把 key 放入 HTML value、SQLite、選填 metadata、localStorage、argv、環境變數或一般日誌。key 只在當次表單 POST 與後端記憶體，透過 Doppler CLI stdin 傳值；CLI stdout/stderr 僅捕獲、不顯示。選填 metadata 另以 `0600` JSON 保存，不含 key；成功或失敗後皆用 redirect 清空表單。
+HTTP 強制精確 loopback Host；POST 接受精確同源 Origin。Codex IAB 的同頁表單實測會送 `Origin: null`，因此僅在瀏覽器同時回報 `Sec-Fetch-Site: same-origin`、`Sec-Fetch-Mode: navigate`、`Sec-Fetch-Dest: document` 時接受此特例；單獨的 null 或跨站標頭仍拒絕。登入後使用 30 分鐘記憶體 session、HttpOnly/SameSite=Strict cookie 與 CSRF token。所有回應 `Cache-Control: no-store`，停用 request log，CSP 限制內容及表單。頁面永不把 key 放入 HTML value、SQLite、選填 metadata、localStorage、argv、環境變數或一般日誌。key 只在當次表單 POST 與後端記憶體，透過 Doppler CLI stdin 傳值；CLI stdout/stderr 僅捕獲、不顯示。選填 metadata 另以 `0600` JSON 保存，不含 key；成功或失敗後皆用 redirect 清空表單。
 
 驗證使用 fake Doppler writer，不寫真實 key：固定 scope 建立與替換、CLI stdin、寫入失敗、登入、Host、Origin、CSRF、metadata 權限及回應無 key。正式 gateway 的 `unknown` 請求沒有重送或變更。
+
+2026-09-30 IAB 驗證：原本精確 Origin 檢查會拒絕 IAB 的 `Origin: null` 登入 POST。修正後在獨立假 token／假 Doppler fixture 的 IAB 中，登入、管理頁及假儲存均顯示成功；真實管理頁另經獨立 HTTP session 確認登入 303、管理頁 200，未讀或寫 provider key。

@@ -177,3 +177,69 @@ def test_http_login_csrf_origin_save_and_no_secret_echo(tmp_path):
         server.shutdown()
         server.server_close()
         thread.join(timeout=3)
+
+
+def test_iab_opaque_origin_needs_same_origin_fetch_metadata_and_csrf(tmp_path):
+    writer = MemoryWriter()
+    server = make_key_admin_server(writer, MetadataStore(tmp_path / "meta.json"), "t" * 48, port=0)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    port = server.server_port
+    host = f"127.0.0.1:{port}"
+
+    def request(path, fields, headers):
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        conn.request(
+            "POST",
+            path,
+            urlencode(fields).encode(),
+            {"Host": host, "Content-Type": "application/x-www-form-urlencoded"} | headers,
+        )
+        response = conn.getresponse()
+        result = response.status, dict(response.getheaders())
+        response.read()
+        conn.close()
+        return result
+
+    iab = {
+        "Origin": "null",
+        "Sec-Fetch-Site": "same-origin",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Dest": "document",
+    }
+    try:
+        login = {"token": "t" * 48}
+        assert request("/admin/login", login, {"Origin": "null"})[0] == 403
+        assert request("/admin/login", login, iab | {"Sec-Fetch-Site": "cross-site"})[0] == 403
+        status, headers = request("/admin/login", login, iab)
+        assert status == 303
+        cookie = headers["Set-Cookie"].split(";", 1)[0]
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        conn.request("GET", "/admin", headers={"Host": host, "Cookie": cookie})
+        response = conn.getresponse()
+        page = response.read().decode()
+        assert response.status == 200
+        conn.close()
+        csrf = re.search(r'name="csrf" value="([^"]+)"', page).group(1)
+        fields = {
+            "csrf": csrf,
+            "provider": "groq",
+            "key": "fixture-key",
+            "key_name": "",
+            "key_id": "",
+            "expiry": "",
+        }
+        assert (
+            request(
+                "/admin/save", fields, iab | {"Cookie": cookie, "Sec-Fetch-Site": "cross-site"}
+            )[0]
+            == 403
+        )
+        assert request("/admin/save", fields | {"csrf": "bad"}, iab | {"Cookie": cookie})[0] == 403
+        assert writer.saved == []
+        assert request("/admin/save", fields, iab | {"Cookie": cookie})[0] == 303
+        assert writer.saved == [("groq", "fixture-key")]
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=3)

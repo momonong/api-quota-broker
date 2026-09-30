@@ -289,6 +289,20 @@ def make_key_admin_server(
         def _host_ok(self) -> bool:
             return self.headers.get("Host") == self._origin().removeprefix("http://")
 
+        def _same_origin_post(self) -> bool:
+            origin = self.headers.get("Origin")
+            if origin == self._origin():
+                return True
+            # Codex IAB sends Origin: null for a form submitted from this very
+            # document. Fetch Metadata remains browser-generated and reports
+            # same-origin navigation; reject all other opaque origins.
+            return (
+                origin == "null"
+                and self.headers.get("Sec-Fetch-Site") == "same-origin"
+                and self.headers.get("Sec-Fetch-Mode") == "navigate"
+                and self.headers.get("Sec-Fetch-Dest") == "document"
+            )
+
         def _form(self) -> dict[str, str]:
             if (
                 self.headers.get("Content-Type", "").split(";", 1)[0]
@@ -386,7 +400,7 @@ def make_key_admin_server(
                 )
                 return
             if self.command == "POST" and path == "/admin/login":
-                if self.headers.get("Origin") != self._origin():
+                if not self._same_origin_post():
                     raise AdminError("origin_rejected")
                 form = self._form()
                 if set(form) != {"token"} or not secrets.compare_digest(form["token"], admin_token):
@@ -410,7 +424,7 @@ def make_key_admin_server(
             if self.command != "POST" or path not in {"/admin/save", "/admin/logout"}:
                 self._page(404, "<h1>Not found</h1>")
                 return
-            if self.headers.get("Origin") != self._origin():
+            if not self._same_origin_post():
                 raise AdminError("origin_rejected")
             form = self._form()
             if not secrets.compare_digest(form.get("csrf", ""), csrf):
