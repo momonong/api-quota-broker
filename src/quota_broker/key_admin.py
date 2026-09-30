@@ -23,7 +23,7 @@ from urllib.parse import parse_qs, urlsplit
 
 DESTINATIONS = {
     "nvidia": ("NVIDIA", "api-provider-nvidia", "dev", "NVIDIA_API_KEY"),
-    "groq": ("Groq", "api-provider-groq", "dev", "GROQ_API_KEY"),
+    "groq": ("Groq", "api-provider-nvidia", "dev", "GROQ_API_KEY"),
 }
 SESSION_SECONDS = 1800
 MAX_BODY = 8192
@@ -151,18 +151,7 @@ class DopplerCLIWriter:
         _, project, config, name = DESTINATIONS[provider]
         initial = self.state(provider)
         if not initial.scope_ready:
-            if provider != "groq":
-                raise AdminError("nvidia_scope_missing")
-            if project not in self._projects():
-                created = self._call(["projects", "create", project])
-                if created.returncode or project not in self._projects():
-                    raise AdminError("groq_project_create_failed")
-            if config not in self._configs(project):
-                created = self._call(
-                    ["configs", "create", config, "--project", project, "--environment", "dev"]
-                )
-                if created.returncode or config not in self._configs(project):
-                    raise AdminError("groq_config_create_failed")
+            raise AdminError("shared_scope_missing")
         result = self._call(
             ["secrets", "set", name, "--no-interactive", "--project", project, "--config", config],
             value=value.encode("utf-8"),
@@ -375,7 +364,7 @@ def make_key_admin_server(
 <h1>私用 API Key 管理</h1><p>僅在這台電腦的 loopback 提供。儲存只更新 Doppler；不會呼叫模型，也不代表 key 已通過供應商驗證。</p>
 <p role="status" class="message {note_class}">{note}</p>
 <table><tr><th>供應商</th><th>固定目的地</th><th>名稱狀態</th><th>選填資訊</th></tr>{"".join(cards)}</table>
-<h2>儲存或替換金鑰</h2><p>按下儲存會覆寫所選供應商固定名稱的 key。Groq scope 若不存在，會在此時建立。其他秘密不會變更。</p>
+<h2>儲存或替換金鑰</h2><p>按下儲存會覆寫所選供應商固定名稱的 key。共用 Doppler scope 若不存在，會安全拒絕。其他秘密不會變更。</p>
 <form method="post" action="/admin/save" autocomplete="off"><input type="hidden" name="csrf" value="{html.escape(csrf)}">
 <label>供應商<select name="provider"><option value="groq">Groq</option><option value="nvidia">NVIDIA</option></select></label>
 <label>API Key<input type="password" name="key" required maxlength="4096" autocomplete="off"></label>

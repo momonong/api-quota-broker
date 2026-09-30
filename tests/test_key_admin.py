@@ -30,17 +30,9 @@ class FakeDoppler:
         self.calls.append((command, value))
         verb = next(name for name in ("projects", "configs", "secrets") if name in command)
         args = command[command.index(verb) :]
-        if verb == "projects" and "create" in args:
-            self.projects.add("api-provider-groq")
-            self.configs["api-provider-groq"] = set()
-            self.names["api-provider-groq"] = set()
-            return subprocess.CompletedProcess(command, 0, b"", b"")
         if verb == "projects":
             rows = [{"id": project} for project in sorted(self.projects)]
             return subprocess.CompletedProcess(command, 0, json.dumps(rows).encode(), b"")
-        if verb == "configs" and "create" in args:
-            self.configs["api-provider-groq"].add("dev")
-            return subprocess.CompletedProcess(command, 0, b"", b"")
         if verb == "configs":
             project = args[args.index("--project") + 1]
             rows = [{"name": name} for name in self.configs[project]]
@@ -56,22 +48,37 @@ class FakeDoppler:
         )
 
 
-def test_fixed_groq_scope_creation_stdin_and_replacement(tmp_path):
+def test_shared_scope_groq_stdin_and_replacement(tmp_path):
     binary = tmp_path / "doppler"
     binary.write_text("fixture")
     fake = FakeDoppler()
     writer = DopplerCLIWriter(str(binary), tmp_path, fake)
     assert writer.state("nvidia") == KeyState(True, True)
-    assert writer.state("groq") == KeyState(False, False)
+    assert writer.state("groq") == KeyState(False, True)
     writer.save("groq", "fixture-key-one")
     assert writer.state("groq") == KeyState(True, True)
     writer.save("groq", "fixture-key-two")
     assert "NVIDIA_API_KEY" in fake.names["api-provider-nvidia"]
     writes = [(command, value) for command, value in fake.calls if "set" in command]
     assert [value for _, value in writes] == [b"fixture-key-one", b"fixture-key-two"]
-    assert all("GROQ_API_KEY" in command for command, _ in writes)
+    assert all(
+        "GROQ_API_KEY" in command and "api-provider-nvidia" in command for command, _ in writes
+    )
+    assert not any("create" in command for command, _ in fake.calls)
     assert all("fixture-key" not in " ".join(command) for command, _ in writes)
     assert not any(value for command, value in fake.calls if "set" not in command)
+
+
+def test_missing_shared_scope_rejects_both_providers_without_create(tmp_path):
+    binary = tmp_path / "doppler"
+    binary.write_text("fixture")
+    fake = FakeDoppler()
+    fake.projects.clear()
+    writer = DopplerCLIWriter(str(binary), tmp_path, fake)
+    for provider in ("nvidia", "groq"):
+        with pytest.raises(AdminError, match="shared_scope_missing"):
+            writer.save(provider, "fixture-key")
+    assert not any("create" in command or "set" in command for command, _ in fake.calls)
 
 
 def test_failed_write_does_not_claim_configured(tmp_path):
