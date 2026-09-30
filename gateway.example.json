@@ -443,6 +443,117 @@
       },
       "id": "nvidia-gemma-unverified",
       "model": "google/gemma-4-31b-it"
+    },
+    {
+      "provider": "nvidia",
+      "account_id": "replace-with-confirmed-account-scope",
+      "enabled": false,
+      "free_eligible": false,
+      "billing_enabled": false,
+      "verified_at": null,
+      "expires_at": null,
+      "source": "Manual account and Free Endpoint eligibility check required",
+      "priority": 0,
+      "concurrency_limit": 1,
+      "shared_concurrency_scope": "nvidia:account:replace",
+      "shared_concurrency_limit": 1,
+      "max_output_tokens": 16,
+      "secret_ref": "NVIDIA_API_KEY",
+      "local_safety_caps": [
+        {
+          "bucket": "nvidia:account:replace:rpm",
+          "metric": "requests",
+          "limit": 1,
+          "window": "rolling_minute",
+          "timezone": "UTC"
+        },
+        {
+          "bucket": "nvidia:account:replace:rpd",
+          "metric": "requests",
+          "limit": 1,
+          "window": "day",
+          "timezone": "UTC"
+        },
+        {
+          "bucket": "nvidia:account:replace:input-tpm",
+          "metric": "input_tokens",
+          "limit": 1024,
+          "window": "rolling_minute",
+          "timezone": "UTC"
+        }
+      ],
+      "provider_quota_facts": [
+        {
+          "metric": "requests",
+          "window": "rolling_minute",
+          "limit": {
+            "value": null,
+            "provenance": "unknown",
+            "as_of": null,
+            "source": null,
+            "scope": null,
+            "valid_until": null
+          },
+          "remaining": {
+            "value": null,
+            "provenance": "unknown",
+            "as_of": null,
+            "source": null,
+            "scope": null,
+            "valid_until": null
+          }
+        },
+        {
+          "metric": "requests",
+          "window": "day",
+          "limit": {
+            "value": null,
+            "provenance": "unknown",
+            "as_of": null,
+            "source": null,
+            "scope": null,
+            "valid_until": null
+          },
+          "remaining": {
+            "value": null,
+            "provenance": "unknown",
+            "as_of": null,
+            "source": null,
+            "scope": null,
+            "valid_until": null
+          }
+        },
+        {
+          "metric": "input_tokens",
+          "window": "rolling_minute",
+          "limit": {
+            "value": null,
+            "provenance": "unknown",
+            "as_of": null,
+            "source": null,
+            "scope": null,
+            "valid_until": null
+          },
+          "remaining": {
+            "value": null,
+            "provenance": "unknown",
+            "as_of": null,
+            "source": null,
+            "scope": null,
+            "valid_until": null
+          }
+        }
+      ],
+      "capacity": {
+        "kind": "unknown",
+        "refresh_seconds": null,
+        "as_of": null,
+        "source": null,
+        "scope": null,
+        "expires_at": null
+      },
+      "id": "nvidia-lightning-unverified",
+      "model": "nvidia/nemotron-3.5-lightning-30b-a3b"
     }
   ]
 }

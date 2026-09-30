@@ -405,7 +405,7 @@ def test_valid_official_zero_blocks_but_unknown_eligibility_fails_closed(tmp_pat
     assert exc.value.code == "unavailable"
 
 
-def test_gateway_example_is_disabled_and_has_two_nvidia_models():
+def test_gateway_example_is_disabled_and_has_three_nvidia_models():
     from pathlib import Path
 
     from quota_broker.config import load_gateway_config
@@ -413,7 +413,7 @@ def test_gateway_example_is_disabled_and_has_two_nvidia_models():
     config = Path(__file__).resolve().parents[1] / "gateway.example.json"
     targets = load_gateway_config(config)
     assert {target.provider for target in targets} == {"nvidia", "google", "cloudflare"}
-    assert len([target for target in targets if target.provider == "nvidia"]) == 2
+    assert len([target for target in targets if target.provider == "nvidia"]) == 3
     assert all(not target.enabled and not target.free_eligible for target in targets)
     assert all(target.secret_ref for target in targets)
 
@@ -614,3 +614,17 @@ def test_dispatch_crash_gap_is_counted_and_not_replayed(tmp_path):
     )
     assert restarted.run(data)["state"] == "unknown"
     assert calls == []
+
+
+def test_current_nvidia_lightning_text_model_uses_nonstreaming_no_thinking(tmp_path):
+    model = "nvidia/nemotron-3.5-lightning-30b-a3b"
+    calls = []
+    gateway = make_gateway(tmp_path, [target("lightning", "nvidia", model)], calls)
+    result = gateway.run(task("llm", provider="nvidia", model=model, text="Reply with OK."))
+    assert result["state"] == "completed"
+    assert result["provider"] == "nvidia" and result["model"] == model
+    payload = calls[0][2]
+    assert payload["model"] == model
+    assert payload["stream"] is False
+    assert payload["chat_template_kwargs"] == {"enable_thinking": False}
+    assert calls[0][3] == 60.0

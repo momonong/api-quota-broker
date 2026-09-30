@@ -14,7 +14,7 @@ from typing import Any
 from .catalog import MODELS
 from .config import Target
 from .core import Broker, BrokerError, canonical, stamp, utcnow
-from .gateway_providers import RIVA, ProviderError, interpret, official_request, provider_http
+from .gateway_providers import ProviderError, interpret, official_request, provider_http
 from .retry import parse_retry_after
 
 ProviderTransport = Callable[
@@ -458,7 +458,7 @@ class Gateway:
             error_code: str | None = None
             try:
                 status, response_headers, response = self.transport(
-                    url, headers, payload, 60.0 if target.model == RIVA else 30.0
+                    url, headers, payload, 60.0 if target.provider == "nvidia" else 30.0
                 )
                 answer, input_tokens, output_tokens, neurons, request_id = interpret(
                     target.provider, status, response
