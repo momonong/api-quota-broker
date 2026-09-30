@@ -1,0 +1,448 @@
+{
+  "targets": [
+    {
+      "id": "google-project-unverified",
+      "provider": "google",
+      "model": "gemini-2.5-flash-lite",
+      "account_id": "replace-with-project-id",
+      "enabled": false,
+      "free_eligible": false,
+      "billing_enabled": false,
+      "verified_at": null,
+      "expires_at": null,
+      "source": "Manual free-eligibility and billing check required",
+      "priority": 0,
+      "concurrency_limit": 1,
+      "shared_concurrency_scope": "google:project:replace",
+      "shared_concurrency_limit": 1,
+      "max_output_tokens": 256,
+      "local_safety_caps": [
+        {
+          "bucket": "google:project:replace:rpm",
+          "metric": "requests",
+          "limit": 1,
+          "window": "rolling_minute",
+          "timezone": "UTC"
+        },
+        {
+          "bucket": "google:project:replace:tpm",
+          "metric": "input_tokens",
+          "limit": 1024,
+          "window": "rolling_minute",
+          "timezone": "UTC"
+        },
+        {
+          "bucket": "google:project:replace:rpd",
+          "metric": "requests",
+          "limit": 1,
+          "window": "day",
+          "timezone": "America/Los_Angeles"
+        }
+      ],
+      "provider_quota_facts": [
+        {
+          "metric": "requests",
+          "window": "rolling_minute",
+          "limit": {
+            "value": null,
+            "provenance": "unknown",
+            "as_of": null,
+            "source": null,
+            "scope": null,
+            "valid_until": null
+          },
+          "remaining": {
+            "value": null,
+            "provenance": "unknown",
+            "as_of": null,
+            "source": null,
+            "scope": null,
+            "valid_until": null
+          }
+        },
+        {
+          "metric": "input_tokens",
+          "window": "rolling_minute",
+          "limit": {
+            "value": null,
+            "provenance": "unknown",
+            "as_of": null,
+            "source": null,
+            "scope": null,
+            "valid_until": null
+          },
+          "remaining": {
+            "value": null,
+            "provenance": "unknown",
+            "as_of": null,
+            "source": null,
+            "scope": null,
+            "valid_until": null
+          }
+        },
+        {
+          "metric": "requests",
+          "window": "day",
+          "limit": {
+            "value": null,
+            "provenance": "unknown",
+            "as_of": null,
+            "source": null,
+            "scope": null,
+            "valid_until": null
+          },
+          "remaining": {
+            "value": null,
+            "provenance": "unknown",
+            "as_of": null,
+            "source": null,
+            "scope": null,
+            "valid_until": null
+          }
+        }
+      ],
+      "capacity": {
+        "kind": "unknown",
+        "refresh_seconds": null,
+        "as_of": null,
+        "source": null,
+        "scope": null,
+        "expires_at": null
+      },
+      "secret_ref": "GOOGLE_API_KEY"
+    },
+    {
+      "id": "cloudflare-account-unverified",
+      "provider": "cloudflare",
+      "model": "@cf/meta/llama-3.2-1b-instruct",
+      "account_id": "replace-with-account-id",
+      "enabled": false,
+      "free_eligible": false,
+      "billing_enabled": false,
+      "verified_at": null,
+      "expires_at": null,
+      "source": "Manual free-eligibility and billing check required",
+      "priority": 1,
+      "concurrency_limit": 1,
+      "shared_concurrency_scope": "cloudflare:account:replace",
+      "shared_concurrency_limit": 1,
+      "max_output_tokens": 256,
+      "local_safety_caps": [
+        {
+          "bucket": "cloudflare:account:replace:neurons",
+          "metric": "neurons",
+          "limit": 1,
+          "window": "day",
+          "timezone": "UTC"
+        },
+        {
+          "bucket": "cloudflare:account:replace:text-rpm",
+          "metric": "requests",
+          "limit": 1,
+          "window": "rolling_minute",
+          "timezone": "UTC"
+        },
+        {
+          "bucket": "cloudflare:account:replace:text-rpd",
+          "metric": "requests",
+          "limit": 1,
+          "window": "day",
+          "timezone": "UTC"
+        }
+      ],
+      "provider_quota_facts": [
+        {
+          "metric": "neurons",
+          "window": "day",
+          "limit": {
+            "value": null,
+            "provenance": "unknown",
+            "as_of": null,
+            "source": null,
+            "scope": null,
+            "valid_until": null
+          },
+          "remaining": {
+            "value": null,
+            "provenance": "unknown",
+            "as_of": null,
+            "source": null,
+            "scope": null,
+            "valid_until": null
+          }
+        },
+        {
+          "metric": "requests",
+          "window": "rolling_minute",
+          "limit": {
+            "value": null,
+            "provenance": "unknown",
+            "as_of": null,
+            "source": null,
+            "scope": null,
+            "valid_until": null
+          },
+          "remaining": {
+            "value": null,
+            "provenance": "unknown",
+            "as_of": null,
+            "source": null,
+            "scope": null,
+            "valid_until": null
+          }
+        },
+        {
+          "metric": "requests",
+          "window": "day",
+          "limit": {
+            "value": null,
+            "provenance": "unknown",
+            "as_of": null,
+            "source": null,
+            "scope": null,
+            "valid_until": null
+          },
+          "remaining": {
+            "value": null,
+            "provenance": "unknown",
+            "as_of": null,
+            "source": null,
+            "scope": null,
+            "valid_until": null
+          }
+        }
+      ],
+      "capacity": {
+        "kind": "unknown",
+        "refresh_seconds": null,
+        "as_of": null,
+        "source": null,
+        "scope": null,
+        "expires_at": null
+      },
+      "secret_ref": "CLOUDFLARE_API_TOKEN"
+    },
+    {
+      "provider": "nvidia",
+      "account_id": "replace-with-confirmed-account-scope",
+      "enabled": false,
+      "free_eligible": false,
+      "billing_enabled": false,
+      "verified_at": null,
+      "expires_at": null,
+      "source": "Manual account and Free Endpoint eligibility check required",
+      "priority": 0,
+      "concurrency_limit": 1,
+      "shared_concurrency_scope": "nvidia:account:replace",
+      "shared_concurrency_limit": 1,
+      "max_output_tokens": 16,
+      "secret_ref": "NVIDIA_API_KEY",
+      "local_safety_caps": [
+        {
+          "bucket": "nvidia:account:replace:rpm",
+          "metric": "requests",
+          "limit": 1,
+          "window": "rolling_minute",
+          "timezone": "UTC"
+        },
+        {
+          "bucket": "nvidia:account:replace:rpd",
+          "metric": "requests",
+          "limit": 1,
+          "window": "day",
+          "timezone": "UTC"
+        },
+        {
+          "bucket": "nvidia:account:replace:input-tpm",
+          "metric": "input_tokens",
+          "limit": 1024,
+          "window": "rolling_minute",
+          "timezone": "UTC"
+        }
+      ],
+      "provider_quota_facts": [
+        {
+          "metric": "requests",
+          "window": "rolling_minute",
+          "limit": {
+            "value": null,
+            "provenance": "unknown",
+            "as_of": null,
+            "source": null,
+            "scope": null,
+            "valid_until": null
+          },
+          "remaining": {
+            "value": null,
+            "provenance": "unknown",
+            "as_of": null,
+            "source": null,
+            "scope": null,
+            "valid_until": null
+          }
+        },
+        {
+          "metric": "requests",
+          "window": "day",
+          "limit": {
+            "value": null,
+            "provenance": "unknown",
+            "as_of": null,
+            "source": null,
+            "scope": null,
+            "valid_until": null
+          },
+          "remaining": {
+            "value": null,
+            "provenance": "unknown",
+            "as_of": null,
+            "source": null,
+            "scope": null,
+            "valid_until": null
+          }
+        },
+        {
+          "metric": "input_tokens",
+          "window": "rolling_minute",
+          "limit": {
+            "value": null,
+            "provenance": "unknown",
+            "as_of": null,
+            "source": null,
+            "scope": null,
+            "valid_until": null
+          },
+          "remaining": {
+            "value": null,
+            "provenance": "unknown",
+            "as_of": null,
+            "source": null,
+            "scope": null,
+            "valid_until": null
+          }
+        }
+      ],
+      "capacity": {
+        "kind": "unknown",
+        "refresh_seconds": null,
+        "as_of": null,
+        "source": null,
+        "scope": null,
+        "expires_at": null
+      },
+      "id": "nvidia-riva-unverified",
+      "model": "nvidia/riva-translate-4b-instruct-v2"
+    },
+    {
+      "provider": "nvidia",
+      "account_id": "replace-with-confirmed-account-scope",
+      "enabled": false,
+      "free_eligible": false,
+      "billing_enabled": false,
+      "verified_at": null,
+      "expires_at": null,
+      "source": "Manual account and Free Endpoint eligibility check required",
+      "priority": 0,
+      "concurrency_limit": 1,
+      "shared_concurrency_scope": "nvidia:account:replace",
+      "shared_concurrency_limit": 1,
+      "max_output_tokens": 16,
+      "secret_ref": "NVIDIA_API_KEY",
+      "local_safety_caps": [
+        {
+          "bucket": "nvidia:account:replace:rpm",
+          "metric": "requests",
+          "limit": 1,
+          "window": "rolling_minute",
+          "timezone": "UTC"
+        },
+        {
+          "bucket": "nvidia:account:replace:rpd",
+          "metric": "requests",
+          "limit": 1,
+          "window": "day",
+          "timezone": "UTC"
+        },
+        {
+          "bucket": "nvidia:account:replace:input-tpm",
+          "metric": "input_tokens",
+          "limit": 1024,
+          "window": "rolling_minute",
+          "timezone": "UTC"
+        }
+      ],
+      "provider_quota_facts": [
+        {
+          "metric": "requests",
+          "window": "rolling_minute",
+          "limit": {
+            "value": null,
+            "provenance": "unknown",
+            "as_of": null,
+            "source": null,
+            "scope": null,
+            "valid_until": null
+          },
+          "remaining": {
+            "value": null,
+            "provenance": "unknown",
+            "as_of": null,
+            "source": null,
+            "scope": null,
+            "valid_until": null
+          }
+        },
+        {
+          "metric": "requests",
+          "window": "day",
+          "limit": {
+            "value": null,
+            "provenance": "unknown",
+            "as_of": null,
+            "source": null,
+            "scope": null,
+            "valid_until": null
+          },
+          "remaining": {
+            "value": null,
+            "provenance": "unknown",
+            "as_of": null,
+            "source": null,
+            "scope": null,
+            "valid_until": null
+          }
+        },
+        {
+          "metric": "input_tokens",
+          "window": "rolling_minute",
+          "limit": {
+            "value": null,
+            "provenance": "unknown",
+            "as_of": null,
+            "source": null,
+            "scope": null,
+            "valid_until": null
+          },
+          "remaining": {
+            "value": null,
+            "provenance": "unknown",
+            "as_of": null,
+            "source": null,
+            "scope": null,
+            "valid_until": null
+          }
+        }
+      ],
+      "capacity": {
+        "kind": "unknown",
+        "refresh_seconds": null,
+        "as_of": null,
+        "source": null,
+        "scope": null,
+        "expires_at": null
+      },
+      "id": "nvidia-gemma-unverified",
+      "model": "google/gemma-4-31b-it"
+    }
+  ]
+}

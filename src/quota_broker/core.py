@@ -123,19 +123,21 @@ class Broker:
 
     @staticmethod
     def _snapshot(target: Target) -> str:
-        return canonical(
-            {
-                "provider": target.provider,
-                "model": target.model,
-                "account_id": target.account_id,
-                "endpoint": target.endpoint,
-                "quotas": sorted((q.__dict__ for q in target.quotas), key=lambda q: q["bucket"]),
-                "concurrency_limit": target.concurrency_limit,
-                "shared_concurrency_scope": target.shared_concurrency_scope,
-                "shared_concurrency_limit": target.shared_concurrency_limit,
-                "max_output_tokens": target.max_output_tokens,
-            }
-        )
+        value = {
+            "provider": target.provider,
+            "model": target.model,
+            "account_id": target.account_id,
+            "endpoint": target.endpoint,
+            "quotas": sorted((q.__dict__ for q in target.quotas), key=lambda q: q["bucket"]),
+            "concurrency_limit": target.concurrency_limit,
+            "shared_concurrency_scope": target.shared_concurrency_scope,
+            "shared_concurrency_limit": target.shared_concurrency_limit,
+            "max_output_tokens": target.max_output_tokens,
+        }
+        # Preserve v0.1 snapshots when older direct-client targets have no secret ref.
+        if target.secret_ref is not None:
+            value["secret_ref"] = target.secret_ref
+        return canonical(value)
 
     @contextmanager
     def _tx(self) -> Iterator[sqlite3.Connection]:
@@ -300,6 +302,8 @@ class Broker:
             "request_key",
             "capability",
             "model",
+            "provider",
+            "exclude_target_ids",
             "input_token_bound",
             "max_output_tokens",
             "neuron_bound",
@@ -308,7 +312,7 @@ class Broker:
             raise BrokerError("invalid_request", "invalid reservation fields")
         if not data["request_key"] or len(data["request_key"]) > 160:
             raise BrokerError("invalid_request", "invalid request key")
-        if data.get("capability") != "text_generation":
+        if data.get("capability") not in {"text_generation", "translation"}:
             raise BrokerError("unavailable", "unsupported capability")
         input_bound = data.get("input_token_bound")
         output_max = data.get("max_output_tokens")
@@ -321,6 +325,9 @@ class Broker:
             or (neuron_bound is not None and (type(neuron_bound) is not int or neuron_bound < 1))
         ):
             raise BrokerError("invalid_request", "positive integer bounds required")
+        excluded = data.get("exclude_target_ids", [])
+        if not isinstance(excluded, list) or any(not isinstance(v, str) for v in excluded):
+            raise BrokerError("invalid_request", "invalid exclusions")
         now = self.clock()
         fingerprint = digest(data)
         with self._tx() as con:
@@ -346,16 +353,39 @@ class Broker:
                 target
                 for target in self.targets
                 if data.get("model") in (None, target.model)
+                and data.get("provider") in (None, target.provider)
+                and target.id not in excluded
+                and (neuron_bound is not None or all(q.metric != "neurons" for q in target.quotas))
                 and target.available(now)
                 and MODELS[target.model].capability == data["capability"]
                 and input_bound + output_max <= MODELS[target.model].context_tokens
                 and output_max <= target.max_output_tokens
             ]
+            if (
+                not candidates
+                and neuron_bound is None
+                and any(
+                    t.provider == "cloudflare"
+                    and data.get("provider") in (None, t.provider)
+                    and data.get("model") in (None, t.model)
+                    and t.available(now)
+                    for t in self.targets
+                )
+            ):
+                raise BrokerError(
+                    "invalid_request", "Cloudflare requires a conservative Neurons bound"
+                )
             capacity_order = {"short_renewable": 0, "unknown": 1, "one_time_gift": 2}
             candidates.sort(
                 key=lambda t: (
-                    capacity_order[t.capacity.kind],
-                    t.capacity.refresh_seconds or 0,
+                    capacity_order[
+                        "unknown"
+                        if t.capacity.expires_at and t.capacity.expires_at <= now
+                        else t.capacity.kind
+                    ],
+                    t.capacity.refresh_seconds or 0
+                    if not (t.capacity.expires_at and t.capacity.expires_at <= now)
+                    else 0,
                     t.priority,
                     t.id,
                 )
@@ -434,6 +464,16 @@ class Broker:
             raise BrokerError(
                 "unavailable", "no verified free capacity", min(waits) if waits else None
             )
+
+    def cancel(self, reservation_id: str) -> dict:
+        """Release an unsent hold; a dispatched attempt can never be cancelled."""
+        with self._tx() as con:
+            view = self._view(con, reservation_id)
+            if view["state"] != "reserved":
+                raise BrokerError("invalid_transition", "only unsent reservations can be cancelled")
+            con.execute("UPDATE reservations SET state='cancelled' WHERE id=?", (reservation_id,))
+            con.execute("UPDATE charges SET amount=0 WHERE reservation_id=?", (reservation_id,))
+            return self._view(con, reservation_id)
 
     def dispatch(self, reservation_id: str) -> dict:
         now = self.clock()

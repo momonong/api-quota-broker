@@ -53,3 +53,39 @@ The one-shot Gemma and Riva scripts bypass that formal admission and SQLite ledg
 ## Source and scope
 
 See [provider sources](docs/provider-sources.md) for primary source links and the 2026-09-25 review. Google Gemini Developer API and Cloudflare Workers AI retain their direct-client v0.1 behavior. NVIDIA now has a separate fixed-route, non-streaming executor candidate, disabled until verified metadata is entered. No prompt/answer persistence, provider key storage, Redis, LLM ranking, paid fallback, or remote deployment is included.
+
+## Unified gateway candidate (this phase)
+
+The new `gateway-serve` path joins routing and provider execution behind **one required-auth loopback API**. It is a local candidate, not a deployed service. The older `serve`, `DirectClient`, and `serve-nvidia` interfaces remain available for compatibility. The gateway's `gateway.example.json` has four disabled targets: Google, Cloudflare, NVIDIA Riva translation, and NVIDIA-hosted Gemma text generation. A model's `author` is distinct from its `provider`; `google/gemma-4-31b-it` consumes NVIDIA API Catalog capacity.
+
+Copy `gateway.example.json` to an ignored local config and populate **only verified account facts** before enabling a target. Every target requires a `secret_ref` name in the explicitly chosen Doppler project/config; this is metadata, never the secret value. Keep official remaining unknown as null. `local_safety_caps` are operator bounds, not official remaining. A valid official remaining=0 blocks; unverified free eligibility, billing enabled, stale evidence, missing credential scope, exhausted local caps, cooldown and shared concurrency block dispatch. Eligible routes prefer the shortest sourced renewable capacity, then unknown free capacity, then one-time gifts; priority and target ID break ties. A request can constrain `provider` and `model`. Cloudflare needs an explicit positive `neuron_bound` chosen by the operator; the gateway does not invent a Neurons conversion.
+
+`gateway-serve` takes `--config`, `--db`, `--port` (default 18084), `--digest-key-file`, `--client-token-file`, `--doppler-token-file`, `--doppler-project`, and `--doppler-config`. The digest key must be at least 32 persistent bytes, and the separate client bearer token at least 32 characters. Use restricted runtime credentials outside Git. The Doppler service credential must be provisioned separately for the selected config; the one-shot 5-minute validation token is **not** a durable runtime credential. Provider keys are fetched by the gateway executor from the fixed Doppler HTTPS secret API immediately before dispatch; no provider key, prompt, or answer is stored in SQLite, argv, environment, or normal logs. This phase does not provision a service or network ingress.
+
+All gateway routes require `Authorization: Bearer <client token>`:
+
+| Method | Route | Purpose |
+| --- | --- | --- |
+| GET | `/v1/catalog` | Models, provider/author, account and quota evidence |
+| POST | `/v1/routes/explain` | Dry-run route reasons without a provider request |
+| POST | `/v1/tasks` | Reserve, dispatch once, execute and report |
+| GET | `/v1/tasks/{request_key}` | Durable content-free task status |
+| GET | `/v1/usage?provider=&model=&from=&to=` | Aggregated usage, unknown counts, UTC-normalized offset times |
+
+`POST` task JSON requires `request_key` (opaque URI-safe ID), `capability` (`text_generation` or `translation`), `input`, and `max_output_tokens` (1–4096). Optional fields are `provider`, `model`, and `neuron_bound`. Translation additionally requires `source_language` and `target_language`: currently Riva's supported language codes with English on one side. Riva uses the documented language-pair system message, nonstreaming response, and a local 1952-character input policy. The fixed catalog endpoints use HTTPS with redirects disabled. The 4×UTF-8-bytes+256 input hold is deliberately conservative local admission, **not** provider tokenization or an official quota claim.
+
+On the first successful task call, the response includes `answer`; status and same-key calls return metadata only. A changed payload with the same key is 409. `estimated_input_tokens` is the local hold, `reported_input_tokens`/`reported_output_tokens`/`reported_neurons` are provider values or null, and `ledger_charges`/`ledger_basis` show the actual SQLite hold or settlement separately. `completed_usage_unknown` means an answer was received but at least one provider usage value is absent; a missing quota metric retains the SQLite hold as unknown. An uncertain send, timeout, 202 or incomplete response is never retried or automatically rerouted. Before dispatch, an unavailable credential or stale dispatch admission may move to another eligible target. The gateway task record and broker reservation survive restart; the old private smoke receipts are neither imported nor replayed.
+
+The CLI uses the same HTTP API. Pass task text on standard input so it is not exposed in shell arguments; `--json` selects machine output, otherwise a concise text view is printed:
+
+```sh
+uv run --locked quota-broker gateway --token-file /protected/client-token catalog
+printf 'Hello.' | uv run --locked quota-broker gateway --token-file /protected/client-token --json explain --request-key dry-run-1 --capability translation --source-language en --target-language zh-cn --max-output-tokens 16
+printf 'Hello.' | uv run --locked quota-broker gateway --token-file /protected/client-token --json run --request-key unique-task-1 --capability translation --source-language en --target-language zh-cn --max-output-tokens 16
+uv run --locked quota-broker gateway --token-file /protected/client-token --json status unique-task-1
+uv run --locked quota-broker gateway --token-file /protected/client-token --json usage --provider nvidia
+```
+
+For content-free `catalog`, `status`, and `usage` queries, `--token-stdin` can replace `--token-file`; supply the client token over standard input without an argv or file value. Task `run`/`explain` use standard input for task text and therefore require the client token file.
+
+Do not run the example `run` command until its account facts, credential, local cap and real request authorization have been checked. The authenticated HTTP and CLI fixture tests exercise all three providers, two models under NVIDIA, no replay, missing usage, and secret-free SQLite storage. Fixture success does not establish live provider eligibility or acceptance. [Phase contract and current limits](docs/core-routing-phase.md).

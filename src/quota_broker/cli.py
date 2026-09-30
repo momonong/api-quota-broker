@@ -3,15 +3,19 @@
 import argparse
 import json
 import os
+import sys
 import tempfile
 import threading
 import uuid
 from datetime import timedelta
 from pathlib import Path
+from urllib.parse import urlencode, urlsplit
 
-from .client import DirectClient
-from .config import Quota, Target, load_config
+from .client import DirectClient, _json_http
+from .config import Quota, Target, load_config, load_gateway_config
 from .core import Broker, utcnow
+from .gateway import Gateway
+from .gateway_server import make_gateway_server
 from .nvidia import NvidiaExecutor, doppler_resolver
 from .nvidia_server import make_nvidia_server
 from .server import make_server
@@ -91,6 +95,92 @@ def demo() -> None:
             thread.join(timeout=2)
 
 
+def gateway_cli(args: argparse.Namespace) -> None:
+    parsed = urlsplit(args.url)
+    if parsed.scheme != "http" or parsed.hostname not in {"127.0.0.1", "localhost", "::1"}:
+        raise ValueError("gateway CLI requires loopback HTTP")
+    if args.token_stdin:
+        if args.action in {"run", "explain"}:
+            raise ValueError("task input and client token cannot share standard input")
+        token = sys.stdin.readline().strip()
+    else:
+        token = Path(args.token_file).read_text(encoding="utf-8").strip()
+    if len(token) < 32:
+        raise ValueError("invalid gateway client token")
+    base = args.url.rstrip("/")
+    headers = {"Authorization": "Bearer " + token}
+    if args.action == "catalog":
+        result = _json_http(base + "/v1/catalog", None, headers)
+    elif args.action == "status":
+        result = _json_http(base + "/v1/tasks/" + args.request_key, None, headers)
+    elif args.action == "usage":
+        query = urlencode(
+            {
+                k: v
+                for k, v in {
+                    "provider": args.provider,
+                    "model": args.model,
+                    "from": args.from_at,
+                    "to": args.to_at,
+                }.items()
+                if v is not None
+            }
+        )
+        result = _json_http(base + "/v1/usage" + ("?" + query if query else ""), None, headers)
+    else:
+        content = sys.stdin.read(32_769)
+        if len(content.encode("utf-8")) > 32_768:
+            raise ValueError("input exceeds gateway limit")
+        body = {
+            "request_key": args.request_key,
+            "capability": args.capability,
+            "input": content,
+            "max_output_tokens": args.max_output_tokens,
+            "provider": args.provider,
+            "model": args.model,
+            "source_language": args.source_language,
+            "target_language": args.target_language,
+            "neuron_bound": args.neuron_bound,
+        }
+        path = "/v1/tasks" if args.action == "run" else "/v1/routes/explain"
+        result = _json_http(base + path, body, headers)
+    if args.json:
+        print(json.dumps(result, ensure_ascii=False))
+    elif args.action == "catalog":
+        for item in result:
+            print(
+                item["target_id"],
+                item["provider"],
+                item["model"],
+                "available" if item["available"] else "unavailable",
+            )
+    elif args.action == "usage":
+        for item in result:
+            print(
+                item["provider"],
+                item["model"],
+                "requests=" + str(item["requests"]),
+                "input=" + str(item["reported_input_tokens"]),
+                "input_unknown=" + str(item["input_unknown_count"]),
+                "output=" + str(item["reported_output_tokens"]),
+                "output_unknown=" + str(item["output_unknown_count"]),
+            )
+    elif args.action == "explain":
+        print("selected:", result["selected_target_id"] or "none")
+        for item in result["candidates"]:
+            print(item["target_id"], "eligible" if item["eligible"] else ",".join(item["reasons"]))
+    else:
+        print(
+            result["state"],
+            result.get("provider"),
+            result.get("model"),
+            "input=" + str(result.get("reported_input_tokens")),
+            "output=" + str(result.get("reported_output_tokens")),
+        )
+        if result.get("answer") is not None:
+            print(result["answer"])
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Official API free-quota control plane")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -107,11 +197,67 @@ def main() -> None:
     nvidia.add_argument("--doppler-token-file", required=True)
     nvidia.add_argument("--doppler-project", required=True)
     nvidia.add_argument("--doppler-config", required=True)
+    gateway_serve = sub.add_parser("gateway-serve")
+    gateway_serve.add_argument("--config", required=True)
+    gateway_serve.add_argument("--db", required=True)
+    gateway_serve.add_argument("--port", type=int, default=18084)
+    gateway_serve.add_argument("--digest-key-file", required=True)
+    gateway_serve.add_argument("--client-token-file", required=True)
+    gateway_serve.add_argument("--doppler-token-file", required=True)
+    gateway_serve.add_argument("--doppler-project", required=True)
+    gateway_serve.add_argument("--doppler-config", required=True)
+    gateway = sub.add_parser("gateway")
+    gateway.add_argument("--url", default="http://127.0.0.1:18084")
+    credential = gateway.add_mutually_exclusive_group(required=True)
+    credential.add_argument("--token-file")
+    credential.add_argument("--token-stdin", action="store_true")
+    gateway.add_argument("--json", action="store_true")
+    actions = gateway.add_subparsers(dest="action", required=True)
+    actions.add_parser("catalog")
+    status = actions.add_parser("status")
+    status.add_argument("request_key")
+    usage = actions.add_parser("usage")
+    usage.add_argument("--provider")
+    usage.add_argument("--model")
+    usage.add_argument("--from", dest="from_at")
+    usage.add_argument("--to", dest="to_at")
+    for name in ("run", "explain"):
+        task = actions.add_parser(name)
+        task.add_argument("--request-key", required=True)
+        task.add_argument("--capability", required=True, choices=("text_generation", "translation"))
+        task.add_argument("--max-output-tokens", type=int, default=128)
+        task.add_argument("--provider")
+        task.add_argument("--model")
+        task.add_argument("--source-language")
+        task.add_argument("--target-language")
+        task.add_argument("--neuron-bound", type=int)
     catalog = sub.add_parser("catalog")
     catalog.add_argument("--config", required=True)
     catalog.add_argument("--db", required=True)
     sub.add_parser("demo")
     args = parser.parse_args()
+    if args.command == "gateway":
+        gateway_cli(args)
+        return
+    if args.command == "gateway-serve":
+        resolver = doppler_resolver(
+            args.doppler_token_file, args.doppler_project, args.doppler_config
+        )
+        gateway_instance = Gateway(
+            args.db,
+            load_gateway_config(args.config),
+            Path(args.digest_key_file).read_bytes(),
+            resolver,
+        )
+        client_token = Path(args.client_token_file).read_text(encoding="utf-8").strip()
+        server = make_gateway_server(gateway_instance, client_token, port=args.port)
+        try:
+            server.serve_forever()
+        except KeyboardInterrupt:
+            pass
+        finally:
+            server.server_close()
+        return
     if args.command == "demo":
         demo()
         return

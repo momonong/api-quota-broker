@@ -21,6 +21,21 @@ class Model:
 
 
 MODELS = {
+    "nvidia/riva-translate-4b-instruct-v2": Model(
+        provider="nvidia",
+        model="nvidia/riva-translate-4b-instruct-v2",
+        author="NVIDIA",
+        host="NVIDIA API Catalog",
+        context_tokens=8192,
+        max_output_tokens=4096,
+        capability="translation",
+        origin="https://integrate.api.nvidia.com",
+        endpoint_template="https://integrate.api.nvidia.com/v1/chat/completions",
+        free_kind="developer_prototyping_subject_to_verified_account_limits",
+        use_restrictions="Verify account eligibility and limits; catalog preview is for prototyping.",
+        source="https://docs.api.nvidia.com/nim/reference/nvidia-riva-translate-4b-instruct-v2",
+        verified_at="2026-09-30",
+    ),
     "google/gemma-4-31b-it": Model(
         provider="nvidia",
         model="google/gemma-4-31b-it",

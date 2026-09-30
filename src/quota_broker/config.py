@@ -99,6 +99,7 @@ class Target:
     quota_basis: str = "legacy_v1"
     provider_quota_facts: tuple[QuotaFact, ...] = ()
     capacity: Capacity = Capacity()
+    secret_ref: str | None = None
 
     def available(self, now: datetime) -> bool:
         return bool(
@@ -236,7 +237,7 @@ def parse_capacity(raw: dict) -> Capacity:
     return Capacity(kind, seconds, as_of, source, scope, expires)
 
 
-def load_config(path: str | Path) -> tuple[Target, ...]:
+def load_config(path: str | Path, *, allow_nvidia: bool = False) -> tuple[Target, ...]:
     raw = json.loads(Path(path).read_text(encoding="utf-8"))
     if set(raw) != {"targets"} or not isinstance(raw["targets"], list):
         raise ConfigError("expected targets array")
@@ -247,7 +248,7 @@ def load_config(path: str | Path) -> tuple[Target, ...]:
             model = MODELS[item["model"]]
             if item["provider"] != model.provider:
                 raise ConfigError("provider/model mismatch")
-            if model.provider == "nvidia":
+            if model.provider == "nvidia" and not allow_nvidia:
                 raise ConfigError("NVIDIA is available only through the authenticated executor")
             legacy = "quotas" in item
             if legacy == ("local_safety_caps" in item):
@@ -275,6 +276,7 @@ def load_config(path: str | Path) -> tuple[Target, ...]:
                 quota_basis="legacy_v1" if legacy else "local_safety_cap",
                 provider_quota_facts=official_facts,
                 capacity=capacity,
+                secret_ref=item.get("secret_ref"),
             )
         except (KeyError, TypeError) as exc:
             raise ConfigError(f"invalid target: {exc}") from exc
@@ -283,6 +285,13 @@ def load_config(path: str | Path) -> tuple[Target, ...]:
         ids.add(target.id)
         if not target.source or target.concurrency_limit < 1:
             raise ConfigError("source and positive concurrency limit required")
+        if target.secret_ref is not None and (
+            not isinstance(target.secret_ref, str)
+            or not target.secret_ref
+            or len(target.secret_ref) > 128
+            or not all(c.isascii() and (c.isalnum() or c == "_") for c in target.secret_ref)
+        ):
+            raise ConfigError("invalid secret reference")
         if (target.shared_concurrency_scope is None) != (target.shared_concurrency_limit is None):
             raise ConfigError("shared concurrency scope and limit must be set together")
         if target.shared_concurrency_scope is not None and (
@@ -336,3 +345,12 @@ def load_config(path: str | Path) -> tuple[Target, ...]:
                 raise ConfigError("Cloudflare daily Neurons reset at UTC midnight")
         targets.append(target)
     return tuple(targets)
+
+
+def load_gateway_config(path: str | Path) -> tuple[Target, ...]:
+    targets = load_config(path, allow_nvidia=True)
+    if any(target.secret_ref is None for target in targets):
+        raise ConfigError("gateway targets require secret_ref")
+    if any(target.quota_basis != "local_safety_cap" for target in targets):
+        raise ConfigError("gateway targets require local_safety_caps and provider_quota_facts")
+    return targets
