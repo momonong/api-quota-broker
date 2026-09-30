@@ -27,6 +27,15 @@ DESTINATIONS = {
 }
 SESSION_SECONDS = 1800
 MAX_BODY = 8192
+PAGE_STYLE = """<style>
+:root{color-scheme:light;--bg:#ffffff;--surface:#f3f6fa;--text:#182230;--muted:#475467;--border:#667085;--field:#ffffff;--button:#1d4ed8;--button-text:#ffffff;--link:#1648b5;--success:#12633c;--error:#a01e2f}
+@media (prefers-color-scheme:dark){:root{color-scheme:dark;--bg:#101720;--surface:#1b2734;--text:#eef3f8;--muted:#bdc9d6;--border:#8393a8;--field:#1b2734;--button:#a9ccff;--button-text:#101720;--link:#b8d4ff;--success:#8beaaf;--error:#ffaaaa}}
+body{font:16px system-ui,sans-serif;max-width:800px;margin:2rem auto;padding:0 1rem;line-height:1.5;background:var(--bg);color:var(--text)}
+p{color:var(--muted)}a{color:var(--link)}table{border-collapse:collapse;width:100%}th,td{border:1px solid var(--border);padding:.5rem;text-align:left}th{background:var(--surface)}
+label{display:block;margin:.7rem 0}input,select{font:inherit;width:100%;max-width:32rem;padding:.4rem;background:var(--field);color:var(--text);border:1px solid var(--border);border-radius:.25rem}input::placeholder{color:var(--muted)}
+button{font:inherit;padding:.45rem .8rem;background:var(--button);color:var(--button-text);border:1px solid var(--border);border-radius:.25rem;cursor:pointer}button:focus-visible,input:focus-visible,select:focus-visible,a:focus-visible{outline:3px solid var(--link);outline-offset:2px}
+.status-good{color:var(--success)}.status-error{color:var(--error)}.status-warn{color:var(--muted)}.message:empty{display:none}
+</style>"""
 
 
 class AdminError(Exception):
@@ -267,6 +276,8 @@ def make_key_admin_server(
             self.wfile.write(body)
 
         def _page(self, status: int, body: str, *, cookie: str | None = None) -> None:
+            if not body.startswith("<!doctype"):
+                body = f'<!doctype html><html lang="zh-Hant"><meta charset="utf-8">{PAGE_STYLE}{body}</html>'
             self._headers(status, body.encode("utf-8"), cookie=cookie)
 
         def _redirect(self, target: str, *, cookie: str | None = None) -> None:
@@ -327,10 +338,12 @@ def make_key_admin_server(
                 try:
                     state = writer.state(provider)
                     status = "configured" if state.configured else "missing"
+                    status_class = "status-good" if state.configured else "status-warn"
                     if not state.scope_ready:
                         status += "（Doppler scope 尚未建立）"
                 except AdminError:
                     status = "查詢失敗／未知"
+                    status_class = "status-error"
                 extra = saved.get(provider, {})
                 details = "、".join(
                     f"{html.escape(field)}: {html.escape(extra.get(field, ''))}"
@@ -339,13 +352,14 @@ def make_key_admin_server(
                 )
                 cards.append(
                     f"<tr><th>{html.escape(label)}</th><td>{html.escape(project)}/{html.escape(config)}/{html.escape(name)}</td>"
-                    f"<td>{html.escape(status)}</td><td>{details or '—'}</td></tr>"
+                    f'<td><span class="{status_class}">{html.escape(status)}</span></td><td>{details or "—"}</td></tr>'
                 )
             note = html.escape(flash)
+            note_class = "status-error" if "失敗" in flash or "未確認" in flash else "status-good"
             return f'''<!doctype html><html lang="zh-Hant"><meta charset="utf-8"><title>API Key 管理</title>
-<style>body{{font:16px system-ui;max-width:800px;margin:2rem auto;line-height:1.5}}table{{border-collapse:collapse;width:100%}}th,td{{border:1px solid #aaa;padding:.5rem;text-align:left}}label{{display:block;margin:.7rem 0}}input,select{{font:inherit;width:100%;max-width:32rem}}button{{font:inherit;padding:.4rem .8rem}}</style>
+{PAGE_STYLE}
 <h1>私用 API Key 管理</h1><p>僅在這台電腦的 loopback 提供。儲存只更新 Doppler；不會呼叫模型，也不代表 key 已通過供應商驗證。</p>
-<p role="status">{note}</p>
+<p role="status" class="message {note_class}">{note}</p>
 <table><tr><th>供應商</th><th>固定目的地</th><th>名稱狀態</th><th>選填資訊</th></tr>{"".join(cards)}</table>
 <h2>儲存或替換金鑰</h2><p>按下儲存會覆寫所選供應商固定名稱的 key。Groq scope 若不存在，會在此時建立。其他秘密不會變更。</p>
 <form method="post" action="/admin/save" autocomplete="off"><input type="hidden" name="csrf" value="{html.escape(csrf)}">
@@ -368,7 +382,7 @@ def make_key_admin_server(
             if self.command == "GET" and path == "/admin/login":
                 self._page(
                     200,
-                    '<!doctype html><html lang="zh-Hant"><meta charset="utf-8"><h1>管理員登入</h1><form method="post" action="/admin/login" autocomplete="off"><label>管理憑證<input name="token" type="password" autocomplete="off" required></label><button>登入</button></form>',
+                    f'<!doctype html><html lang="zh-Hant"><meta charset="utf-8"><title>管理員登入</title>{PAGE_STYLE}<h1>管理員登入</h1><p>私用 API Key 管理。請輸入此機的管理憑證。</p><form method="post" action="/admin/login" autocomplete="off"><label>管理憑證<input name="token" type="password" autocomplete="off" required></label><button>登入</button></form></html>',
                 )
                 return
             if self.command == "POST" and path == "/admin/login":
