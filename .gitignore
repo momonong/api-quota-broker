@@ -216,3 +216,11 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Local broker state and account facts
+*.db
+*.db-*
+config.local.json
+
+# Local non-secret smoke receipt; preserve uncertain dispatch state.
+.state/

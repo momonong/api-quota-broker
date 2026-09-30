@@ -1,0 +1,91 @@
+{
+  "secret_ref": "NVIDIA_API_KEY",
+  "key_id": "enter-metadata-id",
+  "key_name": "enter-key-name",
+  "key_expires_kind": "unknown",
+  "key_expires_at": null,
+  "scope": "enter-confirmed-account-scope",
+  "verified_at": null,
+  "eligibility_expires_at": null,
+  "source": "replace-with-account-evidence",
+  "enabled": false,
+  "free_eligible": false,
+  "billing_enabled": false,
+  "concurrency_limit": 1,
+  "max_output_tokens": 8,
+  "local_safety_caps": {
+    "rpm": 1,
+    "rpd": 1,
+    "input_tpm": 1024
+  },
+  "provider_quota_facts": [
+    {
+      "metric": "requests",
+      "window": "rolling_minute",
+      "limit": {
+        "value": null,
+        "provenance": "unknown",
+        "as_of": null,
+        "source": null,
+        "scope": null,
+        "valid_until": null
+      },
+      "remaining": {
+        "value": null,
+        "provenance": "unknown",
+        "as_of": null,
+        "source": null,
+        "scope": null,
+        "valid_until": null
+      }
+    },
+    {
+      "metric": "requests",
+      "window": "day",
+      "limit": {
+        "value": null,
+        "provenance": "unknown",
+        "as_of": null,
+        "source": null,
+        "scope": null,
+        "valid_until": null
+      },
+      "remaining": {
+        "value": null,
+        "provenance": "unknown",
+        "as_of": null,
+        "source": null,
+        "scope": null,
+        "valid_until": null
+      }
+    },
+    {
+      "metric": "input_tokens",
+      "window": "rolling_minute",
+      "limit": {
+        "value": null,
+        "provenance": "unknown",
+        "as_of": null,
+        "source": null,
+        "scope": null,
+        "valid_until": null
+      },
+      "remaining": {
+        "value": null,
+        "provenance": "unknown",
+        "as_of": null,
+        "source": null,
+        "scope": null,
+        "valid_until": null
+      }
+    }
+  ],
+  "capacity": {
+    "kind": "unknown",
+    "refresh_seconds": null,
+    "as_of": null,
+    "source": null,
+    "scope": null,
+    "expires_at": null
+  }
+}
