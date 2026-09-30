@@ -89,3 +89,7 @@ uv run --locked quota-broker gateway --token-file /protected/client-token --json
 For content-free `catalog`, `status`, and `usage` queries, `--token-stdin` can replace `--token-file`; supply the client token over standard input without an argv or file value. Task `run`/`explain` use standard input for task text and therefore require the client token file.
 
 Do not run the example `run` command until its account facts, credential, local cap and real request authorization have been checked. The authenticated HTTP and CLI fixture tests exercise all three providers, two models under NVIDIA, no replay, missing usage, and secret-free SQLite storage. Fixture success does not establish live provider eligibility or acceptance. [Phase contract and current limits](docs/core-routing-phase.md).
+
+## Private loopback key entry
+
+The separately authenticated `key-admin-serve` page accepts a key only when the owner submits its form. It has fixed NVIDIA and Groq Doppler destinations; it does not call a provider or validate free eligibility. The management CLI login must be separate from the gateway's read-only runtime credential. See [private key admin](docs/private-key-admin.md) for the exact scope, local start command, status meaning, and safety limits.

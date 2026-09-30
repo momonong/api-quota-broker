@@ -3,6 +3,7 @@
 import argparse
 import json
 import os
+import stat
 import sys
 import tempfile
 import threading
@@ -16,6 +17,7 @@ from .config import Quota, Target, load_config, load_gateway_config
 from .core import Broker, utcnow
 from .gateway import Gateway
 from .gateway_server import make_gateway_server
+from .key_admin import DopplerCLIWriter, MetadataStore, make_key_admin_server
 from .nvidia import NvidiaExecutor, doppler_resolver
 from .nvidia_server import make_nvidia_server
 from .server import make_server
@@ -197,6 +199,10 @@ def main() -> None:
     nvidia.add_argument("--doppler-token-file", required=True)
     nvidia.add_argument("--doppler-project", required=True)
     nvidia.add_argument("--doppler-config", required=True)
+    key_admin = sub.add_parser("key-admin-serve")
+    key_admin.add_argument("--port", type=int, default=18085)
+    key_admin.add_argument("--admin-token-file", required=True)
+    key_admin.add_argument("--metadata-file", required=True)
     gateway_serve = sub.add_parser("gateway-serve")
     gateway_serve.add_argument("--config", required=True)
     gateway_serve.add_argument("--db", required=True)
@@ -236,6 +242,29 @@ def main() -> None:
     catalog.add_argument("--db", required=True)
     sub.add_parser("demo")
     args = parser.parse_args()
+    if args.command == "key-admin-serve":
+        token_path = Path(args.admin_token_file)
+        descriptor = os.open(token_path, os.O_RDONLY | os.O_NOFOLLOW)
+        with os.fdopen(descriptor, "r", encoding="utf-8") as stream:
+            info = os.fstat(stream.fileno())
+            if (
+                not stat.S_ISREG(info.st_mode)
+                or info.st_uid != os.geteuid()
+                or info.st_mode & 0o077
+            ):
+                raise ValueError("private administrator token file required")
+            admin_token = stream.read().strip()
+        writer = DopplerCLIWriter(str(Path.home() / ".local" / "bin" / "doppler"), Path.cwd())
+        server = make_key_admin_server(
+            writer, MetadataStore(Path(args.metadata_file)), admin_token, port=args.port
+        )
+        try:
+            server.serve_forever()
+        except KeyboardInterrupt:
+            pass
+        finally:
+            server.server_close()
+        return
     if args.command == "gateway":
         gateway_cli(args)
         return
