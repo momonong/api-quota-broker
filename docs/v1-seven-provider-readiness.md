@@ -2,7 +2,19 @@
 
 ## 目前結果
 
-本分支實作七家固定路由與 SQLite 逐次嘗試紀錄。`scripts/v1_smoke_once.py` 的預設模式只列計畫。本地 fixture 是工程驗證，不能視為帳號或真實服務已通。2026-10-02 在使用者批准後，以五分鐘 config 唯讀 Service Token 執行第一次真實 smoke：NVIDIA 單次 POST 逾時，收據為 `unknown`，不得重送；Gemini 在送出前失敗，沒有對 Google 派送。第一次腳本在 `unavailable` 後停止，其餘五家尚未派送。第一次收據保留在 `.state/v1-smoke-2026-10-02.sqlite`，不存憑證、秘密或回應內容。
+本分支實作七家固定路由與 SQLite 逐次嘗試紀錄。`scripts/v1_smoke_once.py` 的預設模式只列計畫。本地 fixture 是工程驗證，不能視為帳號或真實服務已通。2026-10-02 在使用者批准後，以五分鐘 config 唯讀 Service Token 執行兩輪真實 smoke。第一輪 NVIDIA 單次 POST 逾時，收據為 `unknown`；Gemini 在送出前失敗，沒有派送。第二輪根據第一輪收據排除 NVIDIA，Gemini 與其餘五家各派送一次。合計七家各至多一筆已派送 HTTP，均不重送。收據保留在 `.state/v1-smoke-2026-10-02.sqlite` 與 `.state/v1-smoke-2026-10-02-remaining.sqlite`，不存憑證、秘密或回應內容。
+
+| 供應商 | 實測收據 | HTTP | 回報用量 | 本地估算／限制 |
+| --- | --- | --- | --- | --- |
+| NVIDIA | `unknown`，60 秒逾時 | 無回應 | 未知 | 輸入上界 376 tokens；實際是否執行未知 |
+| Gemini | `unknown` | 404 | 未知 | 輸入上界 376 tokens；首輪送出前失敗，次輪才派送 |
+| Cloudflare | `completed_usage_unknown` | 200 | 未回報 tokens／Neurons | 輸入上界 376 tokens、Neurons 本地上界 30；實際 Neurons 未知，保留 hold |
+| Groq | `unknown` | 403 | 未知 | 輸入上界 376 tokens |
+| Mistral | `unknown` | 429 | 未知 | 輸入上界 376 tokens；未證明明確配額拒絕 |
+| OpenRouter | `completed` | 200 | 17 輸入、47 輸出 tokens，供應商回報 | 固定零價 `:free` 模型 |
+| OCR.space | `completed`，合成 `OK` 圖辨識成功 | 200 | conversion 用量未回報 | 送出 129-byte PNG；本地只記 1 筆 HTTP |
+
+HTTP 200 證明單次 API 呼叫回傳，但不證明免費帳號的餘額或刷新週期。404／403／429 的原因沒有可靠的細分證據；不推定模型不可用、權限或配額耗盡。`unknown` 與 `completed_usage_unknown` 均不自動重送。上述輸入上界是本地保留量，不是供應商用量。
 
 ## 固定路由與唯讀名稱
 
@@ -38,7 +50,7 @@
 
 `scripts/v1_smoke_once.py` 的 live 方案是 `api-quota-broker/dev` 整個 config 唯讀、五分鐘到期的 Doppler Service Token，只留在程序記憶體；每家至多一筆，七筆總量，輸出上限 64 token，循序執行，每筆 provider HTTP 最多 60 秒，臨近 token 到期即停。使用新 `v1-smoke-*` SQLite 檔先獨占建立非敏感收據，不能對同一 DB 意外重跑。腳本使用本地產生的 `OK` PNG，驗證 OCR 回應是否含預期字樣，只輸出布林結果。個別供應商送出前失敗後可繼續獨立測其他家；token 時效則停止。續測指定 `--provider` 與 `--prior-db`，會以唯讀方式核對前次收據並拒絕再次派送已送出供應商。
 
-第一次收據檔為 `/home/ubuntu/projects/api-quota-broker/.state/v1-smoke-2026-10-02.sqlite`，mode `0600`，父目錄 `0700`。32-byte HMAC key 在程序記憶體隨機產生，不另存 key 檔。續測使用獨立新檔 `/home/ubuntu/projects/api-quota-broker/.state/v1-smoke-2026-10-02-remaining.sqlite`，並保留第一次 DB。已批准範圍內的續測命令是：
+兩份收據檔 mode 均為 `0600`，父目錄 `0700`。32-byte HMAC key 在程序記憶體隨機產生，不另存 key 檔。第二輪實際執行的續測命令如下，**不可重執行**：
 
 ```bash
 .venv/bin/python scripts/v1_smoke_once.py --live --db /home/ubuntu/projects/api-quota-broker/.state/v1-smoke-2026-10-02-remaining.sqlite --prior-db /home/ubuntu/projects/api-quota-broker/.state/v1-smoke-2026-10-02.sqlite --provider google --provider cloudflare --provider groq --provider mistral --provider openrouter --provider ocrspace
@@ -46,4 +58,4 @@
 
 ## 本地驗證
 
-`pytest -q`、`ruff check .`、`ruff format --check .`、`mypy src/quota_broker` 在 Ubuntu 執行；fixture 覆蓋七家固定路由、OCR 表單、秘密不落庫、明確 429 fallback、Cloudflare `3040`／5xx／逾時不 fallback、同帳號 scope 冷卻、逐次監控、smoke plan、前次派送防重跑與個別送出前失敗後續測。真實 provider 成功率、free 帳號資格、配額剩餘和 OCR 辨識品質仍待完成續測核對。
+`pytest -q`（103 passed）、`ruff check .`、`ruff format --check .`、`mypy src/quota_broker` 在 Ubuntu 執行；fixture 覆蓋七家固定路由、OCR 表單、秘密不落庫、明確 429 fallback、Cloudflare `3040`／5xx／逾時不 fallback、同帳號 scope 冷卻、逐次監控、smoke plan、前次派送防重跑與個別送出前失敗後續測。真實 provider 全面可用性、free 帳號資格、配額剩餘和 OCR 對真實文件的品質尚未驗證。
