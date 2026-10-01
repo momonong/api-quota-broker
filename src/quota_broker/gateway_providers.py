@@ -170,7 +170,7 @@ def explicit_quota_rejection(
     if not isinstance(data, dict):
         return False
     if any(
-        field in data
+        data.get(field) not in (None, {}, [], "")
         for field in (
             "usage",
             "usageMetadata",

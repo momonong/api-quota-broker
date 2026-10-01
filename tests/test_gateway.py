@@ -311,6 +311,13 @@ def test_openrouter_platform_429_is_distinct_from_upstream_and_partial_result():
     assert not explicit_quota_rejection("openrouter", 429, headers, json.dumps(partial).encode())
 
 
+def test_cloudflare_null_result_allows_3036_but_partial_content_blocks():
+    response = {"success": False, "errors": [{"code": 3036}], "result": None}
+    assert explicit_quota_rejection("cloudflare", 429, {}, json.dumps(response).encode())
+    response["result"] = {"response": "partial"}
+    assert not explicit_quota_rejection("cloudflare", 429, {}, json.dumps(response).encode())
+
+
 def test_translation_route_and_capability_mismatch_never_dispatch(tmp_path):
     calls = []
     targets = [
@@ -528,7 +535,11 @@ def test_documented_quota_refusal_falls_back_once_and_records_both_attempts(tmp_
                 429,
                 {"Retry-After": "120"},
                 json.dumps(
-                    {"success": False, "errors": [{"code": 3036, "message": "daily limit"}]}
+                    {
+                        "success": False,
+                        "errors": [{"code": 3036, "message": "daily limit"}],
+                        "result": None,
+                    }
                 ).encode(),
             )
         return fixture_transport([])(url, headers, payload, timeout)
