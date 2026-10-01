@@ -22,8 +22,8 @@ from typing import Any, cast
 from urllib.parse import parse_qs, urlsplit
 
 DESTINATIONS = {
-    "nvidia": ("NVIDIA", "api-provider-nvidia", "dev", "NVIDIA_API_KEY"),
-    "groq": ("Groq", "api-provider-nvidia", "dev", "GROQ_API_KEY"),
+    "nvidia": ("NVIDIA", "api-quota-broker", "dev", "NVIDIA_API_KEY"),
+    "groq": ("Groq", "api-quota-broker", "dev", "GROQ_API_KEY"),
 }
 SESSION_SECONDS = 1800
 MAX_BODY = 8192

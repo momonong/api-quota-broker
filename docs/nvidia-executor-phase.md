@@ -2,6 +2,8 @@
 
 狀態：2026-09-29 本地候選實作；已驗證一次短時唯讀 Doppler executor 秘密讀取，尚未驗證 NVIDIA 帳號、金鑰有效性、人工驗收或部署授權。起始版本 `0f2ad46529f0a22db35541bc02c737a5c046635e`，工作分支 `feat/nvidia-executor-admin`。本階段保留原 Google / Cloudflare 直連客戶端與配額服務，新增獨立 NVIDIA 執行服務及同源管理頁。
 
+現行 Doppler project 於 2026-10-01 原地改名為 `api-quota-broker`，config 仍為 `dev`。下文的 `api-provider-nvidia/dev` 是改名前執行與紀錄的歷史範圍；目前腳本的固定 project 已改為新 ID，歷史請求與收據未重跑或改寫。
+
 ## 行為契約
 
 - 客戶端只帶 broker 的獨立 bearer token，呼叫 `POST /v1/nvidia/text`，JSON 為 `request_key`（穩定不含敏感資料、只用 URI unreserved 字元的 opaque ID）、`prompt`、`max_output_tokens`。固定模型 `google/gemma-4-31b-it`、關閉推理（`enable_thinking=false`），固定 `https://integrate.api.nvidia.com/v1/chat/completions`；客戶端不能提供網址、模型、金鑰或標頭。僅支援單則純文字 user message、非串流。成功時回傳文字及供應商 usage；後續同鍵只回傳狀態，不重送或保存回答。

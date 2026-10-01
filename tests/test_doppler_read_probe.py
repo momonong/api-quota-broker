@@ -27,7 +27,7 @@ def test_metadata_only_names_and_exact_scope(module, monkeypatch):
     assert module.checked_metadata("/bin/doppler")
     command = calls[0][0]
     assert "--only-names" in command and "--json" in command
-    assert command[command.index("--project") + 1] == "api-provider-nvidia"
+    assert command[command.index("--project") + 1] == "api-quota-broker"
     assert command[command.index("--config") + 1] == "dev"
     assert calls[0][1]["capture_output"] is True
 
@@ -42,7 +42,7 @@ def test_short_read_only_token_stays_in_memory_and_reports_boolean(module, monke
 
     def fake_resolver(token, project, config):
         assert token == fixture_token
-        assert (project, config) == ("api-provider-nvidia", "dev")
+        assert (project, config) == ("api-quota-broker", "dev")
         return lambda name: "fixture secret" if name == "NVIDIA_API_KEY" else ""
 
     monkeypatch.setattr(module.subprocess, "run", fake_run)

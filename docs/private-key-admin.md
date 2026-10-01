@@ -4,7 +4,9 @@
 
 ## 用途與界線
 
-`quota-broker key-admin-serve` 是與推論 gateway 分開的管理進程，只綁 `127.0.0.1`。管理者登入後，只能選兩個固定目的地：NVIDIA `api-provider-nvidia/dev/NVIDIA_API_KEY` 或 Groq `api-provider-nvidia/dev/GROQ_API_KEY`。表單可輸入 key 和選填的名稱、ID、到期日期；按「明確儲存／替換」才寫入 Doppler。兩個 provider 共用既有 `api-provider-nvidia/dev`；此 scope 不存在時一律拒絕寫入，不會新建 project/config。頁面不提供刪除、任意 secret 名稱、讀回完整 key 或模型推論。
+`quota-broker key-admin-serve` 是與推論 gateway 分開的管理進程，只綁 `127.0.0.1`。管理者登入後，只能選兩個固定目的地：NVIDIA `api-quota-broker/dev/NVIDIA_API_KEY` 或 Groq `api-quota-broker/dev/GROQ_API_KEY`。表單可輸入 key 和選填的名稱、ID、到期日期；按「明確儲存／替換」才寫入 Doppler。兩個 provider 共用既有 `api-quota-broker/dev`；此 scope 不存在時一律拒絕寫入，不會新建 project/config。頁面不提供刪除、任意 secret 名稱、讀回完整 key 或模型推論。
+
+2026-10-01 已將 Doppler project 原地從 `api-provider-nvidia` 改名為 `api-quota-broker`。改名前後 `dev` 的 6 個秘密名稱指紋一致，包含 NVIDIA、Groq、Gemini 的 API key 名稱；未讀取秘密值，也未驗證各 provider 金鑰有效性。
 
 狀態 `configured` 只代表 Doppler 的名稱清單中有該 secret；`missing` 代表 project/config 或名稱不存在。查詢失敗時顯示未知。寫入只有在 CLI 回報成功、且之後名稱清單確認存在時才顯示成功；失敗／不確定時不回顯 CLI 輸出或 key，也不宣稱新值已保存。這些狀態**不證明** key 對 provider 有效、免費或有額度。Groq Console 連結由使用者提供，未加入 Groq 模型 adapter 或免費資格假設。
 

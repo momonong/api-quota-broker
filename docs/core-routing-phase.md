@@ -2,6 +2,8 @@
 
 狀態：2026-09-30 本地實作及 fixture 驗證完成；真實 LLM 結果未知，待階段驗收。起點 `259b928892a12bbdc4607c3b961a57f231780488`，工作分支 `feat/unified-gateway-routing`。使用者已授權本階段的本地實作、測試與分支提交；合併、推送、部署及公開入口不在此授權內。本階段在離線驗證後另授權最多兩筆新識別的正式 gateway 真實請求；單次 Doppler 唯讀 helper 的「不呼叫 NVIDIA」只限定該 helper 操作。
 
+現行 Doppler project 於 2026-10-01 原地改名為 `api-quota-broker`，config 仍為 `dev`。下文的 `api-provider-nvidia/dev` 是 2026-09-30 實測時的歷史範圍；未重跑該請求或改寫收據。
+
 ## 已確認範圍
 
 - 單一受 bearer token 保護、只綁 loopback 的 HTTP gateway；CLI 走同一 API，提供 catalog、路由解釋／dry run、提交任務、查狀態及依 provider／model／時間查用量。CLI 支援 JSON 及簡短文字。

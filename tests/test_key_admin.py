@@ -20,9 +20,9 @@ from quota_broker.key_admin import (
 
 class FakeDoppler:
     def __init__(self):
-        self.projects = {"api-provider-nvidia"}
-        self.configs = {"api-provider-nvidia": {"dev"}}
-        self.names = {"api-provider-nvidia": {"NVIDIA_API_KEY"}}
+        self.projects = {"api-quota-broker"}
+        self.configs = {"api-quota-broker": {"dev"}}
+        self.names = {"api-quota-broker": {"NVIDIA_API_KEY"}}
         self.calls = []
         self.fail_set = False
 
@@ -58,12 +58,10 @@ def test_shared_scope_groq_stdin_and_replacement(tmp_path):
     writer.save("groq", "fixture-key-one")
     assert writer.state("groq") == KeyState(True, True)
     writer.save("groq", "fixture-key-two")
-    assert "NVIDIA_API_KEY" in fake.names["api-provider-nvidia"]
+    assert "NVIDIA_API_KEY" in fake.names["api-quota-broker"]
     writes = [(command, value) for command, value in fake.calls if "set" in command]
     assert [value for _, value in writes] == [b"fixture-key-one", b"fixture-key-two"]
-    assert all(
-        "GROQ_API_KEY" in command and "api-provider-nvidia" in command for command, _ in writes
-    )
+    assert all("GROQ_API_KEY" in command and "api-quota-broker" in command for command, _ in writes)
     assert not any("create" in command for command, _ in fake.calls)
     assert all("fixture-key" not in " ".join(command) for command, _ in writes)
     assert not any(value for command, value in fake.calls if "set" not in command)
