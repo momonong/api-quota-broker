@@ -130,14 +130,17 @@ def gateway_cli(args: argparse.Namespace) -> None:
         )
         result = _json_http(base + "/v1/usage" + ("?" + query if query else ""), None, headers)
     else:
-        content = sys.stdin.read(32_769)
-        if len(content.encode("utf-8")) > 32_768:
+        limit = 48_000 if args.capability == "ocr" else 32_768
+        content = sys.stdin.read(limit + 1)
+        if len(content.encode("utf-8")) > limit:
             raise ValueError("input exceeds gateway limit")
         body = {
             "request_key": args.request_key,
             "capability": args.capability,
             "input": content,
-            "max_output_tokens": args.max_output_tokens,
+            "max_output_tokens": args.max_output_tokens
+            if args.max_output_tokens is not None
+            else (1 if args.capability == "ocr" else 128),
             "provider": args.provider,
             "model": args.model,
             "source_language": args.source_language,
@@ -166,6 +169,9 @@ def gateway_cli(args: argparse.Namespace) -> None:
                 "input_unknown=" + str(item["input_unknown_count"]),
                 "output=" + str(item["reported_output_tokens"]),
                 "output_unknown=" + str(item["output_unknown_count"]),
+                "quota_rejected=" + str(item["quota_rejected_count"]),
+                "ledger_held=" + str(item["ledger_held_count"]),
+                "image_bytes=" + str(item["input_bytes"]),
             )
     elif args.action == "explain":
         print("selected:", result["selected_target_id"] or "none")
@@ -179,6 +185,16 @@ def gateway_cli(args: argparse.Namespace) -> None:
             "input=" + str(result.get("reported_input_tokens")),
             "output=" + str(result.get("reported_output_tokens")),
         )
+        for attempt in result.get("attempts", []):
+            print(
+                "attempt=" + str(attempt["attempt_no"] + 1),
+                attempt["provider"],
+                attempt["model"],
+                attempt["state"],
+                "http=" + str(attempt["http_status"]),
+                "latency_ms=" + str(attempt["latency_ms"]),
+                "usage=" + str(attempt["usage_source"]),
+            )
         if result.get("answer") is not None:
             print(result["answer"])
 
@@ -230,8 +246,10 @@ def main() -> None:
     for name in ("run", "explain"):
         task = actions.add_parser(name)
         task.add_argument("--request-key", required=True)
-        task.add_argument("--capability", required=True, choices=("text_generation", "translation"))
-        task.add_argument("--max-output-tokens", type=int, default=128)
+        task.add_argument(
+            "--capability", required=True, choices=("text_generation", "translation", "ocr")
+        )
+        task.add_argument("--max-output-tokens", type=int)
         task.add_argument("--provider")
         task.add_argument("--model")
         task.add_argument("--source-language")

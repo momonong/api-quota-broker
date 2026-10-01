@@ -170,6 +170,8 @@ def make_nvidia_server(
                         "nvidia": "NVIDIA",
                         "groq": "Groq",
                         "mistral": "Mistral",
+                        "openrouter": "OpenRouter",
+                        "ocrspace": "OCR.space",
                     }[model.provider]
                 )
                 + "</td><td>"

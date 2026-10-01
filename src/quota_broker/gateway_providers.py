@@ -3,6 +3,7 @@
 import json
 import re
 import urllib.error
+import urllib.parse
 import urllib.request
 
 from .catalog import MODELS, endpoint
@@ -50,7 +51,7 @@ def official_request(
         else:
             payload["chat_template_kwargs"] = {"enable_thinking": False}
         return url, {"Authorization": "Bearer " + secret}, payload
-    if provider in {"groq", "mistral"}:
+    if provider in {"groq", "mistral", "openrouter"}:
         payload = {
             "model": model_id,
             "messages": [{"role": "user", "content": content}],
@@ -85,6 +86,21 @@ def official_request(
                 "max_tokens": max_output_tokens,
             },
         )
+    if provider == "ocrspace":
+        return (
+            url,
+            {"apikey": secret},
+            {
+                "base64Image": (
+                    "data:image/jpeg;base64,"
+                    if content.startswith("/9j/")
+                    else "data:image/png;base64,"
+                )
+                + content,
+                "OCREngine": "2",
+                "isOverlayRequired": "false",
+            },
+        )
     raise ProviderError("unsupported provider")
 
 
@@ -100,11 +116,20 @@ def provider_http(
         url,
     ):
         raise ProviderError("unapproved provider URL")
+    ocr = url == "https://api.ocr.space/parse/image"
     request = urllib.request.Request(
         url,
-        data=json.dumps(payload, separators=(",", ":")).encode(),
+        data=(
+            urllib.parse.urlencode(payload).encode()
+            if ocr
+            else json.dumps(payload, separators=(",", ":")).encode()
+        ),
         method="POST",
-        headers={"Content-Type": "application/json", "Accept": "application/json", **headers},
+        headers={
+            "Content-Type": "application/x-www-form-urlencoded" if ocr else "application/json",
+            "Accept": "application/json",
+            **headers,
+        },
     )
     opener = urllib.request.build_opener(_NoRedirect())
     try:
@@ -128,6 +153,41 @@ def _request_id(value: object) -> str | None:
     return None
 
 
+def explicit_quota_rejection(
+    provider: str, status: int, headers: dict[str, str], raw: bytes
+) -> bool:
+    """Only documented, unambiguous non-execution responses permit another POST.
+
+    A generic HTTP 429 is insufficient: Cloudflare also uses it for capacity
+    exhaustion, and other providers may return incomplete intermediary errors.
+    """
+    if status != 429:
+        return False
+    try:
+        data = json.loads(raw)
+    except (ValueError, TypeError):
+        return False
+    if not isinstance(data, dict):
+        return False
+    if provider == "cloudflare":
+        errors = data.get("errors")
+        return isinstance(errors, list) and any(
+            isinstance(error, dict) and error.get("code") == 3036 for error in errors
+        )
+    error = data.get("error")
+    if not isinstance(error, dict):
+        return False
+    if provider == "google":
+        return (
+            error.get("code") in {"quota_exceeded", "rate_limit_exceeded", "too_many_requests"}
+            or error.get("status") == "RESOURCE_EXHAUSTED"
+        )
+    if provider == "groq":
+        # Groq documents retry-after as present only for its rate-limit 429.
+        return isinstance(headers.get("retry-after") or headers.get("Retry-After"), str)
+    return False
+
+
 def interpret(
     provider: str, status: int, raw: bytes
 ) -> tuple[str | None, int | None, int | None, int | None, str | None]:
@@ -142,7 +202,15 @@ def interpret(
     output_tokens: int | None = None
     neurons: int | None = None
     request_id: str | None = None
-    if provider in {"nvidia", "groq", "mistral"}:
+    if provider == "ocrspace":
+        parsed = data.get("ParsedResults")
+        if data.get("OCRExitCode") in (1, "1") and isinstance(parsed, list) and len(parsed) == 1:
+            page = parsed[0]
+            if isinstance(page, dict) and page.get("FileParseExitCode") in (1, "1"):
+                value = page.get("ParsedText")
+                if isinstance(value, str):
+                    answer = value
+    elif provider in {"nvidia", "groq", "mistral", "openrouter"}:
         usage = data.get("usage")
         if isinstance(usage, dict):
             input_tokens = _nonnegative(usage.get("prompt_tokens"))

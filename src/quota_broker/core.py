@@ -79,6 +79,9 @@ class Broker:
                     target_id TEXT PRIMARY KEY, until_at TEXT NOT NULL,
                     backoff_level INTEGER NOT NULL DEFAULT 0
                 );
+                CREATE TABLE IF NOT EXISTS quota_scope_cooldowns (
+                    scope TEXT PRIMARY KEY, until_at TEXT NOT NULL
+                );
                 """
             )
             # v0.1 databases created before route snapshots remain readable.
@@ -137,7 +140,15 @@ class Broker:
         # Preserve v0.1 snapshots when older direct-client targets have no secret ref.
         if target.secret_ref is not None:
             value["secret_ref"] = target.secret_ref
+        if target.account_id_ref is not None:
+            value["account_id_ref"] = target.account_id_ref
         return canonical(value)
+
+    @staticmethod
+    def _quota_scope(snapshot: dict) -> str:
+        return snapshot.get("shared_concurrency_scope") or (
+            snapshot["provider"] + ":account:" + snapshot["account_id"]
+        )
 
     @contextmanager
     def _tx(self) -> Iterator[sqlite3.Connection]:
@@ -312,7 +323,7 @@ class Broker:
             raise BrokerError("invalid_request", "invalid reservation fields")
         if not data["request_key"] or len(data["request_key"]) > 160:
             raise BrokerError("invalid_request", "invalid request key")
-        if data.get("capability") not in {"text_generation", "translation"}:
+        if data.get("capability") not in {"text_generation", "translation", "ocr"}:
             raise BrokerError("unavailable", "unsupported capability")
         input_bound = data.get("input_token_bound")
         output_max = data.get("max_output_tokens")
@@ -405,6 +416,12 @@ class Broker:
                 cooldown_until = (
                     cooldown["until_at"] if cooldown and cooldown["until_at"] > stamp(now) else None
                 )
+                scoped = con.execute(
+                    "SELECT until_at FROM quota_scope_cooldowns WHERE scope=?",
+                    (self._quota_scope(json.loads(current_snapshot)),),
+                ).fetchone()
+                if scoped and scoped["until_at"] > stamp(now):
+                    continue
                 active = con.execute(
                     "SELECT count(*) FROM reservations WHERE target_id=? "
                     "AND state IN ('reserved','dispatched','unknown')",
@@ -492,6 +509,12 @@ class Broker:
             ).fetchone()
             if cooldown and cooldown["until_at"] > stamp(now):
                 raise BrokerError("unavailable", "provider cooldown", cooldown["until_at"])
+            scoped = con.execute(
+                "SELECT until_at FROM quota_scope_cooldowns WHERE scope=?",
+                (self._quota_scope(json.loads(self._snapshot(target))),),
+            ).fetchone()
+            if scoped and scoped["until_at"] > stamp(now):
+                raise BrokerError("unavailable", "account quota cooldown", scoped["until_at"])
             # Move held charges to dispatch time. A reservation crossing a
             # reset must compete in the new window before it may be sent.
             charges = con.execute(
@@ -530,7 +553,7 @@ class Broker:
             for k in ("reservation_id", "report_key", "state")
         ):
             raise BrokerError("invalid_request", "invalid report")
-        if data["state"] not in {"completed", "failed", "unknown"}:
+        if data["state"] not in {"completed", "failed", "unknown", "quota_rejected"}:
             raise BrokerError("invalid_request", "invalid report state")
         status = data.get("error_status")
         retry = data.get("retry_after_seconds")
@@ -539,7 +562,12 @@ class Broker:
         if retry is not None and (type(retry) is not int or not 0 <= retry <= 86_400):
             raise BrokerError("invalid_request", "invalid retry delay")
         usage = data.get("usage")
-        if data["state"] == "unknown":
+        if data["state"] == "quota_rejected":
+            if status != 429 or usage not in (None, {}):
+                raise BrokerError(
+                    "invalid_request", "quota rejection requires HTTP 429 and no usage"
+                )
+        elif data["state"] == "unknown":
             if usage not in (None, {}):
                 raise BrokerError("invalid_request", "unknown cannot assert usage")
         elif not isinstance(usage, dict):
@@ -567,7 +595,14 @@ class Broker:
                 "SELECT bucket,metric,amount FROM charges WHERE reservation_id=?",
                 (data["reservation_id"],),
             ).fetchall()
-            if data["state"] != "unknown":
+            if data["state"] == "quota_rejected":
+                # A documented provider quota rejection is a non-execution. Keep
+                # the rejected attempt, but release every held local bucket.
+                con.execute(
+                    "UPDATE charges SET amount=0 WHERE reservation_id=?",
+                    (data["reservation_id"],),
+                )
+            elif data["state"] != "unknown":
                 assert isinstance(usage, dict)
                 required = {row["metric"] for row in charges}
                 if set(usage) != required or any(
@@ -613,6 +648,17 @@ class Broker:
                     "until_at=excluded.until_at,backoff_level=excluded.backoff_level",
                     (view["target_id"], until, backoff_level),
                 )
+                if data["state"] == "quota_rejected":
+                    snapshot = con.execute(
+                        "SELECT target_snapshot FROM reservations WHERE id=?",
+                        (data["reservation_id"],),
+                    ).fetchone()[0]
+                    scope = self._quota_scope(json.loads(snapshot))
+                    con.execute(
+                        "INSERT INTO quota_scope_cooldowns(scope,until_at) VALUES(?,?) "
+                        "ON CONFLICT(scope) DO UPDATE SET until_at=max(until_at,excluded.until_at)",
+                        (scope, until),
+                    )
             con.execute(
                 "INSERT INTO reports VALUES(?,?,?)",
                 (data["report_key"], data["reservation_id"], fingerprint),

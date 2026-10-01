@@ -100,6 +100,7 @@ class Target:
     provider_quota_facts: tuple[QuotaFact, ...] = ()
     capacity: Capacity = Capacity()
     secret_ref: str | None = None
+    account_id_ref: str | None = None
 
     def available(self, now: datetime) -> bool:
         return bool(
@@ -184,9 +185,10 @@ def parse_quota_facts(raw: list) -> tuple[QuotaFact, ...]:
         if not isinstance(item, dict) or set(item) != {"metric", "window", "limit", "remaining"}:
             raise ConfigError("invalid provider quota fact")
         metric, window = item["metric"], item["window"]
-        if metric not in {"requests", "input_tokens", "neurons"} or window not in {
+        if metric not in {"requests", "input_tokens", "neurons", "conversions"} or window not in {
             "rolling_minute",
             "day",
+            "month",
             "one_time",
             "unknown",
         }:
@@ -277,6 +279,7 @@ def load_config(path: str | Path, *, allow_nvidia: bool = False) -> tuple[Target
                 provider_quota_facts=official_facts,
                 capacity=capacity,
                 secret_ref=item.get("secret_ref"),
+                account_id_ref=item.get("account_id_ref"),
             )
         except (KeyError, TypeError) as exc:
             raise ConfigError(f"invalid target: {exc}") from exc
@@ -292,6 +295,14 @@ def load_config(path: str | Path, *, allow_nvidia: bool = False) -> tuple[Target
             or not all(c.isascii() and (c.isalnum() or c == "_") for c in target.secret_ref)
         ):
             raise ConfigError("invalid secret reference")
+        if target.account_id_ref is not None and (
+            target.provider != "cloudflare"
+            or not isinstance(target.account_id_ref, str)
+            or not target.account_id_ref
+            or len(target.account_id_ref) > 128
+            or not all(c.isascii() and (c.isalnum() or c == "_") for c in target.account_id_ref)
+        ):
+            raise ConfigError("invalid account ID reference")
         if (target.shared_concurrency_scope is None) != (target.shared_concurrency_limit is None):
             raise ConfigError("shared concurrency scope and limit must be set together")
         if target.shared_concurrency_scope is not None and (

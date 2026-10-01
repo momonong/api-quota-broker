@@ -1,7 +1,10 @@
 """Authenticated gateway: content lives only during one request, metadata in SQLite."""
 
+import base64
+import binascii
 import hashlib
 import hmac
+import json
 import re
 import sqlite3
 import time
@@ -14,7 +17,13 @@ from typing import Any
 from .catalog import MODELS
 from .config import Target
 from .core import Broker, BrokerError, canonical, stamp, utcnow
-from .gateway_providers import ProviderError, interpret, official_request, provider_http
+from .gateway_providers import (
+    ProviderError,
+    explicit_quota_rejection,
+    interpret,
+    official_request,
+    provider_http,
+)
 from .retry import parse_retry_after
 
 ProviderTransport = Callable[
@@ -82,6 +91,27 @@ COLUMNS = (
     "reported_neurons",
     "usage_source",
 )
+ATTEMPT_COLUMNS = (
+    "attempt_no",
+    "reservation_id",
+    "target_id",
+    "provider",
+    "model",
+    "state",
+    "created_at",
+    "dispatched_at",
+    "completed_at",
+    "latency_ms",
+    "http_status",
+    "error_code",
+    "provider_request_id",
+    "estimated_input_tokens",
+    "reported_input_tokens",
+    "reported_output_tokens",
+    "reported_neurons",
+    "usage_source",
+    "input_bytes",
+)
 
 
 class GatewayError(ValueError):
@@ -111,10 +141,27 @@ def validate_task(raw: dict[str, Any]) -> dict[str, Any]:
     output = raw.get("max_output_tokens")
     if not isinstance(key, str) or not re.fullmatch(r"[A-Za-z0-9._~-]{1,120}", key):
         raise GatewayError("invalid_request", "request_key must be an opaque URI-safe id")
-    if not isinstance(content, str) or not content or len(content.encode("utf-8")) > 32_768:
-        raise GatewayError("invalid_request", "input must be nonempty and at most 32768 bytes")
-    if capability not in {"text_generation", "translation"}:
+    if capability not in {"text_generation", "translation", "ocr"}:
         raise GatewayError("invalid_request", "unsupported capability")
+    if not isinstance(content, str) or not content:
+        raise GatewayError("invalid_request", "input must be nonempty")
+    if capability == "ocr":
+        if len(content) > 48_000 or not content.isascii():
+            raise GatewayError("invalid_request", "OCR image exceeds local size limit")
+        try:
+            image = base64.b64decode(content, validate=True)
+        except (ValueError, binascii.Error) as exc:
+            raise GatewayError("invalid_request", "OCR input must be base64") from exc
+        if not 0 < len(image) <= 36_000 or not image.startswith(
+            (b"\x89PNG\r\n\x1a\n", b"\xff\xd8\xff")
+        ):
+            raise GatewayError("invalid_request", "OCR requires a small PNG or JPEG image")
+        if output is None:
+            output = 1
+        if output != 1:
+            raise GatewayError("invalid_request", "OCR max_output_tokens must be 1")
+    elif len(content.encode("utf-8")) > 32_768:
+        raise GatewayError("invalid_request", "input must be at most 32768 bytes")
     if type(output) is not int or not 1 <= output <= 4096:
         raise GatewayError("invalid_request", "max_output_tokens must be 1..4096")
     provider, model = raw.get("provider"), raw.get("model")
@@ -196,6 +243,23 @@ class Gateway:
             con.execute(
                 "CREATE INDEX IF NOT EXISTS gateway_usage_at ON gateway_tasks(dispatched_at, provider, model)"
             )
+            con.execute("""
+                CREATE TABLE IF NOT EXISTS gateway_attempts (
+                    request_key TEXT NOT NULL, attempt_no INTEGER NOT NULL,
+                    reservation_id TEXT NOT NULL UNIQUE, target_id TEXT NOT NULL,
+                    provider TEXT NOT NULL, model TEXT NOT NULL, state TEXT NOT NULL,
+                    created_at TEXT NOT NULL, dispatched_at TEXT, completed_at TEXT,
+                    latency_ms INTEGER, http_status INTEGER, error_code TEXT,
+                    provider_request_id TEXT, estimated_input_tokens INTEGER,
+                    reported_input_tokens INTEGER, reported_output_tokens INTEGER,
+                    reported_neurons INTEGER, usage_source TEXT, input_bytes INTEGER,
+                    PRIMARY KEY(request_key, attempt_no)
+                )
+            """)
+            con.execute(
+                "CREATE INDEX IF NOT EXISTS gateway_attempts_usage_at "
+                "ON gateway_attempts(dispatched_at, provider, model)"
+            )
 
     def _hmac(self, data: dict[str, Any]) -> str:
         return hmac.new(self.digest_key, canonical(data).encode(), hashlib.sha256).hexdigest()
@@ -207,9 +271,31 @@ class Gateway:
                 "SELECT " + ",".join(COLUMNS) + " FROM gateway_tasks WHERE request_key=?",
                 (request_key,),
             ).fetchone()
+            attempts = con.execute(
+                "SELECT " + ",".join(ATTEMPT_COLUMNS) + " FROM gateway_attempts "
+                "WHERE request_key=? ORDER BY attempt_no",
+                (request_key,),
+            ).fetchall()
         if row is None:
             raise GatewayError("not_found", "task not found")
         result = dict(row)
+        result["attempts"] = [dict(attempt) for attempt in attempts]
+        for attempt in result["attempts"]:
+            ledger_attempt = self.broker.status(attempt["reservation_id"])
+            attempt["ledger_state"] = ledger_attempt["state"]
+            attempt["ledger_basis"] = (
+                "settled_provider_usage"
+                if ledger_attempt["state"] in {"completed", "failed"}
+                else "rejected_zero_usage"
+                if ledger_attempt["state"] == "quota_rejected"
+                else "held_estimate"
+                if ledger_attempt["state"] in {"dispatched", "unknown"}
+                else "unsent"
+            )
+            attempt["ledger_charges"] = [
+                {"bucket": charge["bucket"], "metric": charge["metric"], "amount": charge["amount"]}
+                for charge in ledger_attempt["charges"]
+            ]
         if result["reservation_id"]:
             # A crash at either boundary is not permission to issue another POST.
             ledger = self.broker.status(result["reservation_id"])
@@ -220,6 +306,8 @@ class Gateway:
                 if ledger["state"] in {"completed", "failed"}
                 else "held_estimate"
                 if ledger["state"] in {"dispatched", "unknown"}
+                else "rejected_zero_usage"
+                if ledger["state"] == "quota_rejected"
                 else "unsent"
             )
             result["ledger_charges"] = [
@@ -231,6 +319,11 @@ class Gateway:
                 "unknown",
             }:
                 result["state"] = "unknown"
+            elif (
+                result["state"] in {"preparing", "dispatched"}
+                and ledger["state"] == "quota_rejected"
+            ):
+                result["state"] = "quota_rejected"
         else:
             result["ledger_state"] = None
             result["ledger_dispatched_at"] = None
@@ -295,6 +388,12 @@ class Gateway:
         ).fetchone()
         if cooldown and cooldown[0] > stamp(now):
             reasons.append("cooldown")
+        scope = self.broker._quota_scope(json.loads(self.broker._snapshot(target)))
+        scoped = con.execute(
+            "SELECT until_at FROM quota_scope_cooldowns WHERE scope=?", (scope,)
+        ).fetchone()
+        if scoped and scoped[0] > stamp(now):
+            reasons.append("account_quota_cooldown")
         active = con.execute(
             "SELECT count(*) FROM reservations WHERE target_id=? "
             "AND state IN ('reserved','dispatched','unknown')",
@@ -321,7 +420,7 @@ class Gateway:
 
     def explain(self, raw: dict[str, Any]) -> dict[str, Any]:
         data = validate_task(raw)
-        bound = 4 * len(data["input"].encode("utf-8")) + 256
+        bound = 1 if data["capability"] == "ocr" else 4 * len(data["input"].encode("utf-8")) + 256
         rows = []
         with self.broker._tx() as con:
             self.broker._expire_unsent(con, self.clock())
@@ -340,7 +439,11 @@ class Gateway:
                     }
                 )
         selected = next((row["target_id"] for row in rows if row["eligible"]), None)
-        return {"selected_target_id": selected, "estimated_input_tokens": bound, "candidates": rows}
+        return {
+            "selected_target_id": selected,
+            "estimated_input_tokens": None if data["capability"] == "ocr" else bound,
+            "candidates": rows,
+        }
 
     def _update(self, key: str, values: dict[str, Any]) -> None:
         allowed = set(COLUMNS) - {"request_key", "created_at"}
@@ -352,6 +455,18 @@ class Gateway:
                 + ",".join(f"{name}=?" for name in values)
                 + " WHERE request_key=?",
                 (*values.values(), key),
+            )
+
+    def _attempt_update(self, key: str, number: int, values: dict[str, Any]) -> None:
+        allowed = set(ATTEMPT_COLUMNS) - {"attempt_no", "reservation_id", "created_at"}
+        if not values or set(values) - allowed:
+            raise ValueError("invalid attempt update")
+        with sqlite3.connect(self.db, timeout=15) as con:
+            con.execute(
+                "UPDATE gateway_attempts SET "
+                + ",".join(f"{name}=?" for name in values)
+                + " WHERE request_key=? AND attempt_no=?",
+                (*values.values(), key, number),
             )
 
     def run(self, raw: dict[str, Any]) -> dict[str, Any]:
@@ -374,9 +489,11 @@ class Gateway:
                 (key, fingerprint, "preparing", created_at),
             )
             con.execute("COMMIT")
-        input_bound = 4 * len(data["input"].encode("utf-8")) + 256
+        input_bound = (
+            1 if data["capability"] == "ocr" else 4 * len(data["input"].encode("utf-8")) + 256
+        )
         excluded: list[str] = []
-        for attempt in range(len(self.targets)):
+        for attempt in range(min(len(self.targets), 3)):
             request = {
                 "request_key": f"gw:{key}:{attempt}",
                 "capability": data["capability"],
@@ -390,14 +507,19 @@ class Gateway:
             try:
                 plan = self.broker.reserve(request)
             except BrokerError as exc:
+                had_quota_refusal = exc.code == "unavailable" and any(
+                    item["state"] == "quota_rejected" for item in self._view(key)["attempts"]
+                )
                 self._update(
                     key,
                     {
-                        "state": "rejected",
+                        "state": "quota_exhausted" if had_quota_refusal else "rejected",
                         "error_code": exc.code,
                         "completed_at": stamp(self.clock()),
                     },
                 )
+                if had_quota_refusal:
+                    return self._view(key)
                 raise GatewayError(exc.code, str(exc), exc.wait_until) from exc
             target = next(t for t in self.targets if t.id == plan["target_id"])
             kind = self._capacity_kind(target)
@@ -411,18 +533,43 @@ class Gateway:
                     "provider": target.provider,
                     "model": target.model,
                     "route_reason": reason,
-                    "estimated_input_tokens": input_bound,
+                    "estimated_input_tokens": None if data["capability"] == "ocr" else input_bound,
                 },
             )
+            with sqlite3.connect(self.db, timeout=15) as con:
+                con.execute(
+                    "INSERT INTO gateway_attempts(request_key,attempt_no,reservation_id,"
+                    "target_id,provider,model,state,created_at,estimated_input_tokens,input_bytes) "
+                    "VALUES(?,?,?,?,?,?,?,?,?,?)",
+                    (
+                        key,
+                        attempt,
+                        plan["reservation_id"],
+                        target.id,
+                        target.provider,
+                        target.model,
+                        "preparing",
+                        stamp(self.clock()),
+                        None if data["capability"] == "ocr" else input_bound,
+                        len(base64.b64decode(data["input"]))
+                        if data["capability"] == "ocr"
+                        else None,
+                    ),
+                )
             try:
                 assert target.secret_ref is not None
                 secret = self.secret_resolver(target.secret_ref)
                 if not isinstance(secret, str) or not secret:
                     raise ValueError("empty secret")
+                account_id = (
+                    self.secret_resolver(target.account_id_ref)
+                    if target.account_id_ref
+                    else target.account_id
+                )
                 url, headers, payload = official_request(
                     target.provider,
                     target.model,
-                    target.account_id,
+                    account_id,
                     secret,
                     data["input"],
                     data["max_output_tokens"],
@@ -435,6 +582,15 @@ class Gateway:
                     self.broker.cancel(plan["reservation_id"])
                 except BrokerError:
                     pass
+                self._attempt_update(
+                    key,
+                    attempt,
+                    {
+                        "state": "pre_send_failed",
+                        "error_code": "credential_or_request_unavailable",
+                        "completed_at": stamp(self.clock()),
+                    },
+                )
                 excluded.append(target.id)
                 continue
             try:
@@ -444,9 +600,26 @@ class Gateway:
                     self.broker.cancel(plan["reservation_id"])
                 except BrokerError:
                     pass
+                self._attempt_update(
+                    key,
+                    attempt,
+                    {
+                        "state": "pre_send_failed",
+                        "error_code": "dispatch_unavailable",
+                        "completed_at": stamp(self.clock()),
+                    },
+                )
                 excluded.append(target.id)
                 continue
             self._update(key, {"state": "dispatched", "dispatched_at": stamp(self.clock())})
+            self._attempt_update(
+                key,
+                attempt,
+                {
+                    "state": "dispatched",
+                    "dispatched_at": stamp(self.clock()),
+                },
+            )
             started = time.monotonic()
             answer: str | None = None
             input_tokens: int | None = None
@@ -454,6 +627,8 @@ class Gateway:
             neurons: int | None = None
             request_id: str | None = None
             status: int | None = None
+            response_headers: dict[str, str] = {}
+            response = b""
             retry: int | None = None
             error_code: str | None = None
             try:
@@ -480,6 +655,9 @@ class Gateway:
                     if type(exc).__name__ in {"TimeoutError", "ProviderError"}
                     else "transport_error"
                 )
+            quota_rejected = status is not None and explicit_quota_rejection(
+                target.provider, status, response_headers, response
+            )
             elapsed = round((time.monotonic() - started) * 1000)
             required_metrics = {quota.metric for quota in target.quotas}
             known_quota_usage = (
@@ -490,8 +668,10 @@ class Gateway:
                 "completed"
                 if completed
                 and known_quota_usage
-                and input_tokens is not None
-                and output_tokens is not None
+                and (
+                    data["capability"] == "ocr"
+                    or (input_tokens is not None and output_tokens is not None)
+                )
                 else "completed_usage_unknown"
                 if completed
                 else "unknown"
@@ -499,7 +679,11 @@ class Gateway:
             report: dict[str, Any] = {
                 "reservation_id": plan["reservation_id"],
                 "report_key": str(uuid.uuid4()),
-                "state": "completed" if completed and known_quota_usage else "unknown",
+                "state": "quota_rejected"
+                if quota_rejected
+                else "completed"
+                if completed and known_quota_usage
+                else "unknown",
                 "error_status": status if status is not None and status >= 400 else None,
                 "provider_request_id": request_id,
             }
@@ -514,29 +698,41 @@ class Gateway:
                 report["usage"] = usage
             if retry is not None:
                 report["retry_after_seconds"] = retry
+            reported = False
             try:
                 self.broker.report(report)
+                reported = True
             except BrokerError:
                 # Provider may already have executed. Preserve the durable reservation.
                 state = "unknown" if not completed else "completed_usage_unknown"
                 error_code = "ledger_report_failed"
+            if quota_rejected and reported:
+                state = "quota_rejected"
+                error_code = "provider_quota_rejected"
+            result_values = {
+                "state": state,
+                "completed_at": stamp(self.clock()),
+                "latency_ms": elapsed,
+                "http_status": status,
+                "error_code": error_code,
+                "provider_request_id": request_id,
+                "reported_input_tokens": input_tokens,
+                "reported_output_tokens": output_tokens,
+                "reported_neurons": neurons,
+                "usage_source": "documented_quota_rejection"
+                if quota_rejected and reported
+                else "provider_reported"
+                if any(value is not None for value in (input_tokens, output_tokens, neurons))
+                else "unknown",
+            }
+            self._attempt_update(key, attempt, result_values)
             self._update(
                 key,
-                {
-                    "state": state,
-                    "completed_at": stamp(self.clock()),
-                    "latency_ms": elapsed,
-                    "http_status": status,
-                    "error_code": error_code,
-                    "provider_request_id": request_id,
-                    "reported_input_tokens": input_tokens,
-                    "reported_output_tokens": output_tokens,
-                    "reported_neurons": neurons,
-                    "usage_source": "provider_reported"
-                    if any(value is not None for value in (input_tokens, output_tokens, neurons))
-                    else "unknown",
-                },
+                result_values,
             )
+            if quota_rejected and reported:
+                excluded.append(target.id)
+                continue
             result = self._view(key)
             if completed:
                 result["answer"] = answer
@@ -544,11 +740,21 @@ class Gateway:
         self._update(
             key,
             {
-                "state": "rejected",
-                "error_code": "credential_or_dispatch_unavailable",
+                "state": "quota_exhausted"
+                if any(
+                    attempt["state"] == "quota_rejected" for attempt in self._view(key)["attempts"]
+                )
+                else "rejected",
+                "error_code": "provider_quota_rejected"
+                if any(
+                    attempt["state"] == "quota_rejected" for attempt in self._view(key)["attempts"]
+                )
+                else "credential_or_dispatch_unavailable",
                 "completed_at": stamp(self.clock()),
             },
         )
+        if self._view(key)["state"] == "quota_exhausted":
+            return self._view(key)
         raise GatewayError("unavailable", "no verified free route with available credentials")
 
     def usage(
@@ -599,13 +805,28 @@ class Gateway:
                 "sum(g.reported_neurons) AS reported_neurons,"
                 "sum(c.ledger_input_tokens) AS ledger_input_tokens,"
                 "sum(c.ledger_neurons) AS ledger_neurons,"
-                "sum(g.reported_input_tokens IS NULL) AS input_unknown_count,"
-                "sum(g.reported_output_tokens IS NULL) AS output_unknown_count,"
-                "CASE WHEN g.provider='cloudflare' THEN sum(g.reported_neurons IS NULL) "
+                "sum(g.input_bytes) AS input_bytes,"
+                "CASE WHEN g.provider='ocrspace' THEN NULL ELSE "
+                "sum(g.reported_input_tokens IS NULL AND g.state!='quota_rejected') "
+                "END AS input_unknown_count,"
+                "CASE WHEN g.provider='ocrspace' THEN NULL ELSE "
+                "sum(g.reported_output_tokens IS NULL AND g.state!='quota_rejected') "
+                "END AS output_unknown_count,"
+                "CASE WHEN g.provider='cloudflare' THEN "
+                "sum(g.reported_neurons IS NULL AND g.state!='quota_rejected') "
                 "ELSE NULL END AS neurons_unknown_count,"
+                "sum(g.state='quota_rejected') AS quota_rejected_count,"
                 "sum(g.state IN ('unknown','dispatched','preparing')) AS outcome_unknown_count,"
                 "sum(r.state IN ('dispatched','unknown')) AS ledger_held_count "
-                "FROM gateway_tasks g "
+                "FROM ("
+                "SELECT request_key,reservation_id,provider,model,dispatched_at,"
+                "estimated_input_tokens,reported_input_tokens,reported_output_tokens,"
+                "reported_neurons,state,input_bytes FROM gateway_attempts "
+                "UNION ALL SELECT request_key,reservation_id,provider,model,dispatched_at,"
+                "estimated_input_tokens,reported_input_tokens,reported_output_tokens,"
+                "reported_neurons,state,NULL AS input_bytes FROM gateway_tasks legacy "
+                "WHERE NOT EXISTS (SELECT 1 FROM gateway_attempts a "
+                "WHERE a.request_key=legacy.request_key)) g "
                 "LEFT JOIN reservations r ON r.id=g.reservation_id "
                 "LEFT JOIN (SELECT reservation_id,"
                 "max(CASE WHEN metric='input_tokens' THEN amount END) AS ledger_input_tokens,"

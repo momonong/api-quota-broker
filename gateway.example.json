@@ -109,13 +109,14 @@
         "scope": null,
         "expires_at": null
       },
-      "secret_ref": "GOOGLE_API_KEY"
+      "secret_ref": "GEMINI_API_KEY"
     },
     {
       "id": "cloudflare-account-unverified",
       "provider": "cloudflare",
       "model": "@cf/meta/llama-3.2-1b-instruct",
       "account_id": "replace-with-account-id",
+      "account_id_ref": "CLOUDFLARE_ACCOUNT_ID",
       "enabled": false,
       "free_eligible": false,
       "billing_enabled": false,
@@ -776,6 +777,154 @@
         "expires_at": null
       },
       "secret_ref": "MISTRAL_API_KEY"
+    },
+    {
+      "id": "openrouter-free-unverified",
+      "provider": "openrouter",
+      "model": "liquid/lfm-2.5-2.6b:free",
+      "account_id": "replace-with-account-scope",
+      "enabled": false,
+      "free_eligible": false,
+      "billing_enabled": false,
+      "verified_at": null,
+      "expires_at": null,
+      "source": "Account free eligibility and key access not yet verified",
+      "priority": 4,
+      "concurrency_limit": 1,
+      "shared_concurrency_scope": "openrouter:account:replace",
+      "shared_concurrency_limit": 1,
+      "max_output_tokens": 64,
+      "local_safety_caps": [
+        {
+          "bucket": "openrouter:account:replace:rpm",
+          "metric": "requests",
+          "limit": 1,
+          "window": "rolling_minute",
+          "timezone": "UTC"
+        },
+        {
+          "bucket": "openrouter:account:replace:rpd",
+          "metric": "requests",
+          "limit": 1,
+          "window": "day",
+          "timezone": "UTC"
+        }
+      ],
+      "provider_quota_facts": [
+        {
+          "metric": "requests",
+          "window": "day",
+          "limit": {
+            "value": null,
+            "provenance": "unknown",
+            "as_of": null,
+            "source": null,
+            "scope": null,
+            "valid_until": null
+          },
+          "remaining": {
+            "value": null,
+            "provenance": "unknown",
+            "as_of": null,
+            "source": null,
+            "scope": null,
+            "valid_until": null
+          }
+        }
+      ],
+      "capacity": {
+        "kind": "unknown",
+        "refresh_seconds": null,
+        "as_of": null,
+        "source": null,
+        "scope": null,
+        "expires_at": null
+      },
+      "secret_ref": "OPENROUTER_API_KEY"
+    },
+    {
+      "id": "ocrspace-engine2-unverified",
+      "provider": "ocrspace",
+      "model": "ocr.space/engine2",
+      "account_id": "replace-with-account-scope",
+      "enabled": false,
+      "free_eligible": false,
+      "billing_enabled": false,
+      "verified_at": null,
+      "expires_at": null,
+      "source": "Account free eligibility and key access not yet verified",
+      "priority": 5,
+      "concurrency_limit": 1,
+      "shared_concurrency_scope": "ocrspace:key-ip:replace",
+      "shared_concurrency_limit": 1,
+      "max_output_tokens": 1,
+      "local_safety_caps": [
+        {
+          "bucket": "ocrspace:key-ip:replace:rpm",
+          "metric": "requests",
+          "limit": 1,
+          "window": "rolling_minute",
+          "timezone": "UTC"
+        },
+        {
+          "bucket": "ocrspace:key-ip:replace:rpd",
+          "metric": "requests",
+          "limit": 1,
+          "window": "day",
+          "timezone": "UTC"
+        }
+      ],
+      "provider_quota_facts": [
+        {
+          "metric": "requests",
+          "window": "day",
+          "limit": {
+            "value": null,
+            "provenance": "unknown",
+            "as_of": null,
+            "source": null,
+            "scope": null,
+            "valid_until": null
+          },
+          "remaining": {
+            "value": null,
+            "provenance": "unknown",
+            "as_of": null,
+            "source": null,
+            "scope": null,
+            "valid_until": null
+          }
+        },
+        {
+          "metric": "conversions",
+          "window": "month",
+          "limit": {
+            "value": null,
+            "provenance": "unknown",
+            "as_of": null,
+            "source": null,
+            "scope": null,
+            "valid_until": null
+          },
+          "remaining": {
+            "value": null,
+            "provenance": "unknown",
+            "as_of": null,
+            "source": null,
+            "scope": null,
+            "valid_until": null
+          }
+        }
+      ],
+      "capacity": {
+        "kind": "unknown",
+        "refresh_seconds": null,
+        "as_of": null,
+        "source": null,
+        "scope": null,
+        "expires_at": null
+      },
+      "secret_ref": "OCRSPACE_API_KEY"
     }
   ]
 }
