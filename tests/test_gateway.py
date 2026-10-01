@@ -889,7 +889,7 @@ def test_only_allowlisted_provider_diagnostic_codes_are_persistable():
     assert classify("groq", 403, "opaque-secret-like-value", kind="permissions_error") == (
         "provider_http_error"
     )
-    assert classify("mistral", 429, "anything") == "provider_http_error"
+    assert classify("mistral", 429, "anything") == "mistral_nested_error_unclassified"
     mistral = {
         "object": "error",
         "type": "rate_limit_error",
@@ -901,7 +901,17 @@ def test_only_allowlisted_provider_diagnostic_codes_are_persistable():
     )
     assert safe_http_error_code(
         "mistral", 429, json.dumps({**mistral, "object": "other"}).encode()
-    ) == ("provider_http_error")
+    ) == ("mistral_error_envelope_unclassified")
+    assert (
+        safe_http_error_code(
+            "mistral", 429, json.dumps({**mistral, "type": "opaque-untrusted-value"}).encode()
+        )
+        == "mistral_error_type_unclassified"
+    )
+    assert safe_http_error_code("mistral", 429, b"<html>untrusted prose</html>") == (
+        "mistral_non_json_error"
+    )
+    assert safe_http_error_code("mistral", 429, b"[]") == "mistral_non_object_error"
     edge = {
         "error_code": 1010,
         "error_name": "browser_signature_banned",

@@ -2,7 +2,7 @@
 
 ## 目前結果
 
-本分支實作七家固定路由與 SQLite 逐次嘗試紀錄。`scripts/v1_smoke_once.py` 的預設模式只列計畫。本地 fixture 是工程驗證，不能視為帳號或真實服務已通。2026-10-02 在使用者批准後，以五分鐘 config 唯讀 Service Token 執行兩輪真實 smoke。第一輪 NVIDIA 單次 POST 逾時，收據為 `unknown`；Gemini 在送出前失敗，沒有派送。第二輪根據第一輪收據排除 NVIDIA，Gemini 與其餘五家各派送一次。合計七家各至多一筆已派送 HTTP，均不重送。收據保留在 `.state/v1-smoke-2026-10-02.sqlite` 與 `.state/v1-smoke-2026-10-02-remaining.sqlite`，不存憑證、秘密或回應內容。
+本分支實作七家固定路由與 SQLite 逐次嘗試紀錄。`scripts/v1_smoke_once.py` 的預設模式只列計畫。本地 fixture 是工程驗證，不能視為帳號或真實服務已通。2026-10-02 在使用者批准後，以五分鐘 config 唯讀 Service Token 執行兩輪初始 smoke。第一輪 NVIDIA 單次 POST 逾時，收據為 `unknown`；Gemini 在送出前失敗，沒有派送。第二輪根據第一輪收據排除 NVIDIA，Gemini 與其餘五家各派送一次。初始範圍合計七家各至多一筆已派送 HTTP，均不重送。舊收據保留在 `.state/v1-smoke-2026-10-02.sqlite` 與 `.state/v1-smoke-2026-10-02-remaining.sqlite`，不存憑證、秘密或回應內容。使用者其後明確批准一次追加診斷，結果如下。
 
 | 供應商 | 實測收據 | HTTP | 回報用量 | 本地估算／限制 |
 | --- | --- | --- | --- | --- |
@@ -16,19 +16,33 @@
 
 HTTP 200 證明單次 API 呼叫回傳，但不證明免費帳號的餘額或刷新週期。404／403／429 的原因沒有可靠的細分證據；不推定模型不可用、權限或配額耗盡。`unknown` 與 `completed_usage_unknown` 均不自動重送。上述輸入上界是本地保留量，不是供應商用量。
 
+### 已批准追加診斷的結果
+
+使用者明確回答「同意這輪追加診斷」，批准一筆 Gemini 模型 GET 與 Gemini／Mistral／Cloudflare／NVIDIA 各最多一筆新 POST；精確 live 命令經正式執行審查通過後於 2026-10-02 執行一次。新收據 `.state/v1-diagnose-2026-10-02.sqlite` mode `0600`，沒有重跑。
+
+| 供應商／方法 | 新結果 | 延遲 | 供應商回報用量／限制 |
+| --- | --- | --- | --- |
+| Gemini models GET | 200，3.5 Flash-Lite 可見並支援 `generateContent` | 未單獨記錄 | 單頁 GET 一次；沒有翻頁 |
+| Gemini 3.5 Flash-Lite POST | 200，`completed` | 879 ms | 輸入 20、輸出 1 token；本地 reservation 已結算 |
+| Mistral POST | 429，`unknown`，`provider_http_error` | 563 ms | 未回報用量，未產生符合白名單的細分類別；保留 hold |
+| Cloudflare POST | 200，`completed_usage_unknown` | 1174 ms | `result.usage` 正確取得輸入 60、輸出 2 tokens；Neurons 未回報，保留 hold |
+| NVIDIA POST | `unknown`，`timeout_before_headers` | 60219 ms | 未取得 HTTP headers 或用量；保留新 hold，舊 hold 亦保留 |
+
+這輪已證明 Gemini 的新免費候選可被此 key 呼叫，以及 Cloudflare 用量解析修正可處理真實 `result.usage`；不能由此倒推舊 404 或舊 Cloudflare body 的具體內容。NVIDIA 已縮小到收到 headers 前逾時，仍無法分辨 DNS／連線／TLS／TTFB／模型等待。Mistral 429 的確切限額或帳號原因仍須有權限者在 Admin Panel 查證，沒有升級或使用 Admin key。Groq／OpenRouter／OCR.space 沒有新請求。這輪共一筆 GET、四筆 POST；舊七筆派送收據與舊 `unknown` 原樣保全。七家全面可用的驗收仍未通過。
+
 ## 2026-10-02 根因追查與修正
 
 - **Cloudflare 解析缺陷已確認並修正。** [官方 REST API](https://developers.cloudflare.com/workers-ai/get-started/rest-api/)以 `result` 包裝模型輸出，[模型 schema](https://developers.cloudflare.com/workers-ai/models/llama-3.2-1b-instruct/)及[Run API schema](https://developers.cloudflare.com/api/resources/ai/methods/run/)列出模型 `usage`。舊解析器只讀最外層 `usage`，會漏掉 `result.usage`。新解析器接受兩種已知位置，若兩處衝突則不採用用量。官方 schema 的 token 用量欄位不保證包含 Neurons；缺 Neurons 時仍保留配額 hold。第一次真實回應內容未保存，故不能追認它實際帶有任何 token 數值。
-- **Gemini 404 的可驗證線索是模型存取限制。** [Google 退場／存取頁](https://ai.google.dev/gemini-api/docs/deprecations)明確限制新專案使用 2.5 Flash-Lite，推薦 3.5 Flash-Lite；[官方定價](https://ai.google.dev/gemini-api/docs/pricing)列 3.5 Flash-Lite 的免費輸入與輸出。v1 的停用範例路由已改為 `gemini-3.5-flash-lite`，舊 2.5 模型保留於 catalog 供歷史收據辨識。Google 標準錯誤也可能是數字 `error.code=404` 與 `error.status=NOT_FOUND`；新診斷器只分類為 `google_not_found`，不從自由文字猜測模型原因。原始 404 body 未保存，仍不能確認本帳號是否因這項限制而失敗；新模型尚未真實派送。
+- **Gemini 新模型已成功，舊 404 仍不可追認原因。** [Google 退場／存取頁](https://ai.google.dev/gemini-api/docs/deprecations)明確限制新專案使用 2.5 Flash-Lite，推薦 3.5 Flash-Lite；[官方定價](https://ai.google.dev/gemini-api/docs/pricing)列 3.5 Flash-Lite 的免費輸入與輸出。v1 的停用範例路由已改為 `gemini-3.5-flash-lite`，舊 2.5 模型保留於 catalog 供歷史收據辨識。Google 標準錯誤也可能是數字 `error.code=404` 與 `error.status=NOT_FOUND`；新診斷器只分類為 `google_not_found`，不從自由文字猜測模型原因。原始 404 body 未保存，仍不能確認本帳號是否因這項限制而失敗；追加診斷已取得新模型 GET 可見及 POST 200 的真實證據。
 - **Groq 的新唯讀探針確認本機還有邊緣封鎖。** 協調 task 對 `GET /openai/v1/models` 做的無認證唯讀檢查回 HTTP 403，頂層 `error_code=1010`、`error_name=browser_signature_banned`。這符合 [Cloudflare Error 1010](https://developers.cloudflare.com/support/troubleshooting/http-status-codes/cloudflare-1xxx-errors/error-1010/) 的客戶端指紋封鎖，應由網站擁有者處理；不改 User-Agent／IP 或偽裝瀏覽器繞過。此 GET 的證據不能倒推先前 POST 403 必然同因：舊回應 body 未保存。[Groq 官方錯誤碼](https://console.groq.com/docs/errors)及[模型權限文件](https://console.groq.com/docs/model-permissions)也列 403 權限受限與組織／專案模型封鎖。新增固定白名單分類，以後若看到 1010 或官方模型封鎖碼才記錄相應非秘密代碼；不保存任意訊息。
-- **Mistral 429 未能細分。** [官方用量與限制](https://docs.mistral.ai/admin/billing-usage/usage-limits)說明 Free mode 的組織、Workspace 和模型限額；[錯誤格式](https://docs.mistral.ai/resources/error-glossary)使用頂層 `object/type/code`，`rate_limit_error` 是固定類別。新診斷器只在未來回應明確符合 `object=error`、`type=rate_limit_error` 時記錄白名單碼，仍不會自動重送或釋放 hold。目前舊收據僅有 429，沒有可信的錯誤類別或用量，不能確認是哪一種限制，也不能升級付費。
-- **NVIDIA 推論逾時階段未知。** 協調 task 的無認證 `GET /v1/models` 回 200、包含模型列表且約 155 ms，證明當時從主機可達模型列表端點；不能推論先前推論 POST 成功或失敗。舊收據只有 60 秒 timeout 與無 HTTP 回應，不能區分連線、首位元組等待、模型執行或回應讀取。該筆維持 `unknown`，沒有重送。
+- **Mistral 兩次 429 仍未能細分。** [官方用量與限制](https://docs.mistral.ai/admin/billing-usage/usage-limits)說明 Free mode 的組織、Workspace 和模型限額；[錯誤格式](https://docs.mistral.ai/resources/error-glossary)使用頂層 `object/type/code`，`rate_limit_error` 是固定類別。追加回應未符合已知白名單，兩次收據均沒有足以判斷確切限制的錯誤類別或用量。原始 body 已丟棄，不能回補分類。診斷器其後補上固定結構類別，區分非 JSON、非物件、未識別的頂層 error、巢狀 error 與其他 envelope；不保存任意 `type/code/message` 值，也不改寫此次收據。這只改善未來診斷，尚未解決實際 429，不會自動重送、釋放 hold 或升級付費。
+- **NVIDIA 新逾時已定位在收到 HTTP headers 前。** 協調 task 的無認證 `GET /v1/models` 回 200、包含模型列表且約 155 ms，證明當時從主機可達模型列表端點；不能推論推論 POST 成功或失敗。舊收據只有 60 秒 timeout 與無 HTTP 回應；追加的新請求約 60 秒逾時，記錄 `timeout_before_headers`，排除了收到 headers 後讀 body 的逾時，但仍不能區分 DNS／連線／TLS／首位元組等待／模型執行。兩筆均維持 `unknown`，沒有重播。
 
-未來回應會以固定、非秘密診斷碼區分憑證取得與請求建構的送出前失敗，並只對 Google 模型不存在、Groq 組織／專案模型封鎖的明確官方碼做白名單分類。這些修正不會改寫舊收據或推定舊 body。精確確認剩餘帳號層級原因需要額外供應商查詢或新的推論呼叫，超出本輪「每家最多一次」的批准。
+未來回應會以固定、非秘密診斷碼區分憑證取得與請求建構的送出前失敗，並對 Google／Groq／Mistral 的已知官方錯誤碼做白名單分類。這些修正不會改寫舊收據或推定舊 body。使用者已批准並完成一次追加診斷，該次一筆 GET、四筆 POST 上限已用完；若要再做供應商查詢或新推論，需明確擴大次數上限。
 
-## 後續診斷的最小批准範圍（未執行）
+## 已批准與執行的追加診斷範圍
 
-已準備 `scripts/v1_diagnose_once.py`，預設只列計畫。**尚未執行 live，原每家一次批准已用完。** 它先唯讀核對兩份舊 smoke DB 各供應商的派送數，再以 `0600` 獨占建立固定新收據 `.state/v1-diagnose-2026-10-02.sqlite`，新 request key 和不同的 `READY` 提示詞不重播舊請求。Doppler `api-quota-broker/dev` 五分鐘整個 config 唯讀 Service Token 只在程序記憶體；單次序列執行，近到期即停，不自動換 token。舊 `unknown` 與配額 hold 保留原樣。新收據只存固定診斷碼、狀態及供應商回報的數值用量，不存 token、key、輸入、輸出或任意回應本文。
+`scripts/v1_diagnose_once.py` 預設只列計畫；使用者擴大原次數上限後已執行 live 一次，**本輪上限已用完，不可重執行**。它先唯讀核對兩份舊 smoke DB 各供應商的派送數，再以 `0600` 獨占建立固定新收據 `.state/v1-diagnose-2026-10-02.sqlite`，新 request key 和不同的 `READY` 提示詞不重播舊請求。Doppler `api-quota-broker/dev` 五分鐘整個 config 唯讀 Service Token 只在程序記憶體；單次序列執行，近到期即停，不自動換 token。舊 `unknown` 與配額 hold 保留原樣。新收據只存固定診斷碼、狀態及供應商回報的數值用量，不存 token、key、輸入、輸出或任意回應本文。
 
 | 順序 | 新請求上限 | 用途與停止條件 |
 | --- | --- | --- |
@@ -38,9 +52,9 @@ HTTP 200 證明單次 API 呼叫回傳，但不證明免費帳號的餘額或刷
 | 4 | Cloudflare `POST https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/run/@cf/meta/llama-3.2-1b-instruct` × 1 | 驗證修正後 `result.usage` 解析；64 輸出 tokens。若回報 tokens 但沒有實際 Neurons，仍保留 `completed_usage_unknown`。 |
 | 5 | NVIDIA `POST https://integrate.api.nvidia.com/v1/chat/completions` × 1 | 固定 `google/gemma-4-31b-it`、64 輸出 tokens、新提示詞與新識別；舊 `unknown` 不變。若再逾時，只區分「收到 HTTP headers 前」與「讀 body 期間」；前者**不能**再區分 DNS／連線／TLS／首位元組等待／模型執行。 |
 
-總上限為**一筆新的憑證 GET、四筆新的獨立推論 POST**。Groq 因 Error 1010 暫不觸碰，網站擁有者解封與組織／專案管理者查權限是外部依賴；OpenRouter、OCR.space 已成功，不重測。不使用 Mistral Enterprise Admin key、不升級付費、不部署。Mistral Free mode／Workspace 可用額度仍須由有權限者在 [Admin Panel](https://docs.mistral.ai/admin/billing-usage/usage-limits) 核對；新呼叫若仍 429 不足以證明舊 429 的同一原因。Cloudflare 舊 200 的實際 Neurons 若需補帳，應由帳號管理者查 Usage dashboard，不能由新呼叫回填。任何新 GET／POST 均須使用者先**明確擴大原次數上限**。
+總上限為**一筆使用憑證的模型清單 GET、四筆新的獨立推論 POST**，已全部使用。Groq 因 Error 1010 暫不觸碰，網站擁有者解封與組織／專案管理者查權限是外部依賴；OpenRouter、OCR.space 已成功，不重測。不使用 Mistral Enterprise Admin key、不升級付費、不部署。Mistral Free mode／Workspace 可用額度仍須由有權限者在 [Admin Panel](https://docs.mistral.ai/admin/billing-usage/usage-limits) 核對；新呼叫也回 429，但不足以證明兩次為同一原因。Cloudflare 舊 200 的實際 Neurons 若需補帳，應由帳號管理者查 Usage dashboard，不能由新呼叫回填。任何新 GET／POST 均須使用者先**明確擴大原次數上限**。
 
-可審核、但**未獲新授權前不可執行**的唯一 live 命令：
+本輪已經執行的唯一 live 命令，**不可重執行**：
 
 ```bash
 .venv/bin/python scripts/v1_diagnose_once.py --live --db /home/ubuntu/projects/api-quota-broker/.state/v1-diagnose-2026-10-02.sqlite

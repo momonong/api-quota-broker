@@ -171,13 +171,21 @@ def _request_id(value: object) -> str | None:
 
 
 def safe_http_error_code(provider: str, status: int, raw: bytes) -> str:
-    """Persist only fixed, documented diagnostic codes, never provider prose."""
+    """Persist only fixed diagnostic codes and response shapes, never provider prose."""
     try:
         data = json.loads(raw)
     except (ValueError, TypeError):
-        return "provider_http_error"
+        return (
+            "mistral_non_json_error"
+            if provider == "mistral" and status == 429
+            else "provider_http_error"
+        )
     if not isinstance(data, dict):
-        return "provider_http_error"
+        return (
+            "mistral_non_object_error"
+            if provider == "mistral" and status == 429
+            else "provider_http_error"
+        )
     if (
         provider == "groq"
         and status == 403
@@ -192,6 +200,12 @@ def safe_http_error_code(provider: str, status: int, raw: bytes) -> str:
         and data.get("type") == "rate_limit_error"
     ):
         return "mistral_rate_limit_error"
+    if provider == "mistral" and status == 429:
+        if data.get("object") == "error":
+            return "mistral_error_type_unclassified"
+        if isinstance(data.get("error"), dict):
+            return "mistral_nested_error_unclassified"
+        return "mistral_error_envelope_unclassified"
     if not isinstance(data.get("error"), dict):
         return "provider_http_error"
     error = data["error"]
