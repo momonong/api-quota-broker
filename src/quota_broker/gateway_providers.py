@@ -17,6 +17,14 @@ class ProviderError(ValueError):
     pass
 
 
+class ProviderPhaseTimeout(ProviderError):
+    """Bounded timing phase only; before_headers includes connect and TTFB."""
+
+    def __init__(self, code: str):
+        super().__init__(code)
+        self.code = code
+
+
 def official_request(
     provider: str,
     model_id: str,
@@ -136,8 +144,17 @@ def provider_http(
         response = opener.open(request, timeout=timeout)
     except urllib.error.HTTPError as exc:
         response = exc
+    except TimeoutError as exc:
+        raise ProviderPhaseTimeout("timeout_before_headers") from exc
+    except urllib.error.URLError as exc:
+        if isinstance(exc.reason, TimeoutError):
+            raise ProviderPhaseTimeout("timeout_before_headers") from exc
+        raise
     with response:
-        raw = response.read(MAX_RESPONSE_BYTES + 1)
+        try:
+            raw = response.read(MAX_RESPONSE_BYTES + 1)
+        except TimeoutError as exc:
+            raise ProviderPhaseTimeout("timeout_response_body") from exc
         if len(raw) > MAX_RESPONSE_BYTES:
             raise ProviderError("provider response too large")
         return response.status, dict(response.headers), raw

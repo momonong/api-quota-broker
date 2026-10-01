@@ -26,6 +26,26 @@ HTTP 200 證明單次 API 呼叫回傳，但不證明免費帳號的餘額或刷
 
 未來回應會以固定、非秘密診斷碼區分憑證取得與請求建構的送出前失敗，並只對 Google 模型不存在、Groq 組織／專案模型封鎖的明確官方碼做白名單分類。這些修正不會改寫舊收據或推定舊 body。精確確認剩餘帳號層級原因需要額外供應商查詢或新的推論呼叫，超出本輪「每家最多一次」的批准。
 
+## 後續診斷的最小批准範圍（未執行）
+
+已準備 `scripts/v1_diagnose_once.py`，預設只列計畫。**尚未執行 live，原每家一次批准已用完。** 它先唯讀核對兩份舊 smoke DB 各供應商的派送數，再以 `0600` 獨占建立固定新收據 `.state/v1-diagnose-2026-10-02.sqlite`，新 request key 和不同的 `READY` 提示詞不重播舊請求。Doppler `api-quota-broker/dev` 五分鐘整個 config 唯讀 Service Token 只在程序記憶體；單次序列執行，近到期即停，不自動換 token。舊 `unknown` 與配額 hold 保留原樣。新收據只存固定診斷碼、狀態及供應商回報的數值用量，不存 token、key、輸入、輸出或任意回應本文。
+
+| 順序 | 新請求上限 | 用途與停止條件 |
+| --- | --- | --- |
+| 1 | Gemini `GET https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000` × 1 | 用現有 `GEMINI_API_KEY` 查 `gemini-3.5-flash-lite` 是否列出且支援 `generateContent`；單頁不完整或未列出就跳過 Gemini POST，不自動翻頁。[官方 ListModels](https://ai.google.dev/api/models) |
+| 2 | Gemini `POST /v1beta/models/gemini-3.5-flash-lite:generateContent` × 1 | 只有上一步明確符合才送；固定官方免費級別候選，64 輸出 tokens 上限。 |
+| 3 | Mistral `POST https://api.mistral.ai/v1/chat/completions` × 1 | 固定 `mistral-small-latest`、64 輸出 tokens；白名單記錄官方頂層錯誤類別，不把 429 自動重試或視為已釋放 hold。 |
+| 4 | Cloudflare `POST https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/run/@cf/meta/llama-3.2-1b-instruct` × 1 | 驗證修正後 `result.usage` 解析；64 輸出 tokens。若回報 tokens 但沒有實際 Neurons，仍保留 `completed_usage_unknown`。 |
+| 5 | NVIDIA `POST https://integrate.api.nvidia.com/v1/chat/completions` × 1 | 固定 `google/gemma-4-31b-it`、64 輸出 tokens、新提示詞與新識別；舊 `unknown` 不變。若再逾時，只區分「收到 HTTP headers 前」與「讀 body 期間」；前者**不能**再區分 DNS／連線／TLS／首位元組等待／模型執行。 |
+
+總上限為**一筆新的憑證 GET、四筆新的獨立推論 POST**。Groq 因 Error 1010 暫不觸碰，網站擁有者解封與組織／專案管理者查權限是外部依賴；OpenRouter、OCR.space 已成功，不重測。不使用 Mistral Enterprise Admin key、不升級付費、不部署。Mistral Free mode／Workspace 可用額度仍須由有權限者在 [Admin Panel](https://docs.mistral.ai/admin/billing-usage/usage-limits) 核對；新呼叫若仍 429 不足以證明舊 429 的同一原因。Cloudflare 舊 200 的實際 Neurons 若需補帳，應由帳號管理者查 Usage dashboard，不能由新呼叫回填。任何新 GET／POST 均須使用者先**明確擴大原次數上限**。
+
+可審核、但**未獲新授權前不可執行**的唯一 live 命令：
+
+```bash
+.venv/bin/python scripts/v1_diagnose_once.py --live --db /home/ubuntu/projects/api-quota-broker/.state/v1-diagnose-2026-10-02.sqlite
+```
+
 ## 固定路由與唯讀名稱
 
 | 供應商 | 固定模型／能力 | 官方端點 | Doppler 名稱 |
@@ -68,4 +88,4 @@ HTTP 200 證明單次 API 呼叫回傳，但不證明免費帳號的餘額或刷
 
 ## 本地驗證
 
-`pytest -q`（103 passed）、`ruff check .`、`ruff format --check .`、`mypy src/quota_broker` 在 Ubuntu 執行；fixture 覆蓋七家固定路由、OCR 表單、秘密不落庫、明確 429 fallback、Cloudflare `3040`／5xx／逾時不 fallback、同帳號 scope 冷卻、逐次監控、smoke plan、前次派送防重跑與個別送出前失敗後續測。真實 provider 全面可用性、free 帳號資格、配額剩餘和 OCR 對真實文件的品質尚未驗證。
+`pytest -q`（110 passed）、`ruff check .`、`ruff format --check .`、`mypy src/quota_broker` 在 Ubuntu 執行；fixture 覆蓋七家固定路由、OCR 表單、秘密不落庫、明確 429 fallback、Cloudflare `3040`／5xx／逾時不 fallback、同帳號 scope 冷卻、逐次監控、smoke plan、前次派送防重跑與個別送出前失敗後續測，以及新診斷腳本的一筆 fixture GET、四筆 fixture POST、舊收據唯讀與同檔防重跑。真實 provider 全面可用性、free 帳號資格、配額剩餘和 OCR 對真實文件的品質尚未驗證。

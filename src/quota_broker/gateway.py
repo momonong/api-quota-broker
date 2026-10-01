@@ -19,6 +19,7 @@ from .config import Target
 from .core import Broker, BrokerError, canonical, stamp, utcnow
 from .gateway_providers import (
     ProviderError,
+    ProviderPhaseTimeout,
     explicit_quota_rejection,
     interpret,
     official_request,
@@ -654,7 +655,9 @@ class Gateway:
                     error_code = "provider_response_invalid"
             except (OSError, TimeoutError, ValueError, ProviderError) as exc:
                 error_code = (
-                    type(exc).__name__
+                    exc.code
+                    if isinstance(exc, ProviderPhaseTimeout)
+                    else type(exc).__name__
                     if type(exc).__name__ in {"TimeoutError", "ProviderError"}
                     else "transport_error"
                 )

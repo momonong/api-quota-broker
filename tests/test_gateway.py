@@ -12,10 +12,12 @@ from types import SimpleNamespace
 
 import pytest
 
+from quota_broker import gateway_providers
 from quota_broker.cli import gateway_cli
 from quota_broker.config import Capacity, Evidence, Quota, QuotaFact, Target
 from quota_broker.gateway import Gateway, GatewayError
 from quota_broker.gateway_providers import (
+    ProviderPhaseTimeout,
     explicit_quota_rejection,
     interpret,
     official_request,
@@ -944,6 +946,53 @@ def test_groq_permission_code_is_persisted_without_provider_message(tmp_path):
     assert result["error_code"] == "groq_model_blocked_project"
     assert "untrusted message" not in str(result)
     assert b"untrusted message" not in db.read_bytes()
+
+
+def test_transport_timeout_phase_is_bounded_without_body_or_headers(monkeypatch):
+    url = "https://integrate.api.nvidia.com/v1/chat/completions"
+
+    class BeforeHeaders:
+        def open(self, _request, timeout):
+            assert timeout == 1
+            raise TimeoutError("untrusted network details")
+
+    monkeypatch.setattr(
+        gateway_providers.urllib.request,
+        "build_opener",
+        lambda *_: BeforeHeaders(),
+    )
+    with pytest.raises(ProviderPhaseTimeout) as early:
+        provider_http(url, {"Authorization": "Bearer fixture"}, {}, 1)
+    assert early.value.code == "timeout_before_headers"
+
+    class DuringBody:
+        status = 200
+
+        def __init__(self):
+            self.headers = {}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def read(self, _limit):
+            raise TimeoutError("untrusted body details")
+
+    class AfterHeaders:
+        def open(self, _request, timeout):
+            assert timeout == 1
+            return DuringBody()
+
+    monkeypatch.setattr(
+        gateway_providers.urllib.request,
+        "build_opener",
+        lambda *_: AfterHeaders(),
+    )
+    with pytest.raises(ProviderPhaseTimeout) as late:
+        provider_http(url, {"Authorization": "Bearer fixture"}, {}, 1)
+    assert late.value.code == "timeout_response_body"
 
 
 def test_all_configured_quota_metrics_required_before_settlement(tmp_path):
