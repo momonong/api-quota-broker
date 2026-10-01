@@ -86,7 +86,9 @@ def task(
 def fixture_transport(calls, *, status=200, missing_usage=False):
     def transport(url, headers, payload, timeout):
         calls.append((url, headers, payload, timeout))
-        if "integrate.api.nvidia.com" in url:
+        if any(
+            host in url for host in ("integrate.api.nvidia.com", "api.groq.com", "api.mistral.ai")
+        ):
             response = {
                 "choices": [{"message": {"content": "fixture answer"}}],
                 "usage": {} if missing_usage else {"prompt_tokens": 11, "completion_tokens": 3},
@@ -130,6 +132,8 @@ def make_gateway(tmp_path, targets, calls, **kwargs):
         ("nvidia", "google/gemma-4-31b-it", None),
         ("google", "gemini-2.5-flash-lite", None),
         ("cloudflare", "@cf/meta/llama-3.2-1b-instruct", 30),
+        ("groq", "openai/gpt-oss-20b", None),
+        ("mistral", "mistral-small-latest", None),
     ],
 )
 def test_all_provider_execution_usage_and_secret_free_db(tmp_path, provider, model, neurons):
@@ -246,6 +250,8 @@ def test_missing_usage_and_concurrent_same_key(tmp_path):
         ("nvidia", "google/gemma-4-31b-it", None),
         ("google", "gemini-2.5-flash-lite", None),
         ("cloudflare", "@cf/meta/llama-3.2-1b-instruct", 30),
+        ("groq", "openai/gpt-oss-20b", None),
+        ("mistral", "mistral-small-latest", None),
     ],
 )
 def test_authenticated_http_and_cli_share_gateway(
@@ -412,7 +418,13 @@ def test_gateway_example_is_disabled_and_has_three_nvidia_models():
 
     config = Path(__file__).resolve().parents[1] / "gateway.example.json"
     targets = load_gateway_config(config)
-    assert {target.provider for target in targets} == {"nvidia", "google", "cloudflare"}
+    assert {target.provider for target in targets} == {
+        "nvidia",
+        "google",
+        "cloudflare",
+        "groq",
+        "mistral",
+    }
     assert len([target for target in targets if target.provider == "nvidia"]) == 3
     assert all(not target.enabled and not target.free_eligible for target in targets)
     assert all(target.secret_ref for target in targets)
@@ -628,3 +640,110 @@ def test_current_nvidia_lightning_text_model_uses_nonstreaming_no_thinking(tmp_p
     assert payload["stream"] is False
     assert payload["chat_template_kwargs"] == {"enable_thinking": False}
     assert calls[0][3] == 60.0
+
+
+@pytest.mark.parametrize(
+    "provider,model,host,output_field",
+    [
+        ("groq", "openai/gpt-oss-20b", "api.groq.com", "max_completion_tokens"),
+        ("mistral", "mistral-small-latest", "api.mistral.ai", "max_tokens"),
+    ],
+)
+def test_new_chat_provider_fixed_request_and_429_hold(
+    tmp_path, provider, model, host, output_field
+):
+    calls = []
+    gateway = make_gateway(tmp_path, [target(provider, provider, model)], calls)
+    payload = task("new-chat", provider=provider, model=model)
+    result = gateway.run(payload)
+    assert result["state"] == "completed"
+    url, headers, request, timeout = calls[0]
+    assert url.startswith("https://" + host + "/")
+    assert headers == {"Authorization": "Bearer fixture-secret-value"}
+    assert request["messages"] == [{"role": "user", "content": "fixture input"}]
+    assert request["stream"] is False and request[output_field] == 16
+    assert timeout <= 90
+    if provider == "groq":
+        assert request["reasoning_effort"] == "low"
+        assert request["include_reasoning"] is False
+    restarted = Gateway(
+        tmp_path / "gateway.db",
+        (target(provider, provider, model),),
+        HMAC_KEY,
+        lambda _: "fixture-secret-value",
+        fixture_transport(calls),
+        clock=lambda: NOW,
+    )
+    assert restarted.run(payload)["state"] == "completed"
+    assert len(calls) == 1
+    denied = target(provider, provider, model)
+    other = tmp_path / "429"
+    other.mkdir()
+    second = make_gateway(other, [denied], calls, status=429)
+    unknown = second.run(task("rate-limit", provider=provider, model=model))
+    assert unknown["state"] == "unknown" and unknown["http_status"] == 429
+    assert unknown["ledger_basis"] == "held_estimate"
+    assert second.run(task("rate-limit", provider=provider, model=model))["state"] == "unknown"
+    assert len(calls) == 2
+
+
+def test_unconstrained_route_explains_new_providers_and_blocks_unverified(tmp_path):
+    groq = target("groq", "groq", "openai/gpt-oss-20b", priority=0)
+    mistral = target("mistral", "mistral", "mistral-small-latest", priority=1)
+    google = target("google", "google", "gemini-2.5-flash-lite", priority=2)
+    calls = []
+    gateway = make_gateway(tmp_path, [groq, mistral, google], calls)
+    original = task("unconstrained")
+    plan = gateway.explain(original)
+    assert plan["selected_target_id"] == "groq"
+    assert {row["provider"] for row in plan["candidates"]} == {"groq", "mistral", "google"}
+    assert gateway.run(original)["provider"] == "groq"
+    assert len(calls) == 1
+    other = tmp_path / "unverified"
+    other.mkdir()
+    blocked = make_gateway(
+        other,
+        [replace(groq, free_eligible=False), replace(mistral, billing_enabled=True)],
+        [],
+    )
+    denied = blocked.explain(task("unverified"))
+    assert denied["selected_target_id"] is None
+    assert all("eligibility_or_official_capacity" in row["reasons"] for row in denied["candidates"])
+
+
+@pytest.mark.parametrize(
+    "provider,model",
+    [("groq", "openai/gpt-oss-20b"), ("mistral", "mistral-small-latest")],
+)
+def test_new_chat_provider_transport_accepts_only_fixed_origin(monkeypatch, provider, model):
+    from quota_broker.gateway_providers import ProviderError, official_request, provider_http
+
+    class Response:
+        status = 200
+
+        def __init__(self):
+            self.headers = {}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def read(self, _limit):
+            return b'{"choices":[],"usage":{}}'
+
+    class Opener:
+        def open(self, request, timeout):
+            assert request.full_url == url and timeout == 30
+            return Response()
+
+    monkeypatch.setattr(
+        "quota_broker.gateway_providers.urllib.request.build_opener", lambda *_: Opener()
+    )
+    url, headers, payload = official_request(
+        provider, model, "fixture-account", "fixture-secret", "fixture input", 16, None, None
+    )
+    assert provider_http(url, headers, payload, 30)[0] == 200
+    with pytest.raises(ProviderError, match="unapproved provider URL"):
+        provider_http(url + "/other", headers, payload, 30)

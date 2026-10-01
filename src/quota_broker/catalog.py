@@ -102,6 +102,39 @@ MODELS = {
         source="https://developers.cloudflare.com/workers-ai/models/llama-3.2-1b-instruct/",
         verified_at="2026-09-25",
     ),
+    "openai/gpt-oss-20b": Model(
+        provider="groq",
+        model="openai/gpt-oss-20b",
+        author="OpenAI",
+        host="GroqCloud",
+        context_tokens=131_072,
+        max_output_tokens=4096,
+        capability="text_generation",
+        origin="https://api.groq.com",
+        endpoint_template="https://api.groq.com/openai/v1/chat/completions",
+        free_kind="free_plan_subject_to_verified_organization_limits",
+        use_restrictions="Verify organization plan, model access, and billing before dispatch.",
+        source="https://console.groq.com/docs/rate-limits",
+        verified_at="2026-10-02",
+    ),
+    "mistral-small-latest": Model(
+        provider="mistral",
+        model="mistral-small-latest",
+        author="Mistral AI",
+        host="Mistral Studio API",
+        context_tokens=262_144,
+        max_output_tokens=4096,
+        capability="text_generation",
+        origin="https://api.mistral.ai",
+        endpoint_template="https://api.mistral.ai/v1/chat/completions",
+        free_kind="free_mode_subject_to_verified_organization_access",
+        use_restrictions="Verify Free mode, API access, and pay-as-you-go disabled before dispatch.",
+        source=(
+            "https://docs.mistral.ai/getting-started/quickstarts/studio/"
+            "activate-and-generate-api-key"
+        ),
+        verified_at="2026-10-02",
+    ),
 }
 
 

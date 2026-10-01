@@ -50,6 +50,23 @@ def official_request(
         else:
             payload["chat_template_kwargs"] = {"enable_thinking": False}
         return url, {"Authorization": "Bearer " + secret}, payload
+    if provider in {"groq", "mistral"}:
+        payload = {
+            "model": model_id,
+            "messages": [{"role": "user", "content": content}],
+            "stream": False,
+        }
+        if provider == "groq":
+            payload.update(
+                {
+                    "max_completion_tokens": max_output_tokens,
+                    "reasoning_effort": "low",
+                    "include_reasoning": False,
+                }
+            )
+        else:
+            payload["max_tokens"] = max_output_tokens
+        return url, {"Authorization": "Bearer " + secret}, payload
     if provider == "google":
         return (
             url,
@@ -125,7 +142,7 @@ def interpret(
     output_tokens: int | None = None
     neurons: int | None = None
     request_id: str | None = None
-    if provider == "nvidia":
+    if provider in {"nvidia", "groq", "mistral"}:
         usage = data.get("usage")
         if isinstance(usage, dict):
             input_tokens = _nonnegative(usage.get("prompt_tokens"))

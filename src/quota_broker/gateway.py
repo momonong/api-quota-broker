@@ -118,7 +118,7 @@ def validate_task(raw: dict[str, Any]) -> dict[str, Any]:
     if type(output) is not int or not 1 <= output <= 4096:
         raise GatewayError("invalid_request", "max_output_tokens must be 1..4096")
     provider, model = raw.get("provider"), raw.get("model")
-    if provider is not None and provider not in {"nvidia", "google", "cloudflare"}:
+    if provider is not None and provider not in {model.provider for model in MODELS.values()}:
         raise GatewayError("invalid_request", "unsupported provider")
     if model is not None and (not isinstance(model, str) or model not in MODELS):
         raise GatewayError("invalid_request", "unknown model")
@@ -558,7 +558,7 @@ class Gateway:
         from_at: str | None = None,
         to_at: str | None = None,
     ) -> list[dict[str, Any]]:
-        if provider is not None and provider not in {"nvidia", "google", "cloudflare"}:
+        if provider is not None and provider not in {model.provider for model in MODELS.values()}:
             raise GatewayError("invalid_request", "invalid provider filter")
         if model is not None and model not in MODELS:
             raise GatewayError("invalid_request", "invalid model filter")
