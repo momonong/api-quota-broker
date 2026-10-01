@@ -5,6 +5,8 @@ import sqlite3
 import sys
 from pathlib import Path
 
+import pytest
+
 from quota_broker.gateway import Gateway as RealGateway
 from quota_broker.gateway import validate_task
 
@@ -65,6 +67,25 @@ def test_synthetic_ocr_png_is_accepted_and_has_no_user_content():
     )
 
 
+def test_prior_receipts_block_repeat_dispatch_but_allow_pre_send_retry(tmp_path):
+    prior = tmp_path / "v1-smoke-prior.db"
+    with sqlite3.connect(prior) as con:
+        con.execute("CREATE TABLE gateway_tasks(provider TEXT, dispatched_at TEXT)")
+        con.execute("CREATE TABLE gateway_attempts(provider TEXT, dispatched_at TEXT)")
+        con.execute(
+            "INSERT INTO gateway_attempts VALUES(?, ?)",
+            ("nvidia", "2026-10-02T00:00:00Z"),
+        )
+        con.execute("INSERT INTO gateway_attempts VALUES(?, NULL)", ("google",))
+    with pytest.raises(RuntimeError, match="already dispatched"):
+        v1_smoke_once.check_prior_receipts(("nvidia",), [prior])
+    v1_smoke_once.check_prior_receipts(("google", "cloudflare"), [prior])
+    with pytest.raises(RuntimeError, match="requires prior"):
+        v1_smoke_once.check_prior_receipts(("google",), [])
+    with pytest.raises(RuntimeError, match="unavailable"):
+        v1_smoke_once.check_prior_receipts(("google",), [tmp_path / "absent.db"])
+
+
 def test_fixture_live_claim_precedes_token_and_independent_failures_continue(
     tmp_path, monkeypatch, capsys
 ):
@@ -84,13 +105,16 @@ def test_fixture_live_claim_precedes_token_and_independent_failures_continue(
         return "fixture-token-never-printed"
 
     monkeypatch.setattr(v1_smoke_once, "service_token", token)
-    monkeypatch.setattr(
-        v1_smoke_once,
-        "doppler_resolver_from_token",
-        lambda *_: (
-            lambda ref: "fixture-account" if ref == "CLOUDFLARE_ACCOUNT_ID" else "fixture-secret"
-        ),
-    )
+
+    def resolver(*_):
+        def resolve(ref):
+            if ref == "GEMINI_API_KEY":
+                raise ValueError("fixture pre-send failure")
+            return "fixture-account" if ref == "CLOUDFLARE_ACCOUNT_ID" else "fixture-secret"
+
+        return resolve
+
+    monkeypatch.setattr(v1_smoke_once, "doppler_resolver_from_token", resolver)
     provider_calls = []
 
     def transport(url, headers, payload, timeout):
@@ -126,9 +150,9 @@ def test_fixture_live_claim_precedes_token_and_independent_failures_continue(
             db, targets, key, resolver, transport=transport
         ),
     )
-    assert v1_smoke_once.main() == 2  # NVIDIA unknown; six independent checks still run.
+    assert v1_smoke_once.main() == 2  # NVIDIA unknown; Google pre-send failure; five others run.
     output = capsys.readouterr().out
-    assert len(provider_calls) == 7 and len(token_calls) == 1
+    assert len(provider_calls) == 6 and len(token_calls) == 1
     assert db.stat().st_mode & 0o777 == 0o600
     assert '"expected_text_ok": true' in output
     assert "fixture-token" not in output and "fixture-secret" not in output
@@ -140,6 +164,9 @@ def test_fixture_live_claim_precedes_token_and_independent_failures_continue(
             ).fetchone()[0]
             == "unknown"
         )
+        assert con.execute(
+            "SELECT state,dispatched_at FROM gateway_attempts WHERE provider='google'"
+        ).fetchone() == ("pre_send_failed", None)
     try:
         v1_smoke_once.main()
     except RuntimeError as exc:

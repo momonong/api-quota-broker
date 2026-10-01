@@ -11,6 +11,7 @@ import json
 import os
 import re
 import secrets
+import sqlite3
 import struct
 import subprocess
 import sys
@@ -197,14 +198,17 @@ def confirm_openrouter_free() -> None:
         raise RuntimeError("OpenRouter pinned free model price is unverified")
 
 
-def runtime_targets(config_path: Path):
+def runtime_targets(config_path: Path, providers: tuple[str, ...] | None = None):
     now = datetime.now(UTC)
     selected = []
+    config = load_gateway_config(config_path)
     for provider, model_id in MODELS_BY_PROVIDER.items():
+        if providers is not None and provider not in providers:
+            continue
         source = next(
             (
                 target
-                for target in load_gateway_config(config_path)
+                for target in config
                 if target.provider == provider and target.model == model_id
             ),
             None,
@@ -254,13 +258,39 @@ def runtime_targets(config_path: Path):
     return tuple(selected)
 
 
+def check_prior_receipts(providers: tuple[str, ...], prior_dbs: list[Path]) -> None:
+    """Refuse a second dispatch even when the first result is unknown."""
+    if len(providers) < len(MODELS_BY_PROVIDER) and not prior_dbs:
+        raise RuntimeError("provider subset requires prior receipt database")
+    for path in prior_dbs:
+        if not path.is_file():
+            raise RuntimeError("prior receipt database unavailable")
+        # SQLite URI mode=ro prevents a typo from creating a new empty database.
+        with sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True) as con:
+            for table in ("gateway_tasks", "gateway_attempts"):
+                rows = con.execute(
+                    f"SELECT DISTINCT provider FROM {table} WHERE dispatched_at IS NOT NULL"
+                )
+                if any(provider in providers for (provider,) in rows):
+                    raise RuntimeError("selected provider was already dispatched")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--live", action="store_true")
     parser.add_argument("--config", type=Path, default=Path("gateway.example.json"))
     parser.add_argument("--db", type=Path)
+    parser.add_argument("--provider", action="append", choices=tuple(MODELS_BY_PROVIDER))
+    parser.add_argument("--prior-db", action="append", type=Path, default=[])
     args = parser.parse_args()
-    targets = runtime_targets(args.config)
+    providers = tuple(
+        provider
+        for provider in MODELS_BY_PROVIDER
+        if args.provider is None or provider in args.provider
+    )
+    if args.provider is not None and len(providers) != len(args.provider):
+        parser.error("duplicate --provider")
+    targets = runtime_targets(args.config, providers)
     if not args.live:
         for target in targets:
             print(
@@ -275,10 +305,17 @@ def main() -> int:
         parser.error("--live requires --db")
     if args.db.exists() or not args.db.name.startswith("v1-smoke-"):
         raise RuntimeError("new independent v1-smoke database required")
+    if any(args.db.resolve() == prior.resolve() for prior in args.prior_db):
+        raise RuntimeError("new database must differ from prior receipts")
+    check_prior_receipts(providers, args.prior_db)
     key = secrets.token_bytes(32)
-    confirm_openrouter_free()
+    if "openrouter" in providers:
+        confirm_openrouter_free()
     binary = cli()
-    if not SECRETS.issubset(metadata_names(binary)):
+    needed_secrets = {target.secret_ref for target in targets}
+    if "cloudflare" in providers:
+        needed_secrets.add("CLOUDFLARE_ACCOUNT_ID")
+    if not needed_secrets.issubset(metadata_names(binary)):
         raise RuntimeError("required Doppler secret names absent")
     # Exclusive durable claim precedes token creation and every provider POST.
     descriptor = os.open(args.db, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
@@ -289,7 +326,8 @@ def main() -> int:
     resolver = doppler_resolver_from_token(token, PROJECT, CONFIG)
     gateway.secret_resolver = resolver
     unsuccessful = False
-    for provider, model_id in MODELS_BY_PROVIDER.items():
+    for provider in providers:
+        model_id = MODELS_BY_PROVIDER[provider]
         provider_timeout = 60 if provider == "nvidia" else 30
         if time.monotonic() - token_started > 300 - provider_timeout - 30:
             print(json.dumps({"state": "stopped", "reason": "service_token_expiry_guard"}))
@@ -340,9 +378,6 @@ def main() -> int:
                 )
             )
             unsuccessful = True
-            if exc.code == "unavailable":
-                # Shared Doppler/session/eligibility failures need diagnosis.
-                return 2
     return 2 if unsuccessful else 0
 
 
