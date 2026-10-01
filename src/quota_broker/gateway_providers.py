@@ -178,6 +178,13 @@ def safe_http_error_code(provider: str, status: int, raw: bytes) -> str:
     if not isinstance(data.get("error"), dict):
         return "provider_http_error"
     error = data["error"]
+    if (
+        provider == "google"
+        and status == 404
+        and error.get("code") == 404
+        and error.get("status") == "NOT_FOUND"
+    ):
+        return "google_not_found"
     if provider == "google" and status == 404 and error.get("code") == "model_not_found":
         return "google_model_not_found"
     if provider == "groq" and status == 403 and error.get("type") == "permissions_error":

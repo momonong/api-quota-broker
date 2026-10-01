@@ -868,6 +868,16 @@ def test_only_allowlisted_provider_diagnostic_codes_are_persistable():
         )
 
     assert classify("google", 404, "model_not_found") == "google_model_not_found"
+    generic_google = {"error": {"code": 404, "status": "NOT_FOUND", "message": "untrusted"}}
+    assert safe_http_error_code("google", 404, json.dumps(generic_google).encode()) == (
+        "google_not_found"
+    )
+    assert (
+        safe_http_error_code(
+            "google", 404, json.dumps({"error": {"code": 404, "status": "OTHER"}}).encode()
+        )
+        == "provider_http_error"
+    )
     assert classify("groq", 403, "model_permission_blocked_org", kind="permissions_error") == (
         "groq_model_blocked_org"
     )
