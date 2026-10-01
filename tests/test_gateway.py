@@ -878,6 +878,18 @@ def test_only_allowlisted_provider_diagnostic_codes_are_persistable():
         "provider_http_error"
     )
     assert classify("mistral", 429, "anything") == "provider_http_error"
+    mistral = {
+        "object": "error",
+        "type": "rate_limit_error",
+        "code": "untrusted-value",
+        "message": "untrusted prose",
+    }
+    assert safe_http_error_code("mistral", 429, json.dumps(mistral).encode()) == (
+        "mistral_rate_limit_error"
+    )
+    assert safe_http_error_code(
+        "mistral", 429, json.dumps({**mistral, "object": "other"}).encode()
+    ) == ("provider_http_error")
     edge = {
         "error_code": 1010,
         "error_name": "browser_signature_banned",

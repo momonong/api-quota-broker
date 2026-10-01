@@ -168,6 +168,13 @@ def safe_http_error_code(provider: str, status: int, raw: bytes) -> str:
         and data.get("error_name") == "browser_signature_banned"
     ):
         return "groq_edge_browser_signature_blocked"
+    if (
+        provider == "mistral"
+        and status == 429
+        and data.get("object") == "error"
+        and data.get("type") == "rate_limit_error"
+    ):
+        return "mistral_rate_limit_error"
     if not isinstance(data.get("error"), dict):
         return "provider_http_error"
     error = data["error"]
