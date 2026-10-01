@@ -84,6 +84,24 @@ MODELS = {
         source="https://ai.google.dev/gemini-api/docs/models/gemini-2.5-flash-lite",
         verified_at="2026-09-25",
     ),
+    "gemini-3.5-flash-lite": Model(
+        provider="google",
+        model="gemini-3.5-flash-lite",
+        author="Google",
+        host="Google Gemini Developer API",
+        context_tokens=1_048_576,
+        max_output_tokens=65_536,
+        capability="text_generation",
+        origin="https://generativelanguage.googleapis.com",
+        endpoint_template=(
+            "https://generativelanguage.googleapis.com/v1beta/models/"
+            "gemini-3.5-flash-lite:generateContent"
+        ),
+        free_kind="free_tier_for_eligible_projects",
+        use_restrictions="Confirm model access and Free tier for the API key's project before dispatch.",
+        source="https://ai.google.dev/gemini-api/docs/models/gemini-3.5-flash-lite",
+        verified_at="2026-10-02",
+    ),
     "@cf/meta/llama-3.2-1b-instruct": Model(
         provider="cloudflare",
         model="@cf/meta/llama-3.2-1b-instruct",

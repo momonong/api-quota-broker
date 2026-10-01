@@ -165,8 +165,8 @@ def test_fixture_live_claim_precedes_token_and_independent_failures_continue(
             == "unknown"
         )
         assert con.execute(
-            "SELECT state,dispatched_at FROM gateway_attempts WHERE provider='google'"
-        ).fetchone() == ("pre_send_failed", None)
+            "SELECT state,dispatched_at,error_code FROM gateway_attempts WHERE provider='google'"
+        ).fetchone() == ("pre_send_failed", None, "credential_unavailable")
     try:
         v1_smoke_once.main()
     except RuntimeError as exc:

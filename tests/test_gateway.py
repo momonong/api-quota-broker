@@ -15,7 +15,13 @@ import pytest
 from quota_broker.cli import gateway_cli
 from quota_broker.config import Capacity, Evidence, Quota, QuotaFact, Target
 from quota_broker.gateway import Gateway, GatewayError
-from quota_broker.gateway_providers import explicit_quota_rejection, official_request, provider_http
+from quota_broker.gateway_providers import (
+    explicit_quota_rejection,
+    interpret,
+    official_request,
+    provider_http,
+    safe_http_error_code,
+)
 from quota_broker.gateway_server import make_gateway_server
 
 NOW = datetime(2026, 9, 30, 1, tzinfo=UTC)
@@ -706,6 +712,15 @@ def test_gateway_example_is_disabled_and_has_three_nvidia_models():
     assert len([target for target in targets if target.provider == "nvidia"]) == 3
     assert all(not target.enabled and not target.free_eligible for target in targets)
     assert all(target.secret_ref for target in targets)
+    assert next(target for target in targets if target.provider == "google").model == (
+        "gemini-3.5-flash-lite"
+    )
+    url, headers, payload = official_request(
+        "google", "gemini-3.5-flash-lite", "", "fixture-secret", "OK", 64, None, None
+    )
+    assert url.endswith("/models/gemini-3.5-flash-lite:generateContent")
+    assert headers == {"x-goog-api-key": "fixture-secret"}
+    assert payload["generationConfig"] == {"maxOutputTokens": 64}
     cloudflare = next(target for target in targets if target.provider == "cloudflare")
     assert cloudflare.capacity.kind == "short_renewable"
     assert cloudflare.capacity.refresh_seconds == 86_400
@@ -787,6 +802,126 @@ def test_cloudflare_tokens_without_neurons_keeps_ledger_hold(tmp_path):
     assert usage["ledger_neurons"] == 30
     assert usage["ledger_held_count"] == 1
     assert calls == [1]
+
+
+def test_cloudflare_rest_result_usage_is_parsed_but_missing_neurons_keeps_hold(tmp_path):
+    route = target("cf", "cloudflare", "@cf/meta/llama-3.2-1b-instruct")
+
+    def nested(_url, _headers, _payload, _timeout):
+        return (
+            200,
+            {},
+            json.dumps(
+                {
+                    "result": {
+                        "response": "fixture answer",
+                        "usage": {"prompt_tokens": 11, "completion_tokens": 3},
+                    },
+                    "success": True,
+                }
+            ).encode(),
+        )
+
+    gateway = Gateway(
+        tmp_path / "gateway.db",
+        (route,),
+        HMAC_KEY,
+        lambda _: "fixture-secret-value",
+        nested,
+        clock=lambda: NOW,
+    )
+    result = gateway.run(task("nested-usage", provider="cloudflare", neurons=30))
+    assert result["state"] == "completed_usage_unknown"
+    assert result["reported_input_tokens"] == 11
+    assert result["reported_output_tokens"] == 3
+    assert result["reported_neurons"] is None
+    assert result["usage_source"] == "provider_reported"
+    assert result["ledger_state"] == "unknown"
+    assert result["ledger_basis"] == "held_estimate"
+    assert gateway.usage()[0]["ledger_neurons"] == 30
+    assert gateway.usage()[0]["ledger_held_count"] == 1
+
+
+def test_conflicting_cloudflare_usage_does_not_understate_consumption():
+    body = {
+        "usage": {"prompt_tokens": 1, "completion_tokens": 1, "neurons": 1},
+        "result": {
+            "response": "fixture answer",
+            "usage": {"prompt_tokens": 11, "completion_tokens": 3},
+        },
+    }
+    answer, input_tokens, output_tokens, neurons, _ = interpret(
+        "cloudflare", 200, json.dumps(body).encode()
+    )
+    assert answer == "fixture answer"
+    assert (input_tokens, output_tokens, neurons) == (None, None, None)
+
+
+def test_only_allowlisted_provider_diagnostic_codes_are_persistable():
+    def classify(provider, status, code, *, kind=None):
+        return safe_http_error_code(
+            provider,
+            status,
+            json.dumps(
+                {"error": {"code": code, "type": kind, "message": "secret-like untrusted prose"}}
+            ).encode(),
+        )
+
+    assert classify("google", 404, "model_not_found") == "google_model_not_found"
+    assert classify("groq", 403, "model_permission_blocked_org", kind="permissions_error") == (
+        "groq_model_blocked_org"
+    )
+    assert classify("groq", 403, "model_permission_blocked_project", kind="permissions_error") == (
+        "groq_model_blocked_project"
+    )
+    assert classify("groq", 403, "opaque-secret-like-value", kind="permissions_error") == (
+        "provider_http_error"
+    )
+    assert classify("mistral", 429, "anything") == "provider_http_error"
+    edge = {
+        "error_code": 1010,
+        "error_name": "browser_signature_banned",
+        "title": "Error 1010: Access denied",
+        "detail": "untrusted text",
+    }
+    assert safe_http_error_code("groq", 403, json.dumps(edge).encode()) == (
+        "groq_edge_browser_signature_blocked"
+    )
+    assert safe_http_error_code("groq", 403, json.dumps({**edge, "error_code": 1015}).encode()) == (
+        "provider_http_error"
+    )
+
+
+def test_groq_permission_code_is_persisted_without_provider_message(tmp_path):
+    def blocked(_url, _headers, _payload, _timeout):
+        return (
+            403,
+            {},
+            json.dumps(
+                {
+                    "error": {
+                        "type": "permissions_error",
+                        "code": "model_permission_blocked_project",
+                        "message": "untrusted message with private content",
+                    }
+                }
+            ).encode(),
+        )
+
+    db = tmp_path / "gateway.db"
+    gateway = Gateway(
+        db,
+        (target("groq", "groq", "openai/gpt-oss-20b"),),
+        HMAC_KEY,
+        lambda _: "fixture-secret-value",
+        blocked,
+        clock=lambda: NOW,
+    )
+    result = gateway.run(task("groq-blocked", provider="groq"))
+    assert result["state"] == "unknown"
+    assert result["error_code"] == "groq_model_blocked_project"
+    assert "untrusted message" not in str(result)
+    assert b"untrusted message" not in db.read_bytes()
 
 
 def test_all_configured_quota_metrics_required_before_settlement(tmp_path):

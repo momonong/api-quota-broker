@@ -153,6 +153,34 @@ def _request_id(value: object) -> str | None:
     return None
 
 
+def safe_http_error_code(provider: str, status: int, raw: bytes) -> str:
+    """Persist only fixed, documented diagnostic codes, never provider prose."""
+    try:
+        data = json.loads(raw)
+    except (ValueError, TypeError):
+        return "provider_http_error"
+    if not isinstance(data, dict):
+        return "provider_http_error"
+    if (
+        provider == "groq"
+        and status == 403
+        and data.get("error_code") == 1010
+        and data.get("error_name") == "browser_signature_banned"
+    ):
+        return "groq_edge_browser_signature_blocked"
+    if not isinstance(data.get("error"), dict):
+        return "provider_http_error"
+    error = data["error"]
+    if provider == "google" and status == 404 and error.get("code") == "model_not_found":
+        return "google_model_not_found"
+    if provider == "groq" and status == 403 and error.get("type") == "permissions_error":
+        if error.get("code") == "model_permission_blocked_org":
+            return "groq_model_blocked_org"
+        if error.get("code") == "model_permission_blocked_project":
+            return "groq_model_blocked_project"
+    return "provider_http_error"
+
+
 def explicit_quota_rejection(
     provider: str, status: int, headers: dict[str, str], raw: bytes
 ) -> bool:
@@ -267,12 +295,22 @@ def interpret(
                         answer = "".join(texts)
         request_id = _request_id(data.get("responseId"))
     elif provider == "cloudflare":
-        usage = data.get("usage")
+        result = data.get("result")
+        # The Workers AI REST envelope puts model output, including optional
+        # usage, under result. Some routes expose usage at the outer level.
+        outer_usage = data.get("usage")
+        nested_usage = result.get("usage") if isinstance(result, dict) else None
+        usage = nested_usage if isinstance(nested_usage, dict) else outer_usage
+        if (
+            isinstance(outer_usage, dict)
+            and isinstance(nested_usage, dict)
+            and outer_usage != nested_usage
+        ):
+            usage = None
         if isinstance(usage, dict):
             input_tokens = _nonnegative(usage.get("prompt_tokens"))
             output_tokens = _nonnegative(usage.get("completion_tokens"))
             neurons = _nonnegative(usage.get("neurons"))
-        result = data.get("result")
         if isinstance(result, dict) and isinstance(result.get("response"), str):
             answer = result["response"]
         request_id = _request_id(data.get("request_id"))

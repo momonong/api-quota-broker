@@ -32,7 +32,7 @@ PROJECT = "api-quota-broker"
 CONFIG = "dev"
 MODELS_BY_PROVIDER = {
     "nvidia": "google/gemma-4-31b-it",
-    "google": "gemini-2.5-flash-lite",
+    "google": "gemini-3.5-flash-lite",
     "cloudflare": "@cf/meta/llama-3.2-1b-instruct",
     "groq": "openai/gpt-oss-20b",
     "mistral": "mistral-small-latest",

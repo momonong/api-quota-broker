@@ -23,6 +23,7 @@ from .gateway_providers import (
     interpret,
     official_request,
     provider_http,
+    safe_http_error_code,
 )
 from .retry import parse_retry_after
 
@@ -556,6 +557,7 @@ class Gateway:
                         else None,
                     ),
                 )
+            pre_send_phase = "credential"
             try:
                 assert target.secret_ref is not None
                 secret = self.secret_resolver(target.secret_ref)
@@ -566,6 +568,7 @@ class Gateway:
                     if target.account_id_ref
                     else target.account_id
                 )
+                pre_send_phase = "request"
                 url, headers, payload = official_request(
                     target.provider,
                     target.model,
@@ -587,7 +590,7 @@ class Gateway:
                     attempt,
                     {
                         "state": "pre_send_failed",
-                        "error_code": "credential_or_request_unavailable",
+                        "error_code": pre_send_phase + "_unavailable",
                         "completed_at": stamp(self.clock()),
                     },
                 )
@@ -646,7 +649,7 @@ class Gateway:
                 if status == 202:
                     error_code = "pending_provider_result"
                 elif status != 200:
-                    error_code = "provider_http_error"
+                    error_code = safe_http_error_code(target.provider, status, response)
                 elif answer is None:
                     error_code = "provider_response_invalid"
             except (OSError, TimeoutError, ValueError, ProviderError) as exc:
