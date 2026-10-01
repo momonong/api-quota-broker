@@ -169,6 +169,19 @@ def explicit_quota_rejection(
         return False
     if not isinstance(data, dict):
         return False
+    if any(
+        field in data
+        for field in (
+            "usage",
+            "usageMetadata",
+            "choices",
+            "output",
+            "result",
+            "candidates",
+            "ParsedResults",
+        )
+    ):
+        return False
     if provider == "cloudflare":
         errors = data.get("errors")
         return isinstance(errors, list) and any(
@@ -185,6 +198,19 @@ def explicit_quota_rejection(
     if provider == "groq":
         # Groq documents retry-after as present only for its rate-limit 429.
         return isinstance(headers.get("retry-after") or headers.get("Retry-After"), str)
+    if provider == "openrouter":
+        metadata = error.get("metadata")
+        normalized = {name.lower(): value for name, value in headers.items()}
+        return (
+            error.get("code") == 429
+            and isinstance(metadata, dict)
+            and metadata.get("error_type") == "rate_limit_exceeded"
+            and "provider_code" not in metadata
+            and all(
+                normalized.get(name)
+                for name in ("x-ratelimit-limit", "x-ratelimit-remaining", "x-ratelimit-reset")
+            )
+        )
     return False
 
 

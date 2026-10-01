@@ -30,11 +30,11 @@
 
 曾檢查 `nemotron-mini-4b-instruct` 作更小的 NVIDIA smoke 候選；[NVIDIA 模型詳情頁](https://build.nvidia.com/nvidia/nemotron-mini-4b-instruct)目前未提供可核對的 Free Endpoint 狀態，因此沒有僅憑搜尋列表將固定候選改成它。
 
-所有 provider `capacity.kind=unknown`，直到有可靠的免費額度刷新事實。RPM/TPM 只作限流，不代表免費額度按分鐘刷新。`gateway_attempts` 記錄每次派送的 HTTP、延遲、供應商回報量和本地估算；`gateway_tasks` 是任務摘要。`usage.requests` 計數已派送 HTTP 次數，包括已明確拒絕的請求；`ledger_charges` 為配額核算，其中已確認未執行的配額拒絕歸零。未知結果保留 hold，不重送。
+停用的 `gateway.example.json` 也包含 Cloudflare 官方每日 10,000 Neurons、UTC 00:00 重置的 `short_renewable`／86,400 秒證據，標明 placeholder account scope、來源及七天有效期；target 仍 disabled、free_eligible=false，不能因此推定帳號可用。bounded smoke 會以同一官方規則建立五分鐘有效的 runtime profile，作**免費額度刷新排序**；實際帳號餘額仍未知。其他供應商 capacity 保持 unknown：OCR 月 conversion、Groq 日請求上限與 Mistral 月 included usage 尚不能以此短刷新欄位可靠表達。RPM/TPM 只作限流，不代表免費額度按分鐘刷新。`gateway_attempts` 記錄每次派送的 HTTP、延遲、供應商回報量和本地估算；`gateway_tasks` 是任務摘要。`usage.requests` 計數已派送 HTTP 次數，包括已明確拒絕的請求；`ledger_charges` 為配額核算，其中已確認未執行的配額拒絕歸零。未知結果保留 hold，不重送。
 
 ## 故障切換與有界 smoke
 
-只有官方文件明確表示未執行的配額拒絕會釋放本地 hold、設定 account/project scope 冷卻，並在同一任務最多三次、每目標最多一次的邊界內改選其他帳號 scope。現有辨識：Gemini 結構化配額碼、Cloudflare `3036`、Groq 帶 `retry-after` 的結構化 429。其餘 429、逾時、斷線、5xx、回應格式錯誤維持 unknown，不能自動重送或改路由。認證／模型錯誤只診斷，不認定配額耗盡。
+只有官方文件明確表示未執行的配額拒絕會釋放本地 hold、設定 account/project scope 冷卻，並在同一任務最多三次、每目標最多一次的邊界內改選其他帳號 scope。現有辨識：Gemini 結構化配額碼、Cloudflare `3036`、Groq 帶 `retry-after` 的結構化 429，以及 OpenRouter 平台 `error.metadata.error_type=rate_limit_exceeded`、沒有 upstream `provider_code`、同時帶齊三項 `X-RateLimit-*` 標頭的 429。帶 usage／partial content 的 429 不切換。NVIDIA、Mistral、OCR.space 尚無足夠可靠的結構化配額拒絕辨識，故不會由其 429 自動 fallback。其餘 429、逾時、斷線、5xx、回應格式錯誤維持 unknown，不能自動重送或改路由。認證／模型錯誤只診斷，不認定配額耗盡。
 
 `scripts/v1_smoke_once.py` 的 live 方案是 `api-quota-broker/dev` 整個 config 唯讀、五分鐘到期的 Doppler Service Token，只留在程序記憶體；每家至多一筆，七筆總量，輸出上限 64 token，循序執行，每筆 provider HTTP 最多 60 秒，臨近 token 到期即停。使用新 `v1-smoke-*` SQLite 檔先獨占建立非敏感收據，不能對同一 DB 意外重跑。腳本使用本地產生的 `OK` PNG，驗證 OCR 回應是否含預期字樣，只輸出布林結果。個別供應商失敗後可繼續獨立測其他家；共享憑證不可用與 token 時效則停止。未經本輪精確批准，不執行 `--live`。
 

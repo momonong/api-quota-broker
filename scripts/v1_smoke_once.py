@@ -23,7 +23,7 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 from quota_broker.catalog import MODELS
-from quota_broker.config import Quota, load_gateway_config
+from quota_broker.config import Capacity, Quota, load_gateway_config
 from quota_broker.gateway import Gateway, GatewayError
 from quota_broker.nvidia import NoRedirect, doppler_resolver_from_token
 
@@ -237,6 +237,18 @@ def runtime_targets(config_path: Path):
                 source="user-attested free/no-card for bounded v1 smoke; official generic docs",
                 quotas=tuple(quotas),
                 max_output_tokens=1 if provider == "ocrspace" else 64,
+                capacity=(
+                    Capacity(
+                        "short_renewable",
+                        86_400,
+                        now,
+                        "https://developers.cloudflare.com/workers-ai/platform/pricing/",
+                        "Cloudflare account daily free Neurons; plan user-attested",
+                        now + timedelta(minutes=5),
+                    )
+                    if provider == "cloudflare"
+                    else source.capacity
+                ),
             )
         )
     return tuple(selected)

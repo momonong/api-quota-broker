@@ -214,12 +214,12 @@
         }
       ],
       "capacity": {
-        "kind": "unknown",
-        "refresh_seconds": null,
-        "as_of": null,
-        "source": null,
-        "scope": null,
-        "expires_at": null
+        "kind": "short_renewable",
+        "refresh_seconds": 86400,
+        "as_of": "2026-10-02T00:00:00+00:00",
+        "source": "https://developers.cloudflare.com/workers-ai/platform/pricing/",
+        "scope": "cloudflare:account:replace daily free neurons; account eligibility unverified",
+        "expires_at": "2026-10-09T00:00:00+00:00"
       },
       "secret_ref": "CLOUDFLARE_API_TOKEN"
     },

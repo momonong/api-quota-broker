@@ -23,6 +23,15 @@ def test_plan_lists_seven_fixed_routes_without_creating_token(monkeypatch, capsy
     assert output.count("https://") == 7
     assert "plan_only: no token" in output
     assert "GEMINI_API_KEY" in output
+    targets = v1_smoke_once.runtime_targets(
+        Path(__file__).resolve().parents[1] / "gateway.example.json"
+    )
+    cloudflare = next(target for target in targets if target.provider == "cloudflare")
+    assert cloudflare.capacity.kind == "short_renewable"
+    assert cloudflare.capacity.refresh_seconds == 86_400
+    assert all(
+        target.capacity.kind == "unknown" for target in targets if target.provider != "cloudflare"
+    )
 
 
 def test_openrouter_extra_zero_price_is_allowed_but_any_charge_blocks():

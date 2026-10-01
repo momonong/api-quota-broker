@@ -15,7 +15,7 @@ import pytest
 from quota_broker.cli import gateway_cli
 from quota_broker.config import Capacity, Evidence, Quota, QuotaFact, Target
 from quota_broker.gateway import Gateway, GatewayError
-from quota_broker.gateway_providers import official_request, provider_http
+from quota_broker.gateway_providers import explicit_quota_rejection, official_request, provider_http
 from quota_broker.gateway_server import make_gateway_server
 
 NOW = datetime(2026, 9, 30, 1, tzinfo=UTC)
@@ -289,6 +289,26 @@ def test_ocr_transport_uses_fixed_form_endpoint_and_header_key(monkeypatch):
     assert b"base64Image=data%3Aimage%2Fpng%3Bbase64%2C" in sent[0].data
     assert sent[0].get_header("Apikey") == "fixture-secret-value"
     assert "fixture-secret-value" not in sent[0].full_url
+
+
+def test_openrouter_platform_429_is_distinct_from_upstream_and_partial_result():
+    body = {"error": {"code": 429, "metadata": {"error_type": "rate_limit_exceeded"}}}
+    headers = {
+        "X-RateLimit-Limit": "50",
+        "X-RateLimit-Remaining": "0",
+        "X-RateLimit-Reset": "2026-10-03T00:00:00Z",
+    }
+    assert explicit_quota_rejection("openrouter", 429, headers, json.dumps(body).encode())
+    assert not explicit_quota_rejection("openrouter", 429, {}, json.dumps(body).encode())
+    upstream = {
+        "error": {
+            "code": 429,
+            "metadata": {"error_type": "rate_limit_exceeded", "provider_code": 429},
+        }
+    }
+    assert not explicit_quota_rejection("openrouter", 429, headers, json.dumps(upstream).encode())
+    partial = {**body, "usage": {"prompt_tokens": 1}}
+    assert not explicit_quota_rejection("openrouter", 429, headers, json.dumps(partial).encode())
 
 
 def test_translation_route_and_capability_mismatch_never_dispatch(tmp_path):
@@ -675,6 +695,9 @@ def test_gateway_example_is_disabled_and_has_three_nvidia_models():
     assert len([target for target in targets if target.provider == "nvidia"]) == 3
     assert all(not target.enabled and not target.free_eligible for target in targets)
     assert all(target.secret_ref for target in targets)
+    cloudflare = next(target for target in targets if target.provider == "cloudflare")
+    assert cloudflare.capacity.kind == "short_renewable"
+    assert cloudflare.capacity.refresh_seconds == 86_400
 
 
 def test_timeout_preserves_unknown_and_never_replays_after_restart(tmp_path):
