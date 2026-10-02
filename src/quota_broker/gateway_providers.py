@@ -22,9 +22,18 @@ class ProviderError(ValueError):
 class ProviderPhaseTimeout(ProviderError):
     """Bounded timing phase only; before_headers includes connect and TTFB."""
 
-    def __init__(self, code: str):
+    def __init__(self, code: str, diagnostics: dict[str, str | int | None] | None = None):
         super().__init__(code)
         self.code = code
+        self.diagnostics = diagnostics or {}
+
+
+class ProviderHeaders(dict[str, str]):
+    """HTTP headers plus in-process curl timing; metadata is never an HTTP header."""
+
+    def __init__(self, headers: dict[str, str], diagnostics: dict[str, str | int | None]):
+        super().__init__(headers)
+        self.diagnostics = diagnostics
 
 
 def official_request(
@@ -43,6 +52,10 @@ def official_request(
     url = endpoint(model, account_id)
     if not url.startswith(model.origin + "/"):
         raise ProviderError("unapproved provider URL")
+    if (
+        provider in {"groq", "mistral"} or model_id == "nvidia/nemotron-3.5-lightning-30b-a3b"
+    ) and not re.fullmatch(r"[A-Za-z0-9._~-]{8,256}", secret):
+        raise ProviderError("credential_format_rejected")
     if provider == "nvidia":
         messages: list[dict[str, str]] = []
         if model_id == RIVA:
@@ -62,8 +75,6 @@ def official_request(
             payload["chat_template_kwargs"] = {"enable_thinking": False}
         return url, {"Authorization": "Bearer " + secret}, payload
     if provider in {"groq", "mistral", "openrouter"}:
-        if provider == "groq" and not re.fullmatch(r"[A-Za-z0-9._~-]{8,256}", secret):
-            raise ProviderError("credential_format_rejected")
         payload = {
             "model": model_id,
             "messages": [{"role": "user", "content": content}],
@@ -133,6 +144,13 @@ def provider_http(
         from .bounded_curl import groq_http
 
         return groq_http(url, headers, payload, timeout)
+    if url == "https://api.mistral.ai/v1/chat/completions" or (
+        url == "https://integrate.api.nvidia.com/v1/chat/completions"
+        and payload.get("model") == "nvidia/nemotron-3.5-lightning-30b-a3b"
+    ):
+        from .bounded_curl import chat_http
+
+        return chat_http(url, headers, payload, timeout)
     ocr = url == "https://api.ocr.space/parse/image"
     request = urllib.request.Request(
         url,
@@ -179,7 +197,7 @@ def _request_id(value: object) -> str | None:
     return None
 
 
-def groq_completion_metadata(status: int | None, raw: bytes) -> tuple[str | None, bool | None]:
+def chat_completion_metadata(status: int | None, raw: bytes) -> tuple[str | None, bool | None]:
     """Fixed completion metadata; unrecognized provider values never enter SQLite."""
     if status != 200:
         return None, None
@@ -193,6 +211,49 @@ def groq_completion_metadata(status: int | None, raw: bytes) -> tuple[str | None
     if finish in ("stop", "length", "content_filter"):
         return finish, finish == "length"
     return ("missing" if finish is None else "unclassified"), None
+
+
+def safe_transport_diagnostics(details: dict[str, str | int | None]) -> dict[str, str | int | None]:
+    result: dict[str, str | int | None] = {}
+    for field in (
+        "time_namelookup_ms",
+        "time_connect_ms",
+        "time_appconnect_ms",
+        "time_starttransfer_ms",
+        "time_total_ms",
+    ):
+        value = details.get(field)
+        if type(value) is int and 0 <= value <= 123_000:
+            result[field] = value
+    for field, allowed in (
+        (
+            "transport_code",
+            {
+                "ok",
+                "proxy_dns_failed",
+                "dns_failed",
+                "connect_failed",
+                "timeout",
+                "tls_failed",
+                "tls_verification_failed",
+                "other_transport_error",
+            },
+        ),
+        (
+            "timeout_phase",
+            {
+                "response_body",
+                "after_tls_before_headers",
+                "tls_or_proxy_tunnel",
+                "tcp_connect",
+                "dns_or_connect",
+            },
+        ),
+    ):
+        value = details.get(field)
+        if isinstance(value, str) and value in allowed:
+            result[field] = value
+    return result
 
 
 def safe_http_error_code(provider: str, status: int, raw: bytes) -> str:
@@ -263,6 +324,9 @@ def _mistral_reason(data: object, sensitive_values: tuple[str, ...]) -> dict[str
     error = data.get("error") if isinstance(data.get("error"), dict) else data
     assert isinstance(error, dict)
     message = error.get("message")
+    if message is None:
+        detail = error.get("detail")
+        message = detail.get("message") if isinstance(detail, dict) else detail
     if isinstance(message, str) and len(message) <= 4096:
         # Remove exact resolved secrets before interpreting even fixed phrases.
         # No part of this text is returned, hashed or persisted.
@@ -464,7 +528,7 @@ def explicit_quota_rejection(
 
 
 def interpret(
-    provider: str, status: int, raw: bytes
+    provider: str, status: int, raw: bytes, *, model_id: str | None = None
 ) -> tuple[str | None, int | None, int | None, int | None, str | None]:
     try:
         data = json.loads(raw)
@@ -490,7 +554,10 @@ def interpret(
         if isinstance(usage, dict):
             input_tokens = _nonnegative(usage.get("prompt_tokens"))
             output_tokens = _nonnegative(usage.get("completion_tokens"))
-            if provider == "groq" and (
+            if (
+                provider in {"groq", "mistral"}
+                or model_id == "nvidia/nemotron-3.5-lightning-30b-a3b"
+            ) and (
                 input_tokens is None
                 or output_tokens is None
                 or (
@@ -501,7 +568,7 @@ def interpret(
                     )
                 )
             ):
-                # A missing/contradictory pair cannot settle a Groq token hold.
+                # A missing/contradictory pair cannot settle a token hold.
                 input_tokens = output_tokens = None
         choices = data.get("choices")
         if isinstance(choices, list) and choices and isinstance(choices[0], dict):

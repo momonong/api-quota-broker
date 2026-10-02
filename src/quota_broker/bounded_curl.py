@@ -15,6 +15,7 @@ import time
 from .gateway_providers import (
     MAX_RESPONSE_BYTES,
     ProviderError,
+    ProviderHeaders,
     ProviderPhaseTimeout,
     official_request,
 )
@@ -26,35 +27,92 @@ GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 GROQ_MODEL = "openai/gpt-oss-20b"
 
 
+CHAT_ROUTES = {
+    GROQ_URL: ("groq", GROQ_MODEL, "max_completion_tokens", 30),
+    "https://api.mistral.ai/v1/chat/completions": (
+        "mistral",
+        "mistral-small-latest",
+        "max_tokens",
+        30,
+    ),
+    "https://integrate.api.nvidia.com/v1/chat/completions": (
+        "nvidia",
+        "nvidia/nemotron-3.5-lightning-30b-a3b",
+        "max_tokens",
+        120,
+    ),
+}
+MODEL_URLS = {
+    "mistral": "https://api.mistral.ai/v1/models",
+    "nvidia": "https://integrate.api.nvidia.com/v1/models",
+}
+
+
 def groq_http(
     url: str, headers: dict[str, str], payload: dict[str, object], timeout: float
 ) -> tuple[int, dict[str, str], bytes]:
-    """The official Groq POST only; fixed contract and no alternate transport fallback."""
-    if url != GROQ_URL or set(headers) != {"Authorization"}:
+    if url != GROQ_URL:
         raise ProviderError("unapproved Groq transport")
-    auth = headers["Authorization"]
-    if not re.fullmatch(r"Bearer [A-Za-z0-9._~-]{8,256}", auth):
-        raise ProviderError("credential_format_rejected")
+    return chat_http(url, headers, payload, timeout)
+
+
+def chat_http(
+    url: str, headers: dict[str, str], payload: dict[str, object], timeout: float
+) -> tuple[int, dict[str, str], bytes]:
+    """Only the three fixed official nonstreaming chat contracts, no fallback."""
+    if url not in CHAT_ROUTES:
+        raise ProviderError("unapproved chat transport")
+    provider, model, output_field, limit = CHAT_ROUTES[url]
     messages = payload.get("messages")
     first = messages[0] if isinstance(messages, list) and len(messages) == 1 else None
     content = first.get("content") if isinstance(first, dict) else None
-    output = payload.get("max_completion_tokens")
+    output = payload.get(output_field)
     if (
         not isinstance(content, str)
         or not 0 < len(content.encode("utf-8")) <= 32_768
         or type(output) is not int
         or not 1 <= output <= 4096
-        or not 0 < timeout <= 30
+        or not 0 < timeout <= limit
     ):
-        raise ProviderError("unapproved Groq request bound")
+        raise ProviderError("unapproved chat request bound")
     expected = official_request(
-        "groq", GROQ_MODEL, "fixture", "fixture-key", content, output, None, None
+        provider, model, "fixture", "fixture-key", content, output, None, None
     )[2]
     if payload != expected:
-        raise ProviderError("unapproved Groq payload")
+        raise ProviderError("unapproved chat payload")
+    status, received, raw, timing = bounded_http(url, headers, payload, timeout)
+    if status is None or timing["transport_code"] != "ok":
+        raise ProviderPhaseTimeout(
+            "curl_" + str(timing.get("timeout_phase", timing["transport_code"])), timing
+        )
+    return status, ProviderHeaders(received, timing), raw
+
+
+def model_http(
+    provider: str, headers: dict[str, str], timeout: float = 30
+) -> tuple[int | None, dict[str, str], bytes, dict[str, int | str | None]]:
+    if provider not in MODEL_URLS or not 0 < timeout <= 30:
+        raise ProviderError("unapproved model GET")
+    return bounded_http(MODEL_URLS[provider], headers, None, timeout)
+
+
+def bounded_http(
+    url: str, headers: dict[str, str], payload: dict[str, object] | None, timeout: float
+) -> tuple[int | None, dict[str, str], bytes, dict[str, int | str | None]]:
+    if (payload is None and url not in MODEL_URLS.values()) or (
+        payload is not None and url not in CHAT_ROUTES
+    ):
+        raise ProviderError("unapproved curl URL")
+    if set(headers) != {"Authorization"} or not re.fullmatch(
+        r"Bearer [A-Za-z0-9._~-]{8,256}", headers["Authorization"]
+    ):
+        raise ProviderError("credential_format_rejected")
+    limit = 30 if payload is None else CHAT_ROUTES[url][3]
+    if not 0 < timeout <= limit:
+        raise ProviderError("unapproved curl timeout")
     options = [
-        "url = " + _quote(GROQ_URL),
-        'request = "POST"',
+        "url = " + _quote(url),
+        "request = " + _quote("GET" if payload is None else "POST"),
         'proto = "=https"',
         'proto-redir = "=https"',
         'retry = "0"',
@@ -63,17 +121,18 @@ def groq_http(
         "max-time = " + _quote(str(timeout)),
         "include",
         "suppress-connect-headers",
-        'header = "Content-Type: application/json"',
         'header = "Accept: application/json"',
-        "header = " + _quote("Authorization: " + auth),
-        "data-binary = " + _quote(json.dumps(payload, separators=(",", ":"), ensure_ascii=True)),
+        "header = " + _quote("Authorization: " + headers["Authorization"]),
         "write-out = " + _quote(metrics_template()),
     ]
+    if payload is not None:
+        options += [
+            'header = "Content-Type: application/json"',
+            "data-binary = "
+            + _quote(json.dumps(payload, separators=(",", ":"), ensure_ascii=True)),
+        ]
     code, output_bytes = run_curl(("\n".join(options) + "\n").encode(), timeout)
-    status, received, raw, timing = parse_curl_result(code, output_bytes, timeout + 3)
-    if status is None or timing["transport_code"] != "ok":
-        raise ProviderPhaseTimeout("groq_transport_" + str(timing["transport_code"]))
-    return status, received, raw
+    return parse_curl_result(code, output_bytes, timeout + 3)
 
 
 def _quote(value: str) -> str:

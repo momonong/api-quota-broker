@@ -19,13 +19,16 @@ from .config import Target
 from .core import Broker, BrokerError, canonical, stamp, utcnow
 from .gateway_providers import (
     ProviderError,
+    ProviderHeaders,
     ProviderPhaseTimeout,
+    chat_completion_metadata,
     explicit_quota_rejection,
-    groq_completion_metadata,
     interpret,
     official_request,
     provider_http,
     safe_http_error_code,
+    safe_response_diagnostics,
+    safe_transport_diagnostics,
 )
 from .retry import parse_retry_after
 
@@ -95,6 +98,7 @@ COLUMNS = (
     "usage_source",
     "finish_reason",
     "response_truncated",
+    "diagnostics_json",
 )
 ATTEMPT_COLUMNS = (
     "attempt_no",
@@ -118,6 +122,7 @@ ATTEMPT_COLUMNS = (
     "input_bytes",
     "finish_reason",
     "response_truncated",
+    "diagnostics_json",
 )
 
 
@@ -271,7 +276,11 @@ class Gateway:
             # Additive, serialized and repeatable: old rows/holds retain their semantics.
             for table in ("gateway_tasks", "gateway_attempts"):
                 existing = {row[1] for row in con.execute(f"PRAGMA table_info({table})")}
-                for column, kind in (("finish_reason", "TEXT"), ("response_truncated", "INTEGER")):
+                for column, kind in (
+                    ("finish_reason", "TEXT"),
+                    ("response_truncated", "INTEGER"),
+                    ("diagnostics_json", "TEXT"),
+                ):
                     if column not in existing:
                         con.execute(f"ALTER TABLE {table} ADD COLUMN {column} {kind}")
 
@@ -295,6 +304,8 @@ class Gateway:
         result = dict(row)
         result["attempts"] = [dict(attempt) for attempt in attempts]
         for item in [result, *result["attempts"]]:
+            saved = item.pop("diagnostics_json")
+            item["diagnostics"] = json.loads(saved) if saved else None
             if item["response_truncated"] is not None:
                 item["response_truncated"] = bool(item["response_truncated"])
         for attempt in result["attempts"]:
@@ -652,22 +663,43 @@ class Gateway:
             error_code: str | None = None
             finish_reason: str | None = None
             response_truncated: bool | None = None
+            diagnostics: dict[str, str | int | bool | None] = {}
+            bounded_chat = (
+                target.provider in {"groq", "mistral"}
+                or target.model == "nvidia/nemotron-3.5-lightning-30b-a3b"
+            )
             try:
                 status, response_headers, response = self.transport(
-                    url, headers, payload, 60.0 if target.provider == "nvidia" else 30.0
+                    url,
+                    headers,
+                    payload,
+                    120.0
+                    if target.model == "nvidia/nemotron-3.5-lightning-30b-a3b"
+                    else 60.0
+                    if target.provider == "nvidia"
+                    else 30.0,
                 )
                 answer, input_tokens, output_tokens, neurons, request_id = interpret(
-                    target.provider, status, response
+                    target.provider, status, response, model_id=target.model
                 )
-                if target.provider == "groq":
-                    finish_reason, response_truncated = groq_completion_metadata(status, response)
+                if bounded_chat:
+                    diagnostics = safe_response_diagnostics(
+                        target.provider,
+                        status,
+                        response_headers,
+                        response,
+                        sensitive_values=(secret,),
+                    )
+                    if isinstance(response_headers, ProviderHeaders):
+                        diagnostics.update(safe_transport_diagnostics(response_headers.diagnostics))
+                    finish_reason, response_truncated = chat_completion_metadata(status, response)
                     if answer is not None and not answer.strip():
                         answer = None
                     if output_tokens is not None and output_tokens > data["max_output_tokens"]:
                         input_tokens = output_tokens = None
                     if request_id is not None and (
                         not re.fullmatch(
-                            r"(?:req_[A-Za-z0-9_-]{1,100}|chatcmpl-[A-Za-z0-9_-]{1,100}|[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12})",
+                            r"(?:req_[A-Za-z0-9_-]{1,100}|(?:chatcmpl|cmpl)-[A-Za-z0-9_-]{1,100}|[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12})",
                             request_id,
                         )
                         or secret.casefold() in request_id.casefold()
@@ -685,6 +717,8 @@ class Gateway:
                 elif answer is None:
                     error_code = "provider_response_invalid"
             except (OSError, TimeoutError, ValueError, ProviderError) as exc:
+                if isinstance(exc, ProviderPhaseTimeout):
+                    diagnostics.update(safe_transport_diagnostics(exc.diagnostics))
                 error_code = (
                     exc.code
                     if isinstance(exc, ProviderPhaseTimeout)
@@ -700,7 +734,7 @@ class Gateway:
             known_quota_usage = (
                 "input_tokens" not in required_metrics or input_tokens is not None
             ) and ("neurons" not in required_metrics or neurons is not None)
-            if target.provider == "groq":
+            if bounded_chat:
                 known_quota_usage = (
                     known_quota_usage and input_tokens is not None and output_tokens is not None
                 )
@@ -767,6 +801,9 @@ class Gateway:
                 else "unknown",
                 "finish_reason": finish_reason,
                 "response_truncated": response_truncated,
+                "diagnostics_json": json.dumps(diagnostics, sort_keys=True)
+                if diagnostics
+                else None,
             }
             self._attempt_update(key, attempt, result_values)
             self._update(

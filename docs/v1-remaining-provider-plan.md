@@ -116,7 +116,23 @@ Browser Integrity Check 是 Groq 作為網站擁有者的 Cloudflare Security �
 
 **已驗證結論：正式預設Groq路由取得完整回答並正常核算用量，本單元完成。** 這是本機分支與此帳號／模型／單次呼叫的證據，不宣稱生產部署或七家全面完成。舊403原因仍未知，curl成功不能單變量歸因於UA／urllib或站方解除封鎖。
 
-## 可檢閱的下一輪最小範圍
+## NVIDIA／Mistral 問題解決階段（2026-10-02）
+
+已核對 main `01a0de5f-8306-71a3-9738-7ac6eb4d7746` 原始 session 第2129行，UTC `2026-10-02T04:52:26.127Z`（台北12:52:26）、role=user、message `msg_01a0faf4-db8f-7d32-9f06-66eeaf946a0a`：「好 把這兩個問題也解決掉」。上下文為 NVIDIA 一般LLM逾時與Mistral429；經既定orchestrate至原task。範圍含根因分析、必要修正、低量新實測、正常Gateway整合與SQLite用量／監控驗收、本地分支提交；不push／merge／deploy／重啟／付費／發信／新增task。舊unknown永不重播，舊DB不改。
+
+2026-10-02重新核對官方來源：NVIDIA [模型頁](https://build.nvidia.com/nvidia/nemotron-3.5-lightning-30b-a3b)仍列Free Endpoint Available；[官方Data Designer範例](https://docs.nvidia.com/nemo/datadesigner/tutorials/the-basics)使用同模型與enable_thinking=false；[Hosted API](https://docs.api.nvidia.com/nim/reference/nvidia-nemotron-3-5-lightning-30b-a3b-infer)支援非串流和短max_tokens，202須另poll。Mistral [Models](https://docs.mistral.ai/api/endpoint/models)提供固定模型id／aliases與completion_chat；[Usage and limits](https://docs.mistral.ai/admin/billing-usage/usage-limits)區分組織、Workspace、速率與月用量。這些通用文件不能證明目前帳號餘額或舊錯誤原因。
+
+正式路由已對齊：正常provider_http的Mistral Small／NVIDIA Lightning分支使用包內bounded curl（Groq既有分支保留）；其他provider與NVIDIA Riva／Gemma transport保持原樣。Lightning total120秒／child123秒、Mistral30秒／child33秒，connect≤10秒、TLS驗證、response64KiB／pipe80KiB，固定官方POST／payload、stdin認證與JSON，無retry／redirect／自訂UA／IP／proxy或transport fallback。正常Gateway新增nullable diagnostics_json欄位，API／CLI/status以diagnostics呈現安全分類和curl累積timing；逾時保留DNS／TCP／TLS／TTFB階段資訊，不能僅由timing推斷遠端GPU原因。既有nullable欄位可重入遷移，不回寫歷史row。這兩路與Groq同樣記finish／truncation，partial文字只回首次caller，可信完整用量正常核算，缺失或矛盾用量保留hold，不歸零／fallback／replay。Mistral錯誤在記憶體先去除已解析秘密，再以固定句型解析message或detail；原文不落庫。
+
+交接上限為每家至多1筆認證models GET、2筆不同明確目的的新POST；輸出≤512 tokens。第二筆只在有新假設且需要資料時另行具體化。首輪 `scripts/v1_nvidia_mistral_once.py` 預設offline，僅每家1 GET與模型gate通過後1 POST，固定NVIDIA Lightning與Mistral Small、各512上限／短READY類prompt、thinking=false（NVIDIA）、stream=false。直接正常Gateway、無diagnostic transport注入，沒有第二筆／poll／token續期；NVIDIA若202只記pending，不另查狀態。Doppler api-quota-broker/dev整個config五分鐘唯讀token，必要兩key各cache讀一次，secret／token／輸入輸出僅程序記憶體。固定新DB `.state/v1-nvidia-mistral-2026-10-02.sqlite` 0600獨占建立、固定新request keys、同檔拒絕重跑；舊收據唯讀核對。每筆GET在送出前存dispatched邊界，POST沿Gateway正常reserve／dispatch／report；只存UTC、安全ID、timing、原因枚舉、用量及驗收布林。
+
+完整本地suite **221 passed**（本階段新增16項正式路由／安全分類／timing／GET gate／防重跑fixture）、Ruff／format／mypy／diff檢查通過；offline plan不讀秘密。尚未live派送。先完成本地提交，再正式審查以下精確命令；若平台要求本task直接批准，依正式拒絕理由處理，不換工具／路徑繞過：
+
+```bash
+.venv/bin/python scripts/v1_nvidia_mistral_once.py --live --db /home/ubuntu/projects/api-quota-broker/.state/v1-nvidia-mistral-2026-10-02.sqlite
+```
+
+## 先前一次性診斷方案（未執行，已由上述新階段取代）
 
 以下是**待 main 取得一次明確追加批准**的方案；原次數上限已用完。
 

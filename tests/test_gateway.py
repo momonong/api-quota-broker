@@ -1136,7 +1136,7 @@ def test_current_nvidia_lightning_text_model_uses_nonstreaming_no_thinking(tmp_p
     assert payload["model"] == model
     assert payload["stream"] is False
     assert payload["chat_template_kwargs"] == {"enable_thinking": False}
-    assert calls[0][3] == 60.0
+    assert calls[0][3] == 120.0
 
 
 @pytest.mark.parametrize(
@@ -1240,6 +1240,8 @@ def test_new_chat_provider_transport_accepts_only_fixed_origin(monkeypatch, prov
     )
     if provider == "groq":
         monkeypatch.setattr("quota_broker.bounded_curl.groq_http", lambda *_: (200, {}, b"{}"))
+    elif provider == "mistral":
+        monkeypatch.setattr("quota_broker.bounded_curl.chat_http", lambda *_: (200, {}, b"{}"))
     url, headers, payload = official_request(
         provider, model, "fixture-account", "fixture-secret", "fixture input", 16, None, None
     )
