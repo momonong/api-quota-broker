@@ -31,6 +31,7 @@ KEY = "v1-mistral-3b-2026-10-02"
 MODEL = "ministral-3b-latest"
 PROMPT = "Reply READY."
 MAX_OUTPUT = 32
+CANONICAL_MODEL = "ministral-3b-2512"
 
 
 def now():
@@ -64,19 +65,121 @@ def check_prior():
             raise RuntimeError("prior request gap required; no automatic wait or retry")
 
 
-def get_candidate(resolver):
+def candidate_details(data, key):
+    # Public family/date identifiers only. Exclude ft/user identifiers, arbitrary
+    # strings and exact credential reflections; no model descriptions/accounts.
+    public_pattern = r"(?:mistral-(?:small|medium|large)|ministral-(?:3b|8b|14b))-(?:latest|2[3-6](?:0[1-9]|1[0-2]))"
+
+    def public(value):
+        return (
+            isinstance(value, str)
+            and re.fullmatch(public_pattern, value)
+            and key.casefold() not in value.casefold()
+        )
+
+    models = data.get("data") if isinstance(data, dict) else None
+    models = models if isinstance(models, list) else []
+    candidates = [
+        model
+        for model in models
+        if isinstance(model, dict)
+        and public(model.get("id"))
+        and (
+            model.get("id") in (MODEL, CANONICAL_MODEL)
+            or isinstance(model.get("aliases"), list)
+            and MODEL in model["aliases"]
+        )
+    ]
+    exact = [m for m in candidates if m.get("id") == MODEL]
+    dated = [m for m in candidates if m.get("id") == CANONICAL_MODEL]
+    aliases = [
+        m for m in candidates if isinstance(m.get("aliases"), list) and MODEL in m["aliases"]
+    ]
+    candidate_consistent = bool(candidates) and all(
+        m.get("id") in (MODEL, CANONICAL_MODEL) for m in candidates
+    )
+    # An exact listing is this model's route evidence. Old aliases can have
+    # distinct lifecycle/access metadata and cannot veto a valid exact entry.
+    evidence = exact or candidates
+    consistent = bool(evidence) and all(m.get("id") in (MODEL, CANONICAL_MODEL) for m in evidence)
+    preferred = (exact or dated or [None])[0]
+    allowed = (
+        consistent
+        and all(
+            not any(m.get(f) is True for f in ("requires_payment", "paid_only", "billing_enabled"))
+            and not any(m.get(f) is False for f in ("free_eligible", "free_tier"))
+            for m in evidence
+        )
+        and isinstance(data, dict)
+        and data.get("billing_enabled") is not True
+    )
+    chat = consistent and all(
+        m.get("active") is not False
+        and m.get("archived") is not True
+        and isinstance(m.get("capabilities"), dict)
+        and m["capabilities"].get("completion_chat") is True
+        for m in evidence
+    )
+    metadata = {}
+    for model in models:
+        if not isinstance(model, dict) or not public(model.get("id")):
+            continue
+        mid = model["id"]
+        safe_aliases = (
+            {a for a in model.get("aliases", []) if public(a)}
+            if isinstance(model.get("aliases"), list)
+            else set()
+        )
+        completion_chat = (
+            isinstance(model.get("capabilities"), dict)
+            and model["capabilities"].get("completion_chat") is True
+        )
+        if mid in metadata:
+            safe_aliases.update(metadata[mid]["aliases"])
+            completion_chat &= metadata[mid]["completion_chat"]
+        metadata[mid] = {
+            "id": mid,
+            "aliases": sorted(safe_aliases)[:8],
+            "completion_chat": completion_chat,
+        }
+    details = {
+        "candidate_count": min(len(candidates), 1000),
+        "exact_id_count": min(len(exact), 1000),
+        "canonical_id_count": min(len(dated), 1000),
+        "alias_count": min(len(aliases), 1000),
+        "distinct_candidate_id_count": len(
+            {m["id"] for m in candidates if m.get("id") in (MODEL, CANONICAL_MODEL)}
+        ),
+        "candidate_ids_consistent": candidate_consistent,
+        "route_evidence_consistent": consistent,
+        "route_evidence_basis": "exact_id"
+        if exact
+        else "canonical_or_alias"
+        if evidence
+        else "none",
+        "fixed_3b_candidate_visible": bool(candidates),
+        "free_access_not_contradicted": bool(allowed),
+        "free_access_basis": "human_attested_free_no_card_included_usage",
+        "matched_model_id": preferred["id"] if preferred and public(preferred["id"]) else None,
+        "public_model_metadata": [metadata[mid] for mid in sorted(metadata)[:64]],
+        "public_model_metadata_truncated": len(metadata) > 64,
+    }
+    return bool(allowed and chat and len(evidence) <= 64), details
+
+
+def get_candidate(resolver, db):
     dispatched = None
     status = None
     ready = False
     details = {}
-    with sqlite3.connect(DB) as con:
+    with sqlite3.connect(db) as con:
         con.execute("INSERT INTO diagnostic_gets VALUES('mistral', 'preparing', NULL, NULL)")
     try:
         key = resolver("MISTRAL_API_KEY")
         if not isinstance(key, str) or not re.fullmatch(r"[A-Za-z0-9._~-]{8,256}", key):
             raise ValueError("credential rejected")
         dispatched = now()
-        with sqlite3.connect(DB) as con:
+        with sqlite3.connect(db) as con:
             con.execute(
                 "UPDATE diagnostic_gets SET state='dispatched',dispatched_at=?", (dispatched,)
             )
@@ -86,48 +189,9 @@ def get_candidate(resolver):
         )
         details.update(safe_transport_diagnostics(timing))
         data = json.loads(raw) if raw else {}
-        models = data.get("data") if isinstance(data, dict) else None
-        candidates = (
-            [
-                model
-                for model in models
-                if isinstance(model, dict)
-                and (
-                    model.get("id") == MODEL
-                    or isinstance(model.get("aliases"), list)
-                    and MODEL in model["aliases"]
-                )
-            ]
-            if isinstance(models, list)
-            else []
-        )
-        match = candidates[0] if len(candidates) == 1 else None
-        # Model visibility is not billing proof. Carry forward the human-attested
-        # Free/no-card scope; stop on any explicit paid-only contradiction.
-        allowed = (
-            match is not None
-            and not any(
-                match.get(field) is True
-                for field in ("requires_payment", "paid_only", "billing_enabled")
-            )
-            and not any(match.get(field) is False for field in ("free_eligible", "free_tier"))
-        )
-        allowed &= isinstance(data, dict) and data.get("billing_enabled") is not True
-        ready = (
-            status == 200
-            and timing.get("transport_code") == "ok"
-            and allowed
-            and match.get("active") is not False
-            and match.get("archived") is not True
-            and isinstance(match.get("capabilities"), dict)
-            and match["capabilities"].get("completion_chat") is True
-        )
-        details["fixed_3b_candidate_visible"] = match is not None
-        details["free_access_not_contradicted"] = bool(allowed)
-        details["free_access_basis"] = "human_attested_free_no_card_included_usage"
-        details["matched_model_id"] = (
-            match.get("id") if match and match.get("id") in (MODEL, "ministral-3b-2512") else None
-        )
+        ready, gate = candidate_details(data, key)
+        details.update(gate)
+        ready &= status == 200 and timing.get("transport_code") == "ok"
         state = "completed" if ready else "gate_failed"
     except (OSError, ValueError):
         details = {
@@ -146,7 +210,7 @@ def get_candidate(resolver):
         "fixed_chat_model_visible": ready,
         "diagnostics": details,
     }
-    with sqlite3.connect(DB) as con:
+    with sqlite3.connect(db) as con:
         con.execute("UPDATE diagnostic_gets SET state=?,details_json=?", (state, json.dumps(safe)))
     print(json.dumps(safe, sort_keys=True))
     return ready
@@ -164,8 +228,14 @@ def main():
         return 0
     if args.db is None or args.db.resolve() != DB.resolve() or DB.exists():
         raise RuntimeError("fixed new receipt required; never replay")
+    return run_once(DB, KEY)
+
+
+def run_once(db, request_key):
+    if db.exists():
+        raise RuntimeError("fixed new receipt required; never replay")
     check_prior()
-    if not Path("/usr/bin/curl").is_file() or DB.parent.stat().st_mode & 0o777 != 0o700:
+    if not Path("/usr/bin/curl").is_file() or db.parent.stat().st_mode & 0o777 != 0o700:
         raise RuntimeError("existing private state directory and curl required")
     targets = tuple(
         replace(target, id="mistral-3b-bounded-check", model=MODEL, max_output_tokens=MAX_OUTPUT)
@@ -174,9 +244,9 @@ def main():
     binary = cli()
     if "MISTRAL_API_KEY" not in metadata_names(binary):
         raise RuntimeError("required secret name absent")
-    descriptor = os.open(DB, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    descriptor = os.open(db, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
     os.close(descriptor)
-    with sqlite3.connect(DB) as con:
+    with sqlite3.connect(db) as con:
         con.execute(
             "CREATE TABLE diagnostic_gets(provider TEXT PRIMARY KEY,state TEXT,dispatched_at TEXT,details_json TEXT)"
         )
@@ -197,16 +267,16 @@ def main():
 
     if time.monotonic() - started > 300 - 33 - 30:
         raise RuntimeError("service_token_expiry_guard")
-    if not get_candidate(resolver):
+    if not get_candidate(resolver, db):
         return 2
     time.sleep(3)
     if time.monotonic() - started > 300 - 33 - 30:
         raise RuntimeError("service_token_expiry_guard")
-    gateway = Gateway(DB, targets, secrets.token_bytes(32), resolver)
+    gateway = Gateway(db, targets, secrets.token_bytes(32), resolver)
     try:
         result = gateway.run(
             {
-                "request_key": KEY,
+                "request_key": request_key,
                 "provider": "mistral",
                 "model": MODEL,
                 "capability": "text_generation",
@@ -215,7 +285,7 @@ def main():
             }
         )
     except GatewayError:
-        result = gateway.status(KEY)
+        result = gateway.status(request_key)
     safe = {
         name: result[name]
         for name in (
@@ -248,8 +318,8 @@ def main():
         and safe["visible_answer_present"]
         and result["ledger_state"] == "completed"
     )
-    with sqlite3.connect(DB) as con:
-        con.execute("INSERT INTO acceptance_receipt VALUES(?,?)", (KEY, json.dumps(safe)))
+    with sqlite3.connect(db) as con:
+        con.execute("INSERT INTO acceptance_receipt VALUES(?,?)", (request_key, json.dumps(safe)))
     print(json.dumps(safe, sort_keys=True))
     return 0 if safe["full_answer_verified"] else 2
 

@@ -187,7 +187,23 @@ catalog最小加入獨立`ministral-3b-latest`身份；正常bounded curl只多�
 .venv/bin/python scripts/v1_mistral_3b_once.py --live --db /home/ubuntu/projects/api-quota-broker/.state/v1-mistral-3b-2026-10-02.sqlite
 ```
 
-成功要求完整非空回答、stop、未截斷與可信實際input/output及ledger正常結算。若3B同樣限流，不把兩個model同錯當作全帳戶禁止已證，整理精確非秘密UTC／碼／安全headers交官方支援查核；沒有第四個模型嘗試或無限重試。完整本機回歸 **253 passed**，Ruff／format／mypy／diff檢查通過；只有fixture／loopback。涵蓋固定3B正常路由、model gate、付費矛盾零POST、固定3秒間隔、GET429／timeout／length、key只讀一次、防重跑與歷史DB不改。本階段實測待正式工具審查。
+成功要求完整非空回答、stop、未截斷與可信實際input/output及ledger正常結算。若3B同樣限流，不把兩個model同錯當作全帳戶禁止已證，整理精確非秘密UTC／碼／安全headers交官方支援查核；沒有第四個模型嘗試或無限重試。完整本機回歸 **253 passed**，Ruff／format／mypy／diff檢查通過；只有fixture／loopback。涵蓋固定3B正常路由、model gate、付費矛盾零POST、固定3秒間隔、GET429／timeout／length、key只讀一次、防重跑與歷史DB不改。
+
+此命令於本地提交`3e6cb83`後經正式審查獲准，已執行一次：UTC `2026-10-02T06:30:59.023639+00:00`派送GET、`06:30:59.588140+00:00`完成（台北14:30:59），HTTP200、total546ms；本地gate_failed，**零POST**，不可重跑同DB。此版`len(candidates)==1`把零匹配和多匹配混成false，亦未把無alias的canonical `ministral-3b-2512`算候選。因此收據的false不能追認為模型不可見／不免費；原始model列表已丟棄，不能回補匹配數或原因。新DB0600、父目錄0700、quick_checkok、foreign_key_check0，只有1GET、沒有Gateway tables或POST收據，未保存secret／prompt／答案；八份舊DB前後hash不變。
+
+### 3B gate 修正與一次唯讀補驗
+
+main為修正本地gate判斷，再增加最多1筆認證models GET；原來3B的1POST仍未用，並未增加推論次數。新固定收據 `.state/v1-mistral-3b-gate-2026-10-02.sqlite`／request key，原GET-only收據只讀，要求前次只有1已派送GET、零POST收據且零已派送Gateway attempt；即使POST已派送而acceptance尚未保存，也拒絕啟動。
+
+修正gate先分開保存bounded candidate_count／exact_id_count／canonical_id_count／alias_count／distinct_candidate_id_count。優先使用精確`ministral-3b-latest`的自身active/chat/access證據；舊日期alias的archived／不支援chat／付費狀態不能否決有效exact項。沒有exact才核canonical／alias一致性；矛盾即停止。route_evidence_basis／route_evidence_consistent與全候選一致性分開，避免混淆。只保存標準Mistral Small/Medium/Large與Ministral3B/8B/14B的公開型態id/alias和chat布林，模型數≤64、alias≤8；排除ft/user模型、任意description／帳戶／精確秘密反射。
+
+正常Gate helper共用既有GET與Gateway POST流程；新wrapper沒有transport覆寫、retry／模型掃描／token續期。仍是Free/no-card內含用量範圍，明確付費矛盾即停止，GET通過後隔3秒才送原來未用的固定3B32tokens／30秒POST。
+
+```bash
+.venv/bin/python scripts/v1_mistral_3b_gate_once.py --live --db /home/ubuntu/projects/api-quota-broker/.state/v1-mistral-3b-gate-2026-10-02.sqlite
+```
+
+完整回歸263項通過；最後的exact優先與派送未留acceptance防護以受影響gate／normal-route fixtures再驗，Ruff／format／mypy／diff通過。實測待正式審查，不改寫前次false或任何Small unknown。
 
 ## 先前一次性診斷方案（未執行，已由上述新階段取代）
 

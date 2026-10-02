@@ -172,6 +172,7 @@ def test_one_get_gates_one_default_post_with_gap_and_no_replay(
                 "capabilities": {"completion_chat": scenario != "no-chat"},
             }
             if scenario == "missing-model":
+                model["id"] = "mistral-small-2603"
                 model["aliases"] = ["other-model"]
             if scenario == "paid-only":
                 model["requires_payment"] = True
@@ -229,3 +230,94 @@ def test_one_get_gates_one_default_post_with_gap_and_no_replay(
     assert tokens == [1] and calls == (
         [True, False] if gated else [] if scenario == "bad-key" else [True]
     )
+
+
+@pytest.mark.parametrize(
+    "shape", ["zero", "date-only", "exact-and-alias", "duplicate-date", "conflicting-alias"]
+)
+def test_gate_counts_duplicate_consistency_and_canonical_date(shape):
+    canonical = {
+        "id": stage.CANONICAL_MODEL,
+        "aliases": [stage.MODEL],
+        "capabilities": {"completion_chat": True},
+    }
+    exact = {**canonical, "id": stage.MODEL, "aliases": []}
+    models = (
+        []
+        if shape == "zero"
+        else [{**canonical, "aliases": []}]
+        if shape == "date-only"
+        else [exact, canonical]
+        if shape == "exact-and-alias"
+        else [canonical, canonical]
+        if shape == "duplicate-date"
+        else [exact, {**canonical, "id": "ministral-3b-2410"}]
+    )
+    ready, details = stage.candidate_details({"data": models}, "fixture-secret-value")
+    assert details["candidate_count"] == len(models)
+    assert details["exact_id_count"] == sum(m["id"] == stage.MODEL for m in models)
+    assert details["alias_count"] == sum(stage.MODEL in m["aliases"] for m in models)
+    assert details["fixed_3b_candidate_visible"] is bool(models)
+    assert ready is (shape != "zero")
+    if shape == "exact-and-alias":
+        assert details["matched_model_id"] == stage.MODEL
+    if shape == "duplicate-date":
+        assert details["distinct_candidate_id_count"] == 1
+        assert len(details["public_model_metadata"]) == 1
+    if shape == "conflicting-alias":
+        assert details["candidate_ids_consistent"] is False
+        assert details["candidate_count"] == 2
+        assert details["route_evidence_basis"] == "exact_id"
+        assert details["route_evidence_consistent"] is True
+
+
+@pytest.mark.parametrize("old_flag", ["archived", "no-chat", "paid-only"])
+def test_exact_id_lifecycle_and_access_take_precedence_over_old_alias(old_flag):
+    exact = {"id": stage.MODEL, "capabilities": {"completion_chat": True}}
+    old = {
+        "id": "ministral-3b-2410",
+        "aliases": [stage.MODEL],
+        "capabilities": {"completion_chat": True},
+    }
+    if old_flag == "archived":
+        old["archived"] = True
+    if old_flag == "no-chat":
+        old["capabilities"]["completion_chat"] = False
+    if old_flag == "paid-only":
+        old["paid_only"] = True
+    ready, details = stage.candidate_details({"data": [old, exact]}, "fixture-secret-value")
+    assert ready is True and details["matched_model_id"] == stage.MODEL
+    assert details["candidate_count"] == 2 and details["alias_count"] == 1
+    assert details["route_evidence_basis"] == "exact_id"
+    assert details["candidate_ids_consistent"] is False
+    # An explicit paid restriction on the actual exact model still stops POST.
+    ready, _ = stage.candidate_details(
+        {"data": [{**exact, "paid_only": True}, old]}, "fixture-secret-value"
+    )
+    assert ready is False
+    ready, _ = stage.candidate_details({"data": [old]}, "fixture-secret-value")
+    assert ready is False
+
+
+def test_public_model_metadata_excludes_private_models_accounts_and_secrets():
+    data = {
+        "account": "jane@example.com",
+        "data": [
+            {"id": "ft:mistral-small-2603:user-secret", "aliases": [stage.MODEL]},
+            {"id": "mistral-small-user-secret", "aliases": [stage.MODEL]},
+            {
+                "id": stage.CANONICAL_MODEL,
+                "aliases": [stage.MODEL, "ft:user", "fixture-secret-value"],
+                "description": "fixture-secret-value",
+                "account": "jane@example.com",
+                "capabilities": {"completion_chat": True},
+            },
+        ],
+    }
+    ready, details = stage.candidate_details(data, "fixture-secret-value")
+    assert ready is True and details["candidate_count"] == 1
+    assert details["public_model_metadata"] == [
+        {"id": stage.CANONICAL_MODEL, "aliases": [stage.MODEL], "completion_chat": True}
+    ]
+    for forbidden in ("user-secret", "fixture-secret-value", "jane", "description", "account"):
+        assert forbidden not in json.dumps(details)
