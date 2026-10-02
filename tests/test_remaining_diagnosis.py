@@ -18,18 +18,104 @@ from quota_broker.gateway_providers import (
 )
 
 
-def riva_request():
+def llm_request():
     _, headers, payload = official_request(
         "nvidia",
-        "nvidia/riva-translate-4b-instruct-v2",
+        curl.MODEL,
         "fixture",
         "fixture-secret",
-        "Good morning.",
+        curl.PROMPT,
         32,
-        "en",
-        "zh-cn",
+        None,
+        None,
     )
     return headers, payload
+
+
+@pytest.mark.parametrize(
+    "model", ["google/gemma-4-31b-it", curl.MODEL, "nvidia/riva-translate-4b-instruct-v2"]
+)
+def test_existing_nvidia_request_contracts(model):
+    translation = "riva" in model
+    url, headers, payload = official_request(
+        "nvidia",
+        model,
+        "fixture",
+        "fixture-secret",
+        "fixture-prompt",
+        32,
+        "en" if translation else None,
+        "zh-cn" if translation else None,
+    )
+    assert url == curl.URL and headers == {"Authorization": "Bearer fixture-secret"}
+    assert payload["stream"] is False and payload["max_tokens"] == 32
+    assert payload["messages"][-1] == {"role": "user", "content": "fixture-prompt"}
+    if translation:
+        assert payload["messages"][0] == {"role": "system", "content": "en-zh-cn"}
+        assert payload["temperature"] == 0 and "chat_template_kwargs" not in payload
+    else:
+        assert payload["chat_template_kwargs"] == {"enable_thinking": False}
+
+
+@pytest.mark.parametrize(
+    "usage",
+    [
+        None,
+        {},
+        {"prompt_tokens": True, "completion_tokens": 1},
+        {"prompt_tokens": 1, "completion_tokens": -1},
+    ],
+)
+def test_nvidia_incomplete_usage_and_arbitrary_finish_are_safe(usage):
+    details = safe_response_diagnostics(
+        "nvidia",
+        200,
+        {},
+        json.dumps(
+            {
+                "choices": [{"finish_reason": "fixture-secret", "message": {"content": "answer"}}],
+                "usage": usage,
+            }
+        ).encode(),
+    )
+    assert details["finish_reason"] == "unclassified"
+    assert details["visible_answer_present"] is True
+    assert details["provider_usage_complete"] is False
+    assert "fixture-secret" not in json.dumps(details)
+
+
+@pytest.mark.parametrize("body", [b"fixture-secret invalid JSON", b"[]", b'"fixture-secret"'])
+def test_nvidia_malformed_200_preserves_http_and_diagnostics(tmp_path, monkeypatch, body):
+    db = tmp_path / "diagnostics.sqlite"
+    with sqlite3.connect(db) as con:
+        con.execute(
+            "CREATE TABLE gateway_diagnostics(request_key TEXT PRIMARY KEY, provider TEXT, details_json TEXT)"
+        )
+    monkeypatch.setattr(
+        remaining,
+        "nvidia_http",
+        lambda *_: (
+            200,
+            {},
+            body,
+            {"transport_code": "ok", "time_appconnect_ms": 20},
+        ),
+    )
+    headers, payload = llm_request()
+    status, _, sanitized_body = remaining.diagnostic_transport(db, "nvidia")(
+        curl.URL,
+        headers,
+        payload,
+        60,
+    )
+    assert status == 200 and json.loads(sanitized_body) == {"usage": None}
+    with sqlite3.connect(db) as con:
+        details = con.execute("SELECT details_json FROM gateway_diagnostics").fetchone()[0]
+    assert "fixture-secret" not in details
+    parsed = json.loads(details)
+    assert parsed["completion_complete"] is False
+    assert parsed["reason_category"] == "llm_completion_incomplete"
+    assert parsed["time_appconnect_ms"] == 20
 
 
 def curl_output(status=200, code=0, *, header=b"HTTP/2 200\r\n", body=b"{}", tls=0.2):
@@ -83,7 +169,7 @@ def test_real_curl_config_parses_without_any_network(monkeypatch):
         return 0, curl_output(body=b'{"choices":[]}')
 
     monkeypatch.setattr(curl, "run_curl", fixture)
-    status, headers, body, details = curl.nvidia_http(*riva_request())
+    status, headers, body, details = curl.nvidia_http(*llm_request())
     assert status == 200 and headers["content-type"] == "application/json"
     assert body == b'{"choices":[]}' and details["time_appconnect_ms"] == 200
     assert b'url = "https://integrate.api.nvidia.com/v1/chat/completions"' in configs[0]
@@ -96,7 +182,7 @@ def test_real_curl_config_parses_without_any_network(monkeypatch):
 def test_informational_headers_and_marker_inside_body(monkeypatch, first):
     body = b'{"content":"\\nquota-broker-curl-metrics: fake"}'
     monkeypatch.setattr(curl, "run_curl", lambda *_: (0, first + curl_output(body=body)))
-    assert curl.nvidia_http(*riva_request())[2] == body
+    assert curl.nvidia_http(*llm_request())[2] == body
 
 
 @pytest.mark.parametrize(
@@ -112,12 +198,12 @@ def test_timeout_never_returns_partial_answer(monkeypatch, status, tls, phase):
     if not status:
         output = output[output.index(curl.MARKER) :]
     monkeypatch.setattr(curl, "run_curl", lambda *_: (28, output))
-    _, _, body, diagnostics = curl.nvidia_http(*riva_request())
+    _, _, body, diagnostics = curl.nvidia_http(*llm_request())
     assert body == b"" and diagnostics["timeout_phase"] == phase
 
 
 def test_invalid_headers_control_values_and_overlarge_body_are_rejected(monkeypatch):
-    headers, payload = riva_request()
+    headers, payload = llm_request()
     with pytest.raises(ProviderError):
         curl.nvidia_http({"Authorization": "Bearer secret\ntrace = file"}, payload)
     monkeypatch.setattr(curl, "run_curl", lambda *_: (0, curl_output(header=b"HTTP/2 500\r\n")))
@@ -210,6 +296,65 @@ def test_safe_mistral_fields_retain_known_type_without_untrusted_values():
     )
 
 
+@pytest.mark.parametrize(
+    "message,category,action",
+    [
+        (
+            "Service tier capacity exceeded for this model.",
+            "service_capacity_reported",
+            "check_provider_capacity",
+        ),
+        (
+            "Workspace monthly spending limit reached.",
+            "workspace_budget_reported",
+            "check_workspace_cap",
+        ),
+        (
+            "Organization spending limit exceeded.",
+            "organization_budget_reported",
+            "check_organization_cap",
+        ),
+        (
+            "Monthly token quota exhausted.",
+            "monthly_token_limit_reported",
+            "check_monthly_token_limit",
+        ),
+        ("Tokens per minute limit exceeded.", "token_rate_reported", "check_model_token_rate"),
+        ("Requests per second exceeded.", "request_rate_reported", "check_model_request_rate"),
+        ("Rate limit exceeded.", "rate_limit_scope_unknown", "check_model_rate_and_monthly_limits"),
+        ("Not rate limit exceeded.", "http_429_unclassified", "limits_or_provider_support"),
+        ("Maybe workspace budget reached.", "http_429_unclassified", "limits_or_provider_support"),
+    ],
+)
+def test_unknown_mistral_envelope_yields_only_fixed_actionable_hint(message, category, action):
+    body = {
+        "object": "error",
+        "type": "new-unrecognized-type",
+        "code": "secret-like-code",
+        "message": message,
+    }
+    details = safe_response_diagnostics("mistral", 429, {}, json.dumps(body).encode())
+    assert details["reason_category"] == category and details["next_check"] == action
+    assert "secret-like-code" not in json.dumps(details) and message not in json.dumps(details)
+    # None of these hints is a guarantee that the request did not execute.
+    from quota_broker.gateway_providers import explicit_quota_rejection
+
+    assert explicit_quota_rejection("mistral", 429, {}, json.dumps(body).encode()) is False
+
+
+def test_secret_phrase_is_removed_before_classification_and_large_messages_are_bounded():
+    body = {"object": "error", "type": "unknown", "message": "RATE LIMIT EXCEEDED"}
+    details = safe_response_diagnostics(
+        "mistral", 429, {}, json.dumps(body).encode(), sensitive_values=("Rate limit exceeded",)
+    )
+    assert details["reason_category"] == "http_429_unclassified"
+    assert details["message_secret_redacted"] is True
+    body["message"] = "Service tier capacity exceeded for this model. " + "x" * 4096
+    details = safe_response_diagnostics("mistral", 429, {}, json.dumps(body).encode())
+    assert details["reason_category"] == "http_429_unclassified"
+    assert details["message_exceeds_bound"] is True
+
+
 def test_plan_is_offline(monkeypatch, capsys):
     monkeypatch.setattr(sys, "argv", ["v1_remaining_once.py"])
     monkeypatch.setattr(remaining, "service_token", lambda _: 1 / 0)
@@ -218,8 +363,10 @@ def test_plan_is_offline(monkeypatch, capsys):
 
 
 @pytest.mark.parametrize("chat_available", [True, False])
+@pytest.mark.parametrize("nvidia_success", [True, False])
+@pytest.mark.parametrize("finish_reason", ["stop", "length", None])
 def test_fixture_live_is_bounded_and_keeps_failure_diagnostics(
-    tmp_path, monkeypatch, capsys, chat_available
+    tmp_path, monkeypatch, capsys, chat_available, nvidia_success, finish_reason
 ):
     db = tmp_path / "new.sqlite"
     prior = []
@@ -295,7 +442,7 @@ def test_fixture_live_is_bounded_and_keeps_failure_diagnostics(
                 {
                     "object": "error",
                     "type": "invalid_request_error",
-                    "message": "fixture-secret",
+                    "message": "Service tier capacity exceeded for this model. fixture-secret",
                     "code": "fixture-secret",
                 }
             ).encode(),
@@ -304,14 +451,19 @@ def test_fixture_live_is_bounded_and_keeps_failure_diagnostics(
     monkeypatch.setattr(remaining, "provider_http", mistral)
 
     def nvidia(headers, payload, timeout):
-        assert timeout == 60 and payload == riva_request()[1]
+        assert timeout == 120 and payload == llm_request()[1]
         posts.append("nvidia")
         return (
             200,
             {},
             json.dumps(
                 {
-                    "choices": [{"message": {"content": "fixture-answer"}}],
+                    "choices": [
+                        {
+                            "message": {"content": "fixture-answer" if nvidia_success else " "},
+                            "finish_reason": finish_reason,
+                        }
+                    ],
                     "usage": {"prompt_tokens": 22, "completion_tokens": 3},
                 }
             ).encode(),
@@ -324,10 +476,16 @@ def test_fixture_live_is_bounded_and_keeps_failure_diagnostics(
     assert reads == ["MISTRAL_API_KEY", "NVIDIA_API_KEY"] and token_calls == [1]
     assert db.stat().st_mode & 0o777 == 0o600
     with sqlite3.connect(db) as con:
-        assert (
-            con.execute("SELECT state FROM gateway_tasks WHERE provider='nvidia'").fetchone()[0]
-            == "completed"
+        assert con.execute("SELECT state FROM gateway_tasks WHERE provider='nvidia'").fetchone()[
+            0
+        ] == ("completed" if nvidia_success and finish_reason == "stop" else "unknown")
+        nvidia_details = json.loads(
+            con.execute(
+                "SELECT details_json FROM gateway_diagnostics WHERE provider='nvidia'"
+            ).fetchone()[0]
         )
+        assert nvidia_details["finish_reason"] == (finish_reason or "missing")
+        assert nvidia_details["completion_complete"] is (nvidia_success and finish_reason == "stop")
         if chat_available:
             assert (
                 con.execute("SELECT state FROM gateway_tasks WHERE provider='mistral'").fetchone()[
@@ -341,6 +499,9 @@ def test_fixture_live_is_bounded_and_keeps_failure_diagnostics(
                 ).fetchone()[0]
             )
             assert details["error_type"] == "invalid_request_error"
+            assert details["reason_category"] == "service_capacity_reported"
+            assert details["reason_basis"] == "message_pattern"
+            assert details["message_secret_redacted"] is True
     assert [path.read_bytes() for path in prior] == old_bytes
     assert b"fixture-secret" not in db.read_bytes() and b"fixture-answer" not in db.read_bytes()
     output = capsys.readouterr().out

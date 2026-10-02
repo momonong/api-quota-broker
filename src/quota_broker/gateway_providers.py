@@ -228,8 +228,89 @@ def safe_http_error_code(provider: str, status: int, raw: bytes) -> str:
     return "provider_http_error"
 
 
+def _mistral_reason(data: object, sensitive_values: tuple[str, ...]) -> dict[str, str | bool]:
+    """Classify a reported hint, not a verified cause or non-execution guarantee."""
+    result: dict[str, str | bool] = {
+        "reason_category": "http_429_unclassified",
+        "reason_basis": "status_only",
+        "next_check": "limits_or_provider_support",
+    }
+    if not isinstance(data, dict):
+        return result
+    error = data.get("error") if isinstance(data.get("error"), dict) else data
+    assert isinstance(error, dict)
+    message = error.get("message")
+    if isinstance(message, str) and len(message) <= 4096:
+        # Remove exact resolved secrets before interpreting even fixed phrases.
+        # No part of this text is returned, hashed or persisted.
+        redacted = False
+        for secret in sensitive_values:
+            if secret and re.search(re.escape(secret), message, re.IGNORECASE):
+                message = re.sub(re.escape(secret), "[redacted]", message, flags=re.IGNORECASE)
+                redacted = True
+        result["message_secret_redacted"] = redacted
+        sentence = " ".join(message.casefold().split()).split(".", 1)[0].strip()
+        patterns = (
+            (
+                "service_capacity_reported",
+                r"service tier capacity exceeded(?: for this model)?",
+                "check_provider_capacity",
+            ),
+            (
+                "workspace_budget_reported",
+                r"workspace (?:monthly )?(?:spending limit|budget) (?:exceeded|reached)",
+                "check_workspace_cap",
+            ),
+            (
+                "organization_budget_reported",
+                r"organization (?:monthly )?(?:spending limit|budget) (?:exceeded|reached)",
+                "check_organization_cap",
+            ),
+            (
+                "monthly_token_limit_reported",
+                r"(?:monthly token quota|monthly token limit|tokens per month limit) (?:exceeded|reached|exhausted)",
+                "check_monthly_token_limit",
+            ),
+            (
+                "token_rate_reported",
+                r"(?:tokens? per minute|tpm)(?: limit)? (?:exceeded|reached)",
+                "check_model_token_rate",
+            ),
+            (
+                "request_rate_reported",
+                r"(?:requests? per (?:second|minute)|rps|rpm)(?: limit)? (?:exceeded|reached)",
+                "check_model_request_rate",
+            ),
+            (
+                "rate_limit_scope_unknown",
+                r"rate limit exceeded|too many requests",
+                "check_model_rate_and_monthly_limits",
+            ),
+        )
+        for category, pattern, action in patterns:
+            if re.fullmatch(pattern, sentence):
+                result.update(
+                    reason_category=category, reason_basis="message_pattern", next_check=action
+                )
+                return result
+    elif isinstance(message, str):
+        result["message_exceeds_bound"] = True
+    if error.get("type") in ("rate_limit_error", "rate_limited"):
+        result.update(
+            reason_category="rate_limit_scope_unknown",
+            reason_basis="fixed_type",
+            next_check="check_model_rate_and_monthly_limits",
+        )
+    return result
+
+
 def safe_response_diagnostics(
-    provider: str, status: int, headers: dict[str, str], raw: bytes
+    provider: str,
+    status: int,
+    headers: dict[str, str],
+    raw: bytes,
+    *,
+    sensitive_values: tuple[str, ...] = (),
 ) -> dict[str, str | int | bool | None]:
     """Allowlisted structure only; never copy prose or unrecognized field values."""
     normalized = {name.lower(): value for name, value in headers.items()}
@@ -244,10 +325,36 @@ def safe_response_diagnostics(
         data = json.loads(raw)
     except (ValueError, TypeError):
         diagnostics["body_shape"] = "non_json"
+        if provider == "mistral" and status == 429:
+            diagnostics.update(_mistral_reason(None, sensitive_values))
         return diagnostics
+    if provider == "mistral" and status == 429:
+        diagnostics.update(_mistral_reason(data, sensitive_values))
     if not isinstance(data, dict):
         diagnostics["body_shape"] = "non_object"
         return diagnostics
+    if provider == "nvidia" and status == 200:
+        choices = data.get("choices")
+        first = choices[0] if isinstance(choices, list) and choices else None
+        first = first if isinstance(first, dict) else {}
+        finish = first.get("finish_reason")
+        diagnostics["finish_reason"] = (
+            finish
+            if isinstance(finish, str) and finish in {"stop", "length", "content_filter"}
+            else "missing"
+            if finish is None
+            else "unclassified"
+        )
+        message = first.get("message")
+        content = message.get("content") if isinstance(message, dict) else None
+        diagnostics["visible_answer_present"] = isinstance(content, str) and bool(content.strip())
+        usage = data.get("usage")
+        diagnostics["provider_usage_complete"] = isinstance(usage, dict) and all(
+            isinstance(usage.get(field), int)
+            and not isinstance(usage.get(field), bool)
+            and usage[field] >= 0
+            for field in ("prompt_tokens", "completion_tokens")
+        )
     error = data if data.get("object") == "error" else data.get("error")
     diagnostics["body_shape"] = (
         "top_level_error"
@@ -363,7 +470,11 @@ def interpret(
         choices = data.get("choices")
         if isinstance(choices, list) and choices and isinstance(choices[0], dict):
             message = choices[0].get("message")
-            if isinstance(message, dict) and isinstance(message.get("content"), str):
+            if (
+                isinstance(message, dict)
+                and isinstance(message.get("content"), str)
+                and message["content"].strip()
+            ):
                 answer = message["content"]
         request_id = _request_id(data.get("id") or data.get("requestId"))
     elif provider == "google":

@@ -1,7 +1,7 @@
 """Offline plan by default; a proposed, separately approved remaining-provider check.
 
 Live scope: one Mistral model GET, at most one Mistral POST and one NVIDIA
-Riva translation POST. Groq remains blocked pending site-owner resolution.
+Nemotron general LLM POST. Groq remains blocked pending site-owner resolution.
 No automatic retry, token renewal, model substitution or replay of old tasks.
 """
 
@@ -17,14 +17,13 @@ import urllib.request
 from dataclasses import replace
 from pathlib import Path
 
-from bounded_curl import nvidia_http
+from bounded_curl import MODEL, PROMPT, nvidia_http
 from v1_diagnose_once import PRIOR_DBS, ROOT
 from v1_smoke_once import CONFIG, PROJECT, cli, metadata_names, runtime_targets, service_token
 
 from quota_broker.config import load_gateway_config
 from quota_broker.gateway import Gateway, GatewayError
 from quota_broker.gateway_providers import (
-    RIVA,
     ProviderPhaseTimeout,
     provider_http,
     safe_response_diagnostics,
@@ -90,7 +89,9 @@ def model_ready(db: Path, resolver) -> bool:
             raw = response.read(65_537)
             if len(raw) > 65_536:
                 raise ValueError("model response bound")
-            details = safe_response_diagnostics("mistral", status, dict(response.headers), raw)
+            details = safe_response_diagnostics(
+                "mistral", status, dict(response.headers), raw, sensitive_values=(key,)
+            )
         data = json.loads(raw)
         models = data.get("data") if isinstance(data, dict) else None
         ready = bool(
@@ -137,7 +138,7 @@ def diagnostic_transport(db: Path, provider: str):
 
     def request(url, headers, payload, timeout):
         if provider == "nvidia":
-            status, received_headers, body, details = nvidia_http(headers, payload, timeout)
+            status, received_headers, body, details = nvidia_http(headers, payload, 120)
             record(db, key, provider, details)
             if details["transport_code"] != "ok":
                 code = "curl_" + str(details.get("timeout_phase", details["transport_code"]))
@@ -146,7 +147,29 @@ def diagnostic_transport(db: Path, provider: str):
                 raise ProviderPhaseTimeout("curl_status_missing")
         else:
             status, received_headers, body = provider_http(url, headers, payload, timeout)
-        details = safe_response_diagnostics(provider, status, received_headers, body)
+        details = safe_response_diagnostics(
+            provider,
+            status,
+            received_headers,
+            body,
+            sensitive_values=tuple(value.removeprefix("Bearer ") for value in headers.values()),
+        )
+        if provider == "nvidia" and status == 200:
+            complete = (
+                details.get("finish_reason") == "stop"
+                and details.get("visible_answer_present") is True
+                and details.get("provider_usage_complete") is True
+            )
+            details["completion_complete"] = complete
+            if not complete:
+                details["reason_category"] = "llm_completion_incomplete"
+                # Preserve HTTP and actual usage while the Gateway retains an unknown hold.
+                try:
+                    data = json.loads(body)
+                except (ValueError, TypeError):
+                    data = None
+                usage = data.get("usage") if isinstance(data, dict) else None
+                body = json.dumps({"usage": usage}).encode()
         # For NVIDIA merge fixed response structure with already-recorded timings.
         if provider == "nvidia":
             with sqlite3.connect(db) as con:
@@ -191,7 +214,7 @@ def main() -> int:
     if not args.live:
         print("plan_only: 1 Mistral model GET; maximum 2 independent POSTs; no credentials read")
         print("mistral mistral-small-latest max_output_tokens=32 timeout=30; GET gate timeout=15")
-        print("nvidia", RIVA, "translation en-zh-cn max_output_tokens=32 timeout=60 connect=10")
+        print("nvidia", MODEL, "text_generation max_output_tokens=32 timeout=120 connect=10")
         print("groq: 0 calls; site-owner resolution required; no identity/IP workaround")
         return 0
     if args.db is None or args.db.resolve() != DB.resolve():
@@ -203,11 +226,11 @@ def main() -> int:
         raise RuntimeError("required existing curl unavailable")
     targets = runtime_targets(ROOT / "gateway.example.json", ("mistral",))
     profile = load_gateway_config(ROOT / "gateway.example.json")
-    riva = next(
-        target for target in profile if target.provider == "nvidia" and target.model == RIVA
+    llm = next(
+        target for target in profile if target.provider == "nvidia" and target.model == MODEL
     )
     template = runtime_targets(ROOT / "gateway.example.json", ("nvidia",))[0]
-    targets += (replace(template, id=riva.id, model=RIVA),)
+    targets += (replace(template, id=llm.id, model=MODEL),)
     targets = tuple(replace(target, max_output_tokens=32) for target in targets)
     binary = cli()
     if not {"MISTRAL_API_KEY", "NVIDIA_API_KEY"}.issubset(metadata_names(binary)):
@@ -242,20 +265,18 @@ def main() -> int:
     for provider in PROVIDERS:
         if provider == "mistral" and not ready:
             continue
-        if time.monotonic() - started > 300 - (60 if provider == "nvidia" else 30) - 30:
+        if time.monotonic() - started > 300 - (123 if provider == "nvidia" else 30) - 30:
             print(json.dumps({"state": "stopped", "reason": "service_token_expiry_guard"}))
             return 2
         gateway.transport = diagnostic_transport(DB, provider)
         task = {
             "request_key": "v1-remaining-" + provider + "-2026-10-02",
             "provider": provider,
-            "model": RIVA if provider == "nvidia" else "mistral-small-latest",
-            "capability": "translation" if provider == "nvidia" else "text_generation",
-            "input": "Good morning." if provider == "nvidia" else "Reply with the word READY.",
+            "model": MODEL if provider == "nvidia" else "mistral-small-latest",
+            "capability": "text_generation",
+            "input": PROMPT if provider == "nvidia" else "Reply with the word READY.",
             "max_output_tokens": 32,
         }
-        if provider == "nvidia":
-            task.update({"source_language": "en", "target_language": "zh-cn"})
         try:
             result = gateway.run(task)
             safe = {

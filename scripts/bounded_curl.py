@@ -14,6 +14,8 @@ import time
 from quota_broker.gateway_providers import MAX_RESPONSE_BYTES, ProviderError, ProviderPhaseTimeout
 
 URL = "https://integrate.api.nvidia.com/v1/chat/completions"
+MODEL = "nvidia/nemotron-3.5-lightning-30b-a3b"
+PROMPT = "Diagnostic stage v1 remaining: reply with the single word READY."
 MARKER = b"\nquota-broker-curl-metrics:"
 TIMINGS = ("time_namelookup", "time_connect", "time_appconnect", "time_starttransfer", "time_total")
 OUTPUT_BOUND = MAX_RESPONSE_BYTES + 16_384
@@ -66,29 +68,23 @@ def run_curl(config: bytes, timeout: float) -> tuple[int, bytes]:
 
 
 def nvidia_http(
-    headers: dict[str, str], payload: dict[str, object], timeout: float = 60
+    headers: dict[str, str], payload: dict[str, object], timeout: float = 120
 ) -> tuple[int | None, dict[str, str], bytes, dict[str, int | str | None]]:
     if set(headers) != {"Authorization"} or not headers["Authorization"].startswith("Bearer "):
         raise ProviderError("unapproved curl headers")
-    if (
-        payload.get("model") != "nvidia/riva-translate-4b-instruct-v2"
-        or payload.get("stream") is not False
-    ):
+    if payload.get("model") != MODEL or payload.get("stream") is not False:
         raise ProviderError("unapproved diagnostic model")
     if type(payload.get("max_tokens")) is not int or not 1 <= payload["max_tokens"] <= 32:
         raise ProviderError("unapproved diagnostic output bound")
     if payload != {
-        "model": "nvidia/riva-translate-4b-instruct-v2",
-        "messages": [
-            {"role": "system", "content": "en-zh-cn"},
-            {"role": "user", "content": "Good morning."},
-        ],
+        "model": MODEL,
+        "messages": [{"role": "user", "content": PROMPT}],
         "max_tokens": payload["max_tokens"],
         "stream": False,
-        "temperature": 0,
+        "chat_template_kwargs": {"enable_thinking": False},
     }:
         raise ProviderError("unapproved diagnostic payload")
-    if not 0 < timeout <= 60:
+    if not 0 < timeout <= 120:
         raise ProviderError("unapproved diagnostic timeout")
     fields = {"http_code": "%{http_code}", "exitcode": "%{exitcode}"}
     fields.update({name: "%{" + name + "}" for name in TIMINGS})
@@ -126,7 +122,7 @@ def nvidia_http(
         diagnostics: dict[str, int | str | None] = {}
         for name in TIMINGS:
             value = metrics[name]
-            if type(value) not in (int, float) or not math.isfinite(value) or not 0 <= value <= 63:
+            if type(value) not in (int, float) or not math.isfinite(value) or not 0 <= value <= 123:
                 raise ValueError("invalid timing")
             diagnostics[name + "_ms"] = round(value * 1000)
         status_text = metrics["http_code"]
