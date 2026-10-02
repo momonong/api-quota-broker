@@ -2,20 +2,42 @@
 
 import hmac
 import json
+import threading
+import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
+from .core import stamp
 from .gateway import Gateway, GatewayError
+from .queue import DurableQueue
 
 
 def make_gateway_server(
-    gateway: Gateway, token: str, host: str = "127.0.0.1", port: int = 18084
+    gateway: Gateway,
+    token: str,
+    host: str = "127.0.0.1",
+    port: int = 18084,
+    *,
+    queue: DurableQueue | None = None,
+    worker: bool = False,
+    admin_token: str | None = None,
 ) -> ThreadingHTTPServer:
     if host not in {"127.0.0.1", "::1", "localhost"}:
         raise ValueError("gateway binds loopback only")
     if not isinstance(token, str) or len(token) < 32:
         raise ValueError("gateway client token must be at least 32 characters")
+    if admin_token is not None and (
+        len(admin_token) < 32 or hmac.compare_digest(admin_token, token)
+    ):
+        raise ValueError("separate administrator token required")
+    worker_state: dict[str, Any] = {
+        "enabled": queue is not None and worker,
+        "running": False,
+        "stopped": False,
+        "error_code": None,
+        "last_tick_at": None,
+    }
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *_args: object) -> None:
@@ -32,7 +54,8 @@ def make_gateway_server(
 
         def _authorized(self) -> bool:
             supplied = self.headers.get("Authorization", "")
-            if not hmac.compare_digest(supplied, "Bearer " + token):
+            expected = admin_token if urlsplit(self.path).path.startswith("/v1/admin/") else token
+            if expected is None or not hmac.compare_digest(supplied, "Bearer " + expected):
                 self._send(401, {"error": "unauthorized"})
                 return False
             return True
@@ -43,12 +66,51 @@ def make_gateway_server(
                 if parsed.fragment:
                     raise GatewayError("invalid_request", "invalid path")
                 result: object
-                if self.command == "GET" and parsed.path == "/v1/catalog" and not parsed.query:
+                if (
+                    parsed.path.startswith("/v1/admin/targets/")
+                    and self.command == "POST"
+                    and not parsed.query
+                ):
+                    parts = parsed.path.split("/")[4:]
+                    if len(parts) == 2 and parts[1] == "quota" and body is not None:
+                        gateway.observe_quota(parts[0], body)
+                    elif len(parts) == 3 and parts[1:] == ["health", "reset"] and body == {}:
+                        gateway.reset_health(parts[0])
+                    else:
+                        raise GatewayError("invalid_request", "invalid administrator operation")
+                    result = {"state": "updated", "target_id": parts[0]}
+                elif parsed.path == "/v1/queue" or parsed.path.startswith("/v1/queue/"):
+                    if queue is None:
+                        raise GatewayError("queue_disabled", "queue is not enabled")
+                    if parsed.query:
+                        raise GatewayError("invalid_request", "queue query is not supported")
+                    parts = parsed.path.split("/")[3:]
+                    if not parts and self.command == "POST" and body is not None:
+                        result = queue.submit(body)
+                    elif not parts and self.command == "GET":
+                        result = queue.recent()
+                    elif parts == ["tick"] and self.command == "POST" and body == {}:
+                        result = queue.tick("http-worker")
+                    elif len(parts) == 1 and self.command == "GET":
+                        result = queue.status(parts[0])
+                    elif len(parts) == 2 and parts[1] == "result" and self.command == "GET":
+                        result = queue.result(parts[0])
+                    elif (
+                        len(parts) == 2
+                        and parts[1] == "cancel"
+                        and self.command == "POST"
+                        and body == {}
+                    ):
+                        result = queue.cancel(parts[0])
+                    else:
+                        raise GatewayError("not_found", "queue endpoint not found")
+                elif self.command == "GET" and parsed.path == "/v1/catalog" and not parsed.query:
                     result = gateway.catalog()
                 elif (
                     self.command == "GET" and parsed.path == "/v1/diagnostics" and not parsed.query
                 ):
                     result = gateway.diagnostics()
+                    result["queue_worker"] = dict(worker_state)
                 elif self.command == "GET" and parsed.path == "/v1/tasks":
                     query = parse_qs(parsed.query, keep_blank_values=True)
                     if set(query) - {"limit", "before", "provider", "model", "state"} or any(
@@ -134,4 +196,41 @@ def make_gateway_server(
                 return
             self._handle(body)
 
-    return ThreadingHTTPServer((host, port), Handler)
+    class GatewayServer(ThreadingHTTPServer):
+        def __init__(self) -> None:
+            super().__init__((host, port), Handler)
+            self.stop_worker = threading.Event()
+            self.worker_thread: threading.Thread | None = None
+
+        def serve_forever(self, poll_interval: float = 0.5) -> None:
+            if queue is not None and worker:
+                worker_id = "server-" + uuid.uuid4().hex
+
+                def process() -> None:
+                    worker_state["running"] = True
+                    while not self.stop_worker.is_set():
+                        try:
+                            queue.tick(worker_id)
+                            worker_state["last_tick_at"] = stamp(gateway.clock())
+                        except Exception:  # noqa: BLE001 - no content or credential logs
+                            # A broken configuration stops processing; leases preserve recovery.
+                            self.stop_worker.set()
+                            worker_state["error_code"] = "worker_stopped"
+                        self.stop_worker.wait(0.5)
+                    worker_state["running"] = False
+                    worker_state["stopped"] = True
+
+                self.worker_thread = threading.Thread(target=process, daemon=True)
+                self.worker_thread.start()
+            try:
+                super().serve_forever(poll_interval)
+            finally:
+                self.stop_worker.set()
+
+        def server_close(self) -> None:
+            self.stop_worker.set()
+            super().server_close()
+            if self.worker_thread is not None:
+                self.worker_thread.join(timeout=1)
+
+    return GatewayServer()

@@ -2,12 +2,16 @@
 
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
-from .catalog import MODELS, endpoint
+from .catalog import MODELS, Model, endpoint
+
+if TYPE_CHECKING:
+    from .registry import Registry
 
 
 class ConfigError(ValueError):
@@ -126,6 +130,27 @@ class Capacity:
 
 
 @dataclass(frozen=True)
+class NeuronEstimate:
+    amount: int
+    max_input_tokens: int
+    max_output_tokens: int
+    source: str
+    verified_at: datetime
+    expires_at: datetime
+
+    def view(self) -> dict:
+        return {
+            "basis": "estimated_per_request_upper_bound",
+            "amount": self.amount,
+            "max_input_tokens": self.max_input_tokens,
+            "max_output_tokens": self.max_output_tokens,
+            "source": self.source,
+            "verified_at": self.verified_at.isoformat(),
+            "expires_at": self.expires_at.isoformat(),
+        }
+
+
+@dataclass(frozen=True)
 class Target:
     id: str
     provider: str
@@ -145,9 +170,24 @@ class Target:
     shared_concurrency_limit: int | None = None
     quota_basis: str = "legacy_v1"
     provider_quota_facts: tuple[QuotaFact, ...] = ()
+    neuron_estimate: NeuronEstimate | None = None
     capacity: Capacity = Capacity()
     secret_ref: str | None = None
     account_id_ref: str | None = None
+    model_info: Model | None = field(default=None, compare=False, repr=False)
+
+    def neurons(
+        self, input_bound: int, output: int, now: datetime, explicit: int | None = None
+    ) -> int | None:
+        estimate = self.neuron_estimate
+        if (
+            estimate
+            and estimate.verified_at <= now < estimate.expires_at
+            and input_bound <= estimate.max_input_tokens
+            and output <= estimate.max_output_tokens
+        ):
+            return max(estimate.amount, explicit or 0)
+        return explicit
 
     def available(self, now: datetime) -> bool:
         return bool(
@@ -173,7 +213,7 @@ class Target:
 
     @property
     def endpoint(self) -> str:
-        return endpoint(MODELS[self.model], self.account_id)
+        return endpoint(self.model_info or MODELS[self.model], self.account_id)
 
 
 def _instant(value: str | None) -> datetime | None:
@@ -243,11 +283,16 @@ def parse_quota_facts(raw: list) -> tuple[QuotaFact, ...]:
         if (metric, window) in seen:
             raise ConfigError("duplicate provider quota fact")
         seen.add((metric, window))
-        facts.append(
-            QuotaFact(
-                metric, window, parse_evidence(item["limit"]), parse_evidence(item["remaining"])
-            )
+        fact = QuotaFact(
+            metric, window, parse_evidence(item["limit"]), parse_evidence(item["remaining"])
         )
+        if (
+            fact.limit.value is not None
+            and fact.remaining.value is not None
+            and fact.remaining.value > fact.limit.value
+        ):
+            raise ConfigError("contradictory provider quota evidence")
+        facts.append(fact)
     return tuple(facts)
 
 
@@ -286,7 +331,46 @@ def parse_capacity(raw: dict) -> Capacity:
     return Capacity(kind, seconds, as_of, source, scope, expires)
 
 
-def load_config(path: str | Path, *, allow_nvidia: bool = False) -> tuple[Target, ...]:
+def parse_neuron_estimate(raw: object) -> NeuronEstimate | None:
+    if raw is None:
+        return None
+    fields = {
+        "amount",
+        "max_input_tokens",
+        "max_output_tokens",
+        "source",
+        "verified_at",
+        "expires_at",
+    }
+    if not isinstance(raw, dict) or set(raw) != fields:
+        raise ConfigError("invalid Neurons estimate fields")
+    if (
+        any(
+            type(raw[name]) is not int or not 1 <= raw[name] <= 10**12
+            for name in ("amount", "max_input_tokens", "max_output_tokens")
+        )
+        or raw["source"] != "trusted_operator"
+    ):
+        raise ConfigError("invalid Neurons estimate bounds or source")
+    verified, expires = _instant(raw["verified_at"]), _instant(raw["expires_at"])
+    if verified is None or expires is None or expires <= verified:
+        raise ConfigError("Neurons estimate requires a validity interval")
+    return NeuronEstimate(
+        raw["amount"],
+        raw["max_input_tokens"],
+        raw["max_output_tokens"],
+        raw["source"],
+        verified,
+        expires,
+    )
+
+
+def load_config(
+    path: str | Path, *, allow_nvidia: bool = False, registry: "Registry | None" = None
+) -> tuple[Target, ...]:
+    from .registry import Registry, RegistryError
+
+    registry = registry or Registry.builtin()
     raw = json.loads(Path(path).read_text(encoding="utf-8"))
     if set(raw) != {"targets"} or not isinstance(raw["targets"], list):
         raise ConfigError("expected targets array")
@@ -294,7 +378,7 @@ def load_config(path: str | Path, *, allow_nvidia: bool = False) -> tuple[Target
     ids = set()
     for item in raw["targets"]:
         try:
-            model = MODELS[item["model"]]
+            model = registry.resolve(item["model"], item["provider"])
             if item["provider"] != model.provider:
                 raise ConfigError("provider/model mismatch")
             if model.provider == "nvidia" and not allow_nvidia:
@@ -327,9 +411,15 @@ def load_config(path: str | Path, *, allow_nvidia: bool = False) -> tuple[Target
                 capacity=capacity,
                 secret_ref=item.get("secret_ref"),
                 account_id_ref=item.get("account_id_ref"),
+                model_info=model,
+                neuron_estimate=parse_neuron_estimate(item.get("neuron_estimate")),
             )
-        except (KeyError, TypeError) as exc:
+        except (KeyError, TypeError, RegistryError) as exc:
             raise ConfigError(f"invalid target: {exc}") from exc
+        if target.neuron_estimate is not None and not any(
+            q.metric == "neurons" for q in target.quotas
+        ):
+            raise ConfigError("Neurons estimate requires a Neurons cap")
         if not target.id or target.id in ids:
             raise ConfigError("duplicate or empty target id")
         ids.add(target.id)
@@ -405,8 +495,10 @@ def load_config(path: str | Path, *, allow_nvidia: bool = False) -> tuple[Target
     return tuple(targets)
 
 
-def load_gateway_config(path: str | Path) -> tuple[Target, ...]:
-    targets = load_config(path, allow_nvidia=True)
+def load_gateway_config(
+    path: str | Path, *, registry: "Registry | None" = None
+) -> tuple[Target, ...]:
+    targets = load_config(path, allow_nvidia=True, registry=registry)
     if any(target.secret_ref is None for target in targets):
         raise ConfigError("gateway targets require secret_ref")
     if any(target.quota_basis != "local_safety_cap" for target in targets):

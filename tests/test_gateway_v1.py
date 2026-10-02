@@ -129,12 +129,17 @@ def test_capability_and_refresh_order_then_unknown_and_gift(tmp_path):
 
 
 def test_names_snapshot_readiness_is_read_only_and_expiry_is_unknown(tmp_path):
+    from quota_broker.config import NeuronEstimate
+
     calls, reads = [], []
     now = [NOW]
     routes = [
         replace(
             target("cf", "cloudflare", "@cf/meta/llama-3.2-1b-instruct"),
             account_id_ref="CF_ACCOUNT",
+            neuron_estimate=NeuronEstimate(
+                30, 4096, 128, "trusted_operator", NOW, NOW + timedelta(hours=1)
+            ),
         )
     ]
     gw = gateway_at(

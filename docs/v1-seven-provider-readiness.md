@@ -1,5 +1,7 @@
 # 七家 API v1 本地驗證邊界（2026-10-02）
 
+本地可擴充資源池、加密queue及工程驗收另見[v1-core-contract.md](v1-core-contract.md)；本輪零新live呼叫，以下收據與unknown未改。
+
 ## 目前結果
 
 **七家代表能力均已有真實成功證據；Mistral完整回答驗收已通過（Cloudflare Neurons仍未知）。** Groq正常路由HTTP200／stop／完整回答及76+18tokens結算；NVIDIA一般LLM正常Gateway取得完整回答與31+3tokens結算。Mistral的可用正常路徑為`ministral-3b-latest`：修正model gate後取得200與partial結算，再以獨立零GET／1POST完成HTTP200／stop／未截斷／完整回答及13+3tokens結算（台北2026-10-02 14:54:40–41，latency614ms）。Small歷史429（1300／rate_limited）的確切bucket仍未知，舊identity／unknown與3B partial收據保留。六家文字API與OCR.space的代表能力已經統一路由與SQLite驗證；這不等於所有模型全通、持續配額保證或已部署。歷史NVIDIA Riva翻譯成功亦不能解釋Gemma逾時。詳見[各輪診斷與驗收](v1-remaining-provider-plan.md)。
@@ -104,7 +106,7 @@ Groq 專項在 main 與本 task 的直接人類批准後，正式工具審查通
 
 ## 故障切換與有界 smoke
 
-只有官方文件明確表示未執行的配額拒絕會釋放本地 hold、設定 account/project scope 冷卻，並在同一任務最多三次、每目標最多一次的邊界內改選其他帳號 scope。現有辨識：Gemini 結構化配額碼、Cloudflare `3036`、Groq 帶 `retry-after` 的結構化 429，以及 OpenRouter 平台 `error.metadata.error_type=rate_limit_exceeded`、沒有 upstream `provider_code`、同時帶齊三項 `X-RateLimit-*` 標頭的 429。帶 usage／partial content 的 429 不切換。NVIDIA、Mistral、OCR.space 尚無足夠可靠的結構化配額拒絕辨識，故不會由其 429 自動 fallback。其餘 429、逾時、斷線、5xx、回應格式錯誤維持 unknown，不能自動重送或改路由。認證／模型錯誤只診斷，不認定配額耗盡。
+只有官方文件明確表示未執行的配額拒絕會釋放本地 hold、設定 account/project scope 冷卻，並在同一任務依明確max_attempts上限（1..32）、每目標最多一次的邊界內改選其他帳號 scope。現有辨識：Gemini 結構化配額碼、Cloudflare `3036`、Groq 帶 `retry-after` 的結構化 429，以及 OpenRouter 平台 `error.metadata.error_type=rate_limit_exceeded`、沒有 upstream `provider_code`、同時帶齊三項 `X-RateLimit-*` 標頭的 429。帶 usage／partial content 的 429 不切換。NVIDIA、Mistral、OCR.space 尚無足夠可靠的結構化配額拒絕辨識，故不會由其 429 自動 fallback。其餘 429、逾時、斷線、5xx、回應格式錯誤維持 unknown，不能自動重送或改路由。認證／模型錯誤只診斷，不認定配額耗盡。
 
 `scripts/v1_smoke_once.py` 的 live 方案是 `api-quota-broker/dev` 整個 config 唯讀、五分鐘到期的 Doppler Service Token，只留在程序記憶體；每家至多一筆，七筆總量，輸出上限 64 token，循序執行，每筆 provider HTTP 最多 60 秒，臨近 token 到期即停。使用新 `v1-smoke-*` SQLite 檔先獨占建立非敏感收據，不能對同一 DB 意外重跑。腳本使用本地產生的 `OK` PNG，驗證 OCR 回應是否含預期字樣，只輸出布林結果。個別供應商送出前失敗後可繼續獨立測其他家；token 時效則停止。續測指定 `--provider` 與 `--prior-db`，會以唯讀方式核對前次收據並拒絕再次派送已送出供應商。
 

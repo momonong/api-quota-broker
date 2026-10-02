@@ -8,10 +8,13 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
 
-from .catalog import MODELS
 from .config import Quota, Target
+
+if TYPE_CHECKING:
+    from .registry import Registry
 
 
 class BrokerError(ValueError):
@@ -46,11 +49,25 @@ def day_bounds(now: datetime, zone: str) -> tuple[datetime, datetime]:
 
 class Broker:
     def __init__(
-        self, db: str | Path, targets: tuple[Target, ...], clock: Callable[[], datetime] = utcnow
+        self,
+        db: str | Path,
+        targets: tuple[Target, ...],
+        clock: Callable[[], datetime] = utcnow,
+        registry: "Registry | None" = None,
     ) -> None:
         self.db = str(db)
         self.targets = targets
         self.clock = clock
+        from .registry import Registry
+
+        self.registry = registry or Registry.builtin()
+        self.routing_policy: (
+            Callable[[sqlite3.Connection, dict[str, Any], int], dict[str, Any]] | None
+        ) = None
+        self.dispatch_policy: Callable[[sqlite3.Connection, Target, str], None] | None = None
+        self.reservation_policy: (
+            Callable[[sqlite3.Connection, Target, str, dict[str, Any]], None] | None
+        ) = None
         self._validate_shared()
         with sqlite3.connect(self.db) as con:
             con.executescript(
@@ -71,6 +88,9 @@ class Broker:
                     FOREIGN KEY(reservation_id) REFERENCES reservations(id)
                 );
                 CREATE INDEX IF NOT EXISTS charges_bucket_at ON charges(bucket, at);
+                CREATE TABLE IF NOT EXISTS execution_completion (
+                    reservation_id TEXT PRIMARY KEY, finished_at TEXT NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS reports (
                     report_key TEXT PRIMARY KEY, reservation_id TEXT NOT NULL,
                     fingerprint TEXT NOT NULL
@@ -137,11 +157,21 @@ class Broker:
             "shared_concurrency_limit": target.shared_concurrency_limit,
             "max_output_tokens": target.max_output_tokens,
         }
+        if target.neuron_estimate is not None:
+            value["neuron_estimate"] = target.neuron_estimate.view()
         # Preserve v0.1 snapshots when older direct-client targets have no secret ref.
         if target.secret_ref is not None:
             value["secret_ref"] = target.secret_ref
         if target.account_id_ref is not None:
             value["account_id_ref"] = target.account_id_ref
+        if target.model_info is not None and not getattr(
+            target.model_info, "adapter", "builtin:"
+        ).startswith("builtin:"):
+            info = target.model_info
+            value["adapter"] = getattr(info, "adapter", "")
+            value["features"] = sorted(getattr(info, "features", ()))
+            value["input_parameters"] = getattr(info, "input_parameters", ())
+            value["output_parameters"] = getattr(info, "output_parameters", ())
         return canonical(value)
 
     @staticmethod
@@ -170,7 +200,7 @@ class Broker:
         now = self.clock()
         result = []
         for target in self.targets:
-            model = MODELS[target.model]
+            model = self.registry.resolve(target.model, target.provider)
             result.append(
                 {
                     "target_id": target.id,
@@ -214,6 +244,23 @@ class Broker:
                 }
             )
         return result
+
+    def mark_execution_finished(self, reservation_id: str) -> None:
+        """Executor-only proof of a received valid result; never alters quota charges."""
+        with self._tx() as con:
+            row = con.execute(
+                "SELECT state,dispatched_at FROM reservations WHERE id=?", (reservation_id,)
+            ).fetchone()
+            if (
+                row is None
+                or row["dispatched_at"] is None
+                or row["state"] not in {"dispatched", "unknown", "completed"}
+            ):
+                raise BrokerError("conflict", "execution has no dispatch evidence")
+            con.execute(
+                "INSERT OR IGNORE INTO execution_completion VALUES(?,?)",
+                (reservation_id, stamp(self.clock())),
+            )
 
     def _cost(self, q: Quota, input_bound: int, neuron_bound: int | None) -> int:
         if q.metric == "requests":
@@ -318,6 +365,7 @@ class Broker:
             "input_token_bound",
             "max_output_tokens",
             "neuron_bound",
+            "requirements",
         }
         if set(data) - allowed or not isinstance(data.get("request_key"), str):
             raise BrokerError("invalid_request", "invalid reservation fields")
@@ -353,7 +401,7 @@ class Broker:
                 return self._view(con, existing["id"])
             legacy_active = con.execute(
                 "SELECT 1 FROM reservations WHERE target_snapshot IS NULL "
-                "AND state IN ('reserved','dispatched','unknown') LIMIT 1"
+                "AND state IN ('reserved','dispatched','unknown') AND NOT EXISTS (SELECT 1 FROM execution_completion e WHERE e.reservation_id=reservations.id) LIMIT 1"
             ).fetchone()
             if legacy_active:
                 raise BrokerError(
@@ -366,10 +414,15 @@ class Broker:
                 if data.get("model") in (None, target.model)
                 and data.get("provider") in (None, target.provider)
                 and target.id not in excluded
-                and (neuron_bound is not None or all(q.metric != "neurons" for q in target.quotas))
+                and (
+                    target.neurons(input_bound, output_max, now, neuron_bound) is not None
+                    or all(q.metric != "neurons" for q in target.quotas)
+                )
                 and target.available(now)
-                and MODELS[target.model].capability == data["capability"]
-                and input_bound + output_max <= MODELS[target.model].context_tokens
+                and self.registry.resolve(target.model, target.provider).capability
+                == data["capability"]
+                and input_bound + output_max
+                <= self.registry.resolve(target.model, target.provider).context_tokens
                 and output_max <= target.max_output_tokens
             ]
             if (
@@ -401,11 +454,33 @@ class Broker:
                     t.id,
                 )
             )
+            if self.routing_policy is not None:
+                policy_data = {
+                    "provider": data.get("provider"),
+                    "model": data.get("model"),
+                    "capability": data["capability"],
+                    "max_output_tokens": output_max,
+                    "neuron_bound": neuron_bound,
+                    "requirements": data.get("requirements", {}),
+                }
+                decision = self.routing_policy(con, policy_data, input_bound)
+                permitted = {
+                    item["target_id"]: i
+                    for i, item in enumerate(decision["candidates"])
+                    if item["eligible"]
+                }
+                candidates = sorted(
+                    (t for t in candidates if t.id in permitted), key=lambda t: permitted[t.id]
+                )
+                if not candidates:
+                    raise BrokerError(
+                        "unavailable", "no eligible route", decision.get("next_retry_at")
+                    )
             for target in candidates:
                 current_snapshot = self._snapshot(target)
                 changed_active = con.execute(
                     "SELECT 1 FROM reservations WHERE target_id=? AND target_snapshot!=? "
-                    "AND state IN ('reserved','dispatched','unknown') LIMIT 1",
+                    "AND state IN ('reserved','dispatched','unknown') AND NOT EXISTS (SELECT 1 FROM execution_completion e WHERE e.reservation_id=reservations.id) LIMIT 1",
                     (target.id, current_snapshot),
                 ).fetchone()
                 if changed_active:
@@ -424,7 +499,7 @@ class Broker:
                     continue
                 active = con.execute(
                     "SELECT count(*) FROM reservations WHERE target_id=? "
-                    "AND state IN ('reserved','dispatched','unknown')",
+                    "AND state IN ('reserved','dispatched','unknown') AND NOT EXISTS (SELECT 1 FROM execution_completion e WHERE e.reservation_id=reservations.id)",
                     (target.id,),
                 ).fetchone()[0]
                 if active >= target.concurrency_limit:
@@ -432,7 +507,7 @@ class Broker:
                 if target.shared_concurrency_scope is not None:
                     shared_active = con.execute(
                         "SELECT count(*) FROM reservations WHERE shared_scope=? "
-                        "AND state IN ('reserved','dispatched','unknown')",
+                        "AND state IN ('reserved','dispatched','unknown') AND NOT EXISTS (SELECT 1 FROM execution_completion e WHERE e.reservation_id=reservations.id)",
                         (target.shared_concurrency_scope,),
                     ).fetchone()[0]
                     if shared_active >= target.shared_concurrency_limit:
@@ -441,7 +516,9 @@ class Broker:
                 blocked_until = [cooldown_until] if cooldown_until else []
                 indefinite = False
                 for q in target.quotas:
-                    cost = self._cost(q, input_bound, neuron_bound)
+                    cost = self._cost(
+                        q, input_bound, target.neurons(input_bound, output_max, now, neuron_bound)
+                    )
                     used, wait = self._used(con, q, now, cost)
                     if used + cost > q.limit:
                         if wait:
@@ -477,6 +554,8 @@ class Broker:
                             "INSERT INTO charges VALUES(?,?,?,?,?,?)",
                             (reservation_id, q.bucket, q.metric, cost, stamp(now), start),
                         )
+                    if self.reservation_policy is not None:
+                        self.reservation_policy(con, target, reservation_id, data)
                     return self._view(con, reservation_id)
             raise BrokerError(
                 "unavailable", "no verified free capacity", min(waits) if waits else None
@@ -492,7 +571,9 @@ class Broker:
             con.execute("UPDATE charges SET amount=0 WHERE reservation_id=?", (reservation_id,))
             return self._view(con, reservation_id)
 
-    def dispatch(self, reservation_id: str) -> dict:
+    def dispatch(
+        self, reservation_id: str, *, guard: Callable[[sqlite3.Connection], None] | None = None
+    ) -> dict:
         now = self.clock()
         with self._tx() as con:
             self._expire_unsent(con, now)
@@ -504,6 +585,13 @@ class Broker:
             target = next(t for t in self.targets if t.id == view["target_id"])
             if not target.available(now):
                 raise BrokerError("unavailable", "free eligibility no longer verified")
+            if guard is not None:
+                try:
+                    guard(con)
+                except Exception as exc:
+                    raise BrokerError("unavailable", "dispatch lease no longer valid") from exc
+            if self.dispatch_policy is not None:
+                self.dispatch_policy(con, target, reservation_id)
             cooldown = con.execute(
                 "SELECT until_at FROM cooldowns WHERE target_id=?", (target.id,)
             ).fetchone()

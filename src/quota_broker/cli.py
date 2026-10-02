@@ -7,9 +7,11 @@ import stat
 import sys
 import tempfile
 import threading
+import time
 import uuid
 from datetime import timedelta
 from pathlib import Path
+from typing import Any
 from urllib.parse import urlencode, urlsplit
 
 from .client import DirectClient, _json_http
@@ -20,6 +22,8 @@ from .gateway_server import make_gateway_server
 from .key_admin import DopplerCLIWriter, MetadataStore, make_key_admin_server
 from .nvidia import NvidiaExecutor, doppler_resolver
 from .nvidia_server import make_nvidia_server
+from .queue import DurableQueue, prepare_queue_storage
+from .registry import Registry
 from .server import make_server
 
 
@@ -102,19 +106,37 @@ def gateway_cli(args: argparse.Namespace) -> None:
     if parsed.scheme != "http" or parsed.hostname not in {"127.0.0.1", "localhost", "::1"}:
         raise ValueError("gateway CLI requires loopback HTTP")
     if args.token_stdin:
-        if args.action in {"run", "explain"}:
+        if args.action in {"run", "explain", "submit", "observe-quota"}:
             raise ValueError("task input and client token cannot share standard input")
         token = sys.stdin.readline().strip()
     else:
         token = Path(args.token_file).read_text(encoding="utf-8").strip()
     if len(token) < 32:
         raise ValueError("invalid gateway client token")
+    if args.action in {"wait", "worker"} and (args.interval <= 0 or args.interval > 60):
+        raise ValueError("poll interval must be within 0 to 60 seconds")
+    if args.action == "wait" and not 0 <= args.timeout <= 86400:
+        raise ValueError("wait timeout must be within 0 to 86400 seconds")
     base = args.url.rstrip("/")
     headers = {"Authorization": "Bearer " + token}
-    if args.action == "catalog":
-        result = _json_http(base + "/v1/catalog", None, headers)
+    http_timeout = getattr(args, "http_timeout", 185.0)
+    if not 0 < http_timeout <= 3600:
+        raise ValueError("HTTP timeout must be 0 to 3600 seconds")
+
+    def request(url: str, body: dict | None, headers: dict) -> Any:
+        return _json_http(url, body, headers, timeout=http_timeout)
+
+    result: Any
+    if args.action in {"observe-quota", "reset-health"}:
+        path = base + "/v1/admin/targets/" + args.target_id
+        body = json.load(sys.stdin) if args.action == "observe-quota" else {}
+        result = request(
+            path + ("/quota" if args.action == "observe-quota" else "/health/reset"), body, headers
+        )
+    elif args.action == "catalog":
+        result = request(base + "/v1/catalog", None, headers)
     elif args.action == "diagnostics":
-        result = _json_http(base + "/v1/diagnostics", None, headers)
+        result = request(base + "/v1/diagnostics", None, headers)
     elif args.action == "recent":
         query = urlencode(
             {
@@ -129,9 +151,9 @@ def gateway_cli(args: argparse.Namespace) -> None:
                 if v is not None
             }
         )
-        result = _json_http(base + "/v1/tasks?" + query, None, headers)
+        result = request(base + "/v1/tasks?" + query, None, headers)
     elif args.action == "status":
-        result = _json_http(base + "/v1/tasks/" + args.request_key, None, headers)
+        result = request(base + "/v1/tasks/" + args.request_key, None, headers)
     elif args.action == "usage":
         query = urlencode(
             {
@@ -145,7 +167,31 @@ def gateway_cli(args: argparse.Namespace) -> None:
                 if v is not None
             }
         )
-        result = _json_http(base + "/v1/usage" + ("?" + query if query else ""), None, headers)
+        result = request(base + "/v1/usage" + ("?" + query if query else ""), None, headers)
+    elif args.action in {"queue-status", "result", "cancel", "wait"}:
+        path = base + "/v1/queue/" + args.request_key
+        if args.action == "result":
+            path += "/result"
+        elif args.action == "cancel":
+            path += "/cancel"
+        result = request(path, {} if args.action == "cancel" else None, headers)
+        if args.action == "wait":
+            stop_at = time.monotonic() + args.timeout
+            while (
+                result["state"] in {"queued", "waiting", "running"} and time.monotonic() < stop_at
+            ):
+                time.sleep(min(args.interval, max(0, stop_at - time.monotonic())))
+                result = request(path, None, headers)
+    elif args.action == "worker":
+        result = None
+        try:
+            while True:
+                result = request(base + "/v1/queue/tick", {}, headers)
+                if args.once:
+                    break
+                time.sleep(args.interval)
+        except KeyboardInterrupt:
+            return
     else:
         limit = 48_000 if args.capability == "ocr" else 32_768
         content = sys.stdin.read(limit + 1)
@@ -164,8 +210,16 @@ def gateway_cli(args: argparse.Namespace) -> None:
             "target_language": args.target_language,
             "neuron_bound": args.neuron_bound,
         }
-        path = "/v1/tasks" if args.action == "run" else "/v1/routes/explain"
-        result = _json_http(base + path, body, headers)
+        for name in ("priority", "deadline", "wait_policy", "max_attempts"):
+            value = getattr(args, name, None)
+            if value is not None:
+                body[name] = value
+        if getattr(args, "require_feature", None):
+            body["requirements"] = {"features": args.require_feature}
+        path = {"run": "/v1/tasks", "submit": "/v1/queue", "explain": "/v1/routes/explain"}[
+            args.action
+        ]
+        result = request(base + path, body, headers)
     if args.json:
         print(json.dumps(result, ensure_ascii=False))
     elif args.action == "catalog":
@@ -203,6 +257,8 @@ def gateway_cli(args: argparse.Namespace) -> None:
             print(item["target_id"], "eligible" if item["eligible"] else ",".join(item["reasons"]))
     elif args.action == "diagnostics":
         print("ready_targets=" + str(result["ready_targets"]), result["basis"])
+        if "queue_worker" in result:
+            print("queue_worker:", json.dumps(result["queue_worker"]))
         for item in result["targets"]:
             print(
                 item["target_id"],
@@ -224,6 +280,8 @@ def gateway_cli(args: argparse.Namespace) -> None:
                 "ledger=" + str(item["ledger_basis"]),
             )
         print("next_before:", result["next_before"] or "none")
+    elif result is None:
+        print("idle")
     else:
         print(
             result["state"],
@@ -275,6 +333,15 @@ def main() -> None:
     gateway_serve.add_argument("--doppler-token-file", required=True)
     gateway_serve.add_argument("--doppler-project", required=True)
     gateway_serve.add_argument("--doppler-config", required=True)
+    gateway_serve.add_argument(
+        "--admin-token-file", help="separate token for quota observation and health repair"
+    )
+    gateway_serve.add_argument("--registry-file", help="trusted administrator manifest")
+    gateway_serve.add_argument(
+        "--queue-key-file", help="explicit independent private persistent key"
+    )
+    gateway_serve.add_argument("--queue-ttl-seconds", type=int, default=86400)
+    gateway_serve.add_argument("--no-queue-worker", action="store_true")
     gateway_serve.add_argument("--secret-names-file", help="optional expiring names-only inventory")
     gateway = sub.add_parser("gateway")
     gateway.add_argument("--url", default="http://127.0.0.1:18084")
@@ -282,6 +349,9 @@ def main() -> None:
     credential.add_argument("--token-file")
     credential.add_argument("--token-stdin", action="store_true")
     gateway.add_argument("--json", action="store_true")
+    gateway.add_argument(
+        "--http-timeout", type=float, default=185, help="bounded client wait; timeout never replays"
+    )
     actions = gateway.add_subparsers(dest="action", required=True)
     actions.add_parser("catalog")
     actions.add_parser("diagnostics")
@@ -298,7 +368,19 @@ def main() -> None:
     usage.add_argument("--model")
     usage.add_argument("--from", dest="from_at")
     usage.add_argument("--to", dest="to_at")
-    for name in ("run", "explain"):
+    for name in ("observe-quota", "reset-health"):
+        admin = actions.add_parser(name)
+        admin.add_argument("target_id")
+    for name in ("queue-status", "result", "cancel", "wait"):
+        item = actions.add_parser(name)
+        item.add_argument("request_key")
+        if name == "wait":
+            item.add_argument("--timeout", type=float, default=60)
+            item.add_argument("--interval", type=float, default=1)
+    worker = actions.add_parser("worker")
+    worker.add_argument("--once", action="store_true")
+    worker.add_argument("--interval", type=float, default=1)
+    for name in ("run", "explain", "submit"):
         task = actions.add_parser(name)
         task.add_argument("--request-key", required=True)
         task.add_argument(
@@ -310,6 +392,11 @@ def main() -> None:
         task.add_argument("--source-language")
         task.add_argument("--target-language")
         task.add_argument("--neuron-bound", type=int)
+        task.add_argument("--require-feature", action="append")
+        task.add_argument("--priority", type=int)
+        task.add_argument("--deadline")
+        task.add_argument("--wait-policy", choices=("wait", "reject"))
+        task.add_argument("--max-attempts", type=int)
     catalog = sub.add_parser("catalog")
     catalog.add_argument("--config", required=True)
     catalog.add_argument("--db", required=True)
@@ -342,6 +429,9 @@ def main() -> None:
         gateway_cli(args)
         return
     if args.command == "gateway-serve":
+        registry = Registry.load(args.registry_file) if args.registry_file else Registry.builtin()
+        if args.queue_key_file:
+            prepare_queue_storage(args.db, args.queue_key_file)
         inventory = (
             load_secret_inventory(args.secret_names_file, args.doppler_project, args.doppler_config)
             if args.secret_names_file
@@ -352,13 +442,30 @@ def main() -> None:
         )
         gateway_instance = Gateway(
             args.db,
-            load_gateway_config(args.config),
+            load_gateway_config(args.config, registry=registry),
             Path(args.digest_key_file).read_bytes(),
             resolver,
             secret_inventory=inventory,
+            registry=registry,
         )
         client_token = Path(args.client_token_file).read_text(encoding="utf-8").strip()
-        server = make_gateway_server(gateway_instance, client_token, port=args.port)
+        queue = (
+            DurableQueue(
+                gateway_instance, Path(args.queue_key_file), ttl_seconds=args.queue_ttl_seconds
+            )
+            if args.queue_key_file
+            else None
+        )
+        server = make_gateway_server(
+            gateway_instance,
+            client_token,
+            port=args.port,
+            queue=queue,
+            worker=queue is not None and not args.no_queue_worker,
+            admin_token=Path(args.admin_token_file).read_text().strip()
+            if args.admin_token_file
+            else None,
+        )
         try:
             server.serve_forever()
         except KeyboardInterrupt:

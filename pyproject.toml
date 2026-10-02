@@ -3,7 +3,9 @@ name = "api-quota-broker"
 version = "0.1.0"
 description = "Local free-tier admission and reservation for official AI APIs"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "cryptography>=44.0.0",
+]
 
 [project.scripts]
 quota-broker = "quota_broker.cli:main"
