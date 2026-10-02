@@ -203,7 +203,23 @@ main為修正本地gate判斷，再增加最多1筆認證models GET；原來3B�
 .venv/bin/python scripts/v1_mistral_3b_gate_once.py --live --db /home/ubuntu/projects/api-quota-broker/.state/v1-mistral-3b-gate-2026-10-02.sqlite
 ```
 
-完整回歸263項通過；最後的exact優先與派送未留acceptance防護以受影響gate／normal-route fixtures再驗，Ruff／format／mypy／diff通過。實測待正式審查，不改寫前次false或任何Small unknown。
+完整回歸263項通過；最後的exact優先與派送未留acceptance防護以受影響gate／normal-route **28項fixtures**再驗，Ruff／format／mypy／diff通過。不改寫前次false或任何Small unknown。
+
+此精確命令於本地提交`42c8bfb`後經正式工具審查獲准，已執行一次、不可重跑。GET派送UTC `2026-10-02T06:45:26.604065+00:00`、完成`06:45:27.490385+00:00`（台北14:45:26–27），HTTP200／total865ms；**candidate_count2／exact1／canonical1／alias1**，`ministral-3b-latest`與`ministral-3b-2512`互相alias，兩者chat=true，採exact路由證據。前次false的原因不能由這輪追認，但已真實驗證此刻的兩筆listing可通過修正gate。
+
+GET完成後3.147秒才派送POST：UTC `06:45:30.637600+00:00`→`06:45:31.265597+00:00`（台北14:45:30–31），**HTTP200／completed／visible_answer=true／provider input7、output32／ledger completed、settled_provider_usage**，latency597ms。finish_reason=length／response_truncated=true，READYexact=false／full_answer_verified=false；32tokens用滿，回答截斷，**已執行且正常入庫結算，但完整回答未驗收**。這證明目前Mistral帳戶可以推論；不能追認Small當時429的唯一bucket原因，也不能稱全帳戶不可用。
+
+新DB0600／父目錄0700、quick_checkok、foreign_key_check0；只有Mistral1GET＋1POST、1task。estimated input304已按provider7結算，不把304當用量；無secret marker／prompt／answer／choices。九份舊DB hash前後一致，原GET-only收據及Small unknown保留。此3B POST上限已用完。
+
+### 3B 完整回答驗收（零GET）
+
+main依本次200與length的具體證據，將操作預算再增加**1筆固定3B POST**，目的為完成原完整回答驗收；這不是重播舊partial，也不是人類逐字提出的新次數。零GET、max_tokens512、30秒、更明確只回READY，不加未核對適用3B的reasoning參數，無retry／模型替換。正常Gateway／預設provider_http、新DB `.state/v1-mistral-formal-2026-10-02.sqlite`／新request key、exclusive0600。舊DB只讀核对已派送Mistral5次與前輪3B model gate=true／HTTP200／length／completed且已結算；同檔拒絕重跑。Doppler既有api-quota-broker/dev整config唯讀5分鐘token，MISTRAL_API_KEY僅記憶體cache讀一次、不續期；其他providers零呼叫，不付款／帳戶變更／部署／push／merge。
+
+```bash
+.venv/bin/python scripts/v1_mistral_formal_once.py --live --db /home/ubuntu/projects/api-quota-broker/.state/v1-mistral-formal-2026-10-02.sqlite
+```
+
+完整成功須stop／未截斷／非空可見答案／可信實際input-output／ledger正常結算；READY精確比對為附加旗標。最小fixture核對單次正常POST／零GET、用量結算、length／缺用量／timeout／壞key、防重跑及舊partial/unknown不改；實測待正式審查。512若仍未通過，回報具體結果後停止，不無限增加上限。
 
 ## 先前一次性診斷方案（未執行，已由上述新階段取代）
 

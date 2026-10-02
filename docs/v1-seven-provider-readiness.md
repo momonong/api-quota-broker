@@ -2,7 +2,7 @@
 
 ## 目前結果
 
-**完成條件仍是六家文字 API（包含 NVIDIA 一般 LLM）與 OCR.space 均有免費能力真實成功，接統一路由／SQLite；目前六家有能力成功回應證據（Cloudflare Neurons仍未知）。** Groq 正式路由整合後的單筆POST已HTTP200、stop、非空完整回答與用量（input76／output18）、ledger正常結算；NVIDIA一般LLM亦已經正常Gateway取得完整回答與實際用量結算；Mistral Small隔開約67分鐘、32token且零GET後仍429，已取得machine code1300／type rate_limited及刪減安全摘要，尚未確認限制bucket，準備核對固定3B候選。另已唯讀重新核對 2026-09-30 的 `.state/gateway-live-once.sqlite`，NVIDIA Riva 曾經 Gateway 成功並結算（22 輸入、3 輸出 tokens），先前回報漏列這份證據。這是額外的歷史翻譯能力，不能替代一般 LLM 驗收，也不解釋 Gemma 的逾時。實際結果與尚未執行的其餘方案見 [剩餘供應商診斷方案](v1-remaining-provider-plan.md)。
+**七家均已有API回應／能力證據，Mistral完整回答驗收尚差一步（Cloudflare Neurons仍未知）。** Groq正式路由已HTTP200／stop／完整回答及76+18tokens結算；NVIDIA一般LLM亦已正常Gateway取得完整回答與31+3tokens結算。Mistral正常候選改記`ministral-3b-latest`：修正model gate後HTTP200／completed、7+32tokens正常結算，但length／truncated=true，不能把partial當完整回答驗收；接續零GET512-token驗收。Small歷史429（1300／rate_limited）仍未確認bucket，保留原identity與unknown，不稱全帳戶不可用。另已唯讀重新核對2026-09-30 NVIDIA Riva Gateway22+3tokens成功，這是額外翻譯能力，不替代一般LLM或解釋Gemma逾時。完整條件仍是六家文字API與OCR.space均有免費能力真實成功、統一路由與SQLite。詳見[各輪診斷與驗收](v1-remaining-provider-plan.md)。
 
 本分支實作七家固定路由與 SQLite 逐次嘗試紀錄。`scripts/v1_smoke_once.py` 的預設模式只列計畫。本地 fixture 是工程驗證，不能視為帳號或真實服務已通。2026-10-02 在使用者批准後，以五分鐘 config 唯讀 Service Token 執行兩輪初始 smoke。第一輪 NVIDIA 單次 POST 逾時，收據為 `unknown`；Gemini 在送出前失敗，沒有派送。第二輪根據第一輪收據排除 NVIDIA，Gemini 與其餘五家各派送一次。初始範圍合計七家各至多一筆已派送 HTTP，均不重送。舊收據保留在 `.state/v1-smoke-2026-10-02.sqlite` 與 `.state/v1-smoke-2026-10-02-remaining.sqlite`，不存憑證、秘密或回應內容。使用者其後明確批准一次追加診斷，結果如下。
 
