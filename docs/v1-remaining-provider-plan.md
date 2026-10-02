@@ -1,6 +1,6 @@
 # 七家免費能力接通：剩餘診斷方案（2026-10-02）
 
-**Groq 專項已執行一筆 GET、一筆 POST，兩筆 HTTP 200；其餘新方案未執行。** 完成條件是六家文字 API（包含 NVIDIA 一般 LLM）與 OCR.space 各取得免費能力的真實成功，經統一 Gateway 路由並記錄 SQLite。目前四家有完整能力成功證據；Groq 已取得認證與推論成功證據，但本輪 32-token 截斷，尚未通過完整回答條件。NVIDIA／Mistral 仍未完成。沒有證據顯示使用者缺信用卡、必須升級或必須更換 key。
+**Groq 正式整合與完整回答驗證已完成：正常 Gateway 路由 HTTP 200、stop、實際用量正常結算。** 完成條件是六家文字 API（包含 NVIDIA 一般 LLM）與 OCR.space 各取得免費能力的真實成功，經統一 Gateway 路由並記錄 SQLite。目前五家有完整能力成功證據（原四家加 Groq）；NVIDIA／Mistral 仍未完成。本階段沒有其他 provider 新呼叫，不部署；沒有證據顯示使用者缺信用卡、必須升級或必須更換 key。
 
 ## 先更正 NVIDIA 證據
 
@@ -108,9 +108,13 @@ Browser Integrity Check 是 Groq 作為網站擁有者的 Cloudflare Security �
 .venv/bin/python scripts/v1_groq_formal_once.py --live --db /home/ubuntu/projects/api-quota-broker/.state/v1-groq-formal-2026-10-02.sqlite
 ```
 
-本階段完整本地 suite **205 passed**（新增28項正式Groq行為驗證），Ruff／format／mypy／diff检查通过。首次沙箱測試因禁止socket而有5項loopback失敗，經正式工具批准後全suite通過；沒有provider呼叫。新script offline plan亦確認不讀憑證。
+本階段完整本地 suite **205 passed**（新增28項正式Groq行為驗證），Ruff／format／mypy／diff檢查通過。首次沙箱測試因禁止socket而有5項loopback失敗，經正式工具批准後全suite通過；沒有provider呼叫。新script offline plan亦確認不讀憑證。
 
-本階段目前完成程式整合，尚未執行上述live命令；完整回答的實測證據待正式審查與執行結果。舊403原因仍未知，curl成功不能單變量歸因於UA／urllib或站方解除封鎖。
+本階段 live 命令經正式工具審查通過後已執行一次，**上限用完、不可重執行**。正常 Gateway 沒有 transport 注入，派送UTC `2026-10-02T04:16:07.154847+00:00`、完成UTC `2026-10-02T04:16:07.480106+00:00`（台北12:16:07），latency 298ms，HTTP200、state completed、finish_reason stop、response_truncated false、非空可見答案、READY精確比對true、full_answer_verified true；供應商input **76**／output **18** tokens。安全completion ID為 `chatcmpl-c08492fc-7dd8-4ae7-a657-d923aab4e0a6`，ledger state completed／basis settled_provider_usage，requests按1筆計、input cap正常結算76 tokens，沒有新hold。回答只在首次caller程序記憶體，沒有輸出或保存內容。
+
+新收據 `.state/v1-groq-formal-2026-10-02.sqlite` mode0600／父目錄0700，只有1 task／1已派送attempt且provider只有Groq，quick_check=ok、foreign_key_check無錯誤；無原始choices、answer欄位、完整prompt或秘密marker。舊四份DB的SHA-256在本次前後一致，舊unknown／hold原樣保全。零GET、只送1筆POST，沒有retry、其他provider呼叫、付費、推送、合併或部署。
+
+**已驗證結論：正式預設Groq路由取得完整回答並正常核算用量，本單元完成。** 這是本機分支與此帳號／模型／單次呼叫的證據，不宣稱生產部署或七家全面完成。舊403原因仍未知，curl成功不能單變量歸因於UA／urllib或站方解除封鎖。
 
 ## 可檢閱的下一輪最小範圍
 
@@ -144,4 +148,4 @@ Doppler `api-quota-broker/dev` 五分鐘整個 config 唯讀 Service Token 一�
 
 ## 本地驗證
 
-Ubuntu 本地完整 suite 為 `205 passed`；剩餘診斷的 43 項 fixture 驗證 stdin config 真正經既有 curl 解析、`file:///dev/null` 的 write-out delimiter、HTTP/2／1xx、逾時不採用部分回答、輸出上限／deadline kill child、Mistral gate、固定訊息分類與秘密過濾、三個 NVIDIA 模型請求回歸、空答案／length／缺 finish_reason 維持 unknown、malformed HTTP 200 保留狀態與 timing、舊 DB 不變及同檔拒絕重跑；另含上述 Groq 專項 24 項 fixture。測試只用 fixture、loopback 與空本地檔案，不呼叫 provider。`ruff check .`、`ruff format --check .`、`mypy src/quota_broker` 及 `git diff --check` 通過；Groq live 收據已建立，其餘待批准方案尚未建立新 live DB。
+Ubuntu 本地完整 suite 為 `205 passed`；剩餘診斷的 43 項 fixture 驗證 stdin config 真正經既有 curl 解析、`file:///dev/null` 的 write-out delimiter、HTTP/2／1xx、逾時不採用部分回答、輸出上限／deadline kill child、Mistral gate、固定訊息分類與秘密過濾、三個 NVIDIA 模型請求回歸、空答案／length／缺 finish_reason 維持 unknown、malformed HTTP 200 保留狀態與 timing、舊 DB 不變及同檔拒絕重跑；另含上述 Groq 專項 24 項 fixture及正式整合28項行為驗證。測試只用 fixture、loopback 與空本地檔案，不呼叫 provider。`ruff check .`、`ruff format --check .`、`mypy src/quota_broker` 及 `git diff --check` 通過；Groq live 收據已建立，其餘待批准方案尚未建立新 live DB。
