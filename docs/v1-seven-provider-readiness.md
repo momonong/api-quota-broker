@@ -46,6 +46,8 @@ HTTP 200 證明單次 API 呼叫回傳，但不證明免費帳號的餘額或刷
 
 Groq 專項在 main 與本 task 的直接人類批准後，正式工具審查通過，已用五分鐘 Doppler config 唯讀 token、key 程序內讀一次，執行 GET 1／POST 1（上限已用完）。2026-10-02 台北 11:01:05–06，認證 models GET200 且固定模型可見；GPT-OSS 20B POST200、非空可見輸出、供應商 input78／output32 tokens、finish_reason=length。本輪 key／模型權限路徑可用；32-token 截斷未過本地 stop 成功條件，新 attempt／hold 保留 unknown，舊 unknown 不變。詳細 UTC／request ID／cf-ray 與條件說明見 [Groq 專項結果](v1-remaining-provider-plan.md#已批准的-groq-專項本輪結果)。沒有其他 provider 呼叫／付費／部署。最小程式與完整本地 suite 177 passed；fixture 不替代以上 live 收據。
 
+其後 main 人類批准正式整合：Groq 現在於正常 `provider_http` 分支使用 bounded curl，CLI／API 無需診斷 transport 注入。`length` 保留 partial answer、finish／truncation metadata，可信實際用量正常結算；缺失／矛盾用量維持 `completed_usage_unknown` 和hold，不fallback／replay。nullable欄位可重入遷移，舊收據／holds不回寫。完整本地suite **205 passed**，新增28項正式路由、截斷、用量、schema、CLI-HTTP與新單筆script驗證；Ruff／format／mypy通過。獨立新POST完整回答驗證尚待正式審查執行，詳見 [正式整合階段](v1-remaining-provider-plan.md#groq-正式整合階段2026-10-02)；不部署。
+
 ## 已批准與執行的追加診斷範圍
 
 `scripts/v1_diagnose_once.py` 預設只列計畫；使用者擴大原次數上限後已執行 live 一次，**本輪上限已用完，不可重執行**。它先唯讀核對兩份舊 smoke DB 各供應商的派送數，再以 `0600` 獨占建立固定新收據 `.state/v1-diagnose-2026-10-02.sqlite`，新 request key 和不同的 `READY` 提示詞不重播舊請求。Doppler `api-quota-broker/dev` 五分鐘整個 config 唯讀 Service Token 只在程序記憶體；單次序列執行，近到期即停，不自動換 token。舊 `unknown` 與配額 hold 保留原樣。新收據只存固定診斷碼、狀態及供應商回報的數值用量，不存 token、key、輸入、輸出或任意回應本文。
@@ -108,4 +110,4 @@ Groq 專項在 main 與本 task 的直接人類批准後，正式工具審查通
 
 ## 本地驗證
 
-`pytest -q`（177 passed）、`ruff check .`、`ruff format --check .`、`mypy src/quota_broker` 在 Ubuntu 執行；fixture 覆蓋七家固定路由、OCR 表單、秘密不落庫、明確 429 fallback、Cloudflare `3040`／5xx／逾時不 fallback、同帳號 scope 冷卻、逐次監控、smoke plan、前次派送防重跑與個別送出前失敗後續測，以及追加診斷腳本的一筆 fixture GET、四筆 fixture POST、舊收據唯讀與同檔防重跑。另包含未執行的剩餘診斷方案之 curl 邊界、Mistral 固定提示／秘密過濾、NVIDIA 三模型請求回歸及非空答案／stop／用量成功條件 fixture，以及 Groq 專項 gate／安全 ID／異常 credential 零派送。真實 provider 全面可用性、free 帳號資格、配額剩餘和 OCR 對真實文件的品質尚未驗證。
+`pytest -q`（205 passed）、`ruff check .`、`ruff format --check .`、`mypy src/quota_broker` 在 Ubuntu 執行；fixture 覆蓋七家固定路由、OCR 表單、秘密不落庫、明確 429 fallback、Cloudflare `3040`／5xx／逾時不 fallback、同帳號 scope 冷卻、逐次監控、smoke plan、前次派送防重跑與個別送出前失敗後續測，以及追加診斷腳本的一筆 fixture GET、四筆 fixture POST、舊收據唯讀與同檔防重跑。另包含未執行的剩餘診斷方案之 curl 邊界、Mistral 固定提示／秘密過濾、NVIDIA 三模型請求回歸及非空答案／stop／用量成功條件 fixture，以及 Groq 專項 gate／安全 ID／異常 credential 零派送。真實 provider 全面可用性、free 帳號資格、配額剩餘和 OCR 對真實文件的品質尚未驗證。

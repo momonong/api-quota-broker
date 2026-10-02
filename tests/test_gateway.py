@@ -1238,6 +1238,8 @@ def test_new_chat_provider_transport_accepts_only_fixed_origin(monkeypatch, prov
     monkeypatch.setattr(
         "quota_broker.gateway_providers.urllib.request.build_opener", lambda *_: Opener()
     )
+    if provider == "groq":
+        monkeypatch.setattr("quota_broker.bounded_curl.groq_http", lambda *_: (200, {}, b"{}"))
     url, headers, payload = official_request(
         provider, model, "fixture-account", "fixture-secret", "fixture input", 16, None, None
     )

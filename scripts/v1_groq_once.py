@@ -69,7 +69,9 @@ def groq_http(url, headers, payload, timeout):
     if url == GET_URL and payload is None:
         method = "GET"
     elif url == POST_URL:
-        expected = official_request("groq", MODEL, "fixture", "fixture", PROMPT, 32, None, None)[2]
+        expected = official_request(
+            "groq", MODEL, "fixture", "fixture-key", PROMPT, 32, None, None
+        )[2]
         if payload != expected:
             raise ProviderError("unapproved Groq payload")
         method = "POST"

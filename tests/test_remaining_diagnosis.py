@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 import bounded_curl as curl
 import v1_remaining_once as remaining
 
+from quota_broker import bounded_curl as packaged_curl
 from quota_broker.gateway_providers import (
     ProviderError,
     official_request,
@@ -257,12 +258,12 @@ def test_output_limit_or_deadline_kills_child_and_discards_bytes(monkeypatch, fa
             return [(SimpleNamespace(fd=1), 1)]
 
     child = Child()
-    monkeypatch.setattr(curl.subprocess, "Popen", lambda *_, **__: child)
-    monkeypatch.setattr(curl.selectors, "DefaultSelector", Selector)
-    monkeypatch.setattr(curl.os, "read", lambda *_: b"secret-like bytes" * 6000)
+    monkeypatch.setattr(packaged_curl.subprocess, "Popen", lambda *_, **__: child)
+    monkeypatch.setattr(packaged_curl.selectors, "DefaultSelector", Selector)
+    monkeypatch.setattr(packaged_curl.os, "read", lambda *_: b"secret-like bytes" * 6000)
     if failure == "curl_process_deadline":
         instants = iter((0, 100))
-        monkeypatch.setattr(curl.time, "monotonic", lambda: next(instants))
+        monkeypatch.setattr(packaged_curl.time, "monotonic", lambda: next(instants))
     with pytest.raises(ProviderError, match=failure):
         curl.run_curl(b"fixture config", 1)
     assert child.killed

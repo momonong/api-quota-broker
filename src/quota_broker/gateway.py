@@ -21,6 +21,7 @@ from .gateway_providers import (
     ProviderError,
     ProviderPhaseTimeout,
     explicit_quota_rejection,
+    groq_completion_metadata,
     interpret,
     official_request,
     provider_http,
@@ -92,6 +93,8 @@ COLUMNS = (
     "reported_output_tokens",
     "reported_neurons",
     "usage_source",
+    "finish_reason",
+    "response_truncated",
 )
 ATTEMPT_COLUMNS = (
     "attempt_no",
@@ -113,6 +116,8 @@ ATTEMPT_COLUMNS = (
     "reported_neurons",
     "usage_source",
     "input_bytes",
+    "finish_reason",
+    "response_truncated",
 )
 
 
@@ -230,6 +235,7 @@ class Gateway:
         self.clock = clock
         self.broker = Broker(db, targets, clock)
         with sqlite3.connect(self.db) as con:
+            con.execute("BEGIN IMMEDIATE")
             con.execute("""
                 CREATE TABLE IF NOT EXISTS gateway_tasks (
                     request_key TEXT PRIMARY KEY, payload_hmac TEXT NOT NULL,
@@ -262,6 +268,12 @@ class Gateway:
                 "CREATE INDEX IF NOT EXISTS gateway_attempts_usage_at "
                 "ON gateway_attempts(dispatched_at, provider, model)"
             )
+            # Additive, serialized and repeatable: old rows/holds retain their semantics.
+            for table in ("gateway_tasks", "gateway_attempts"):
+                existing = {row[1] for row in con.execute(f"PRAGMA table_info({table})")}
+                for column, kind in (("finish_reason", "TEXT"), ("response_truncated", "INTEGER")):
+                    if column not in existing:
+                        con.execute(f"ALTER TABLE {table} ADD COLUMN {column} {kind}")
 
     def _hmac(self, data: dict[str, Any]) -> str:
         return hmac.new(self.digest_key, canonical(data).encode(), hashlib.sha256).hexdigest()
@@ -282,6 +294,9 @@ class Gateway:
             raise GatewayError("not_found", "task not found")
         result = dict(row)
         result["attempts"] = [dict(attempt) for attempt in attempts]
+        for item in [result, *result["attempts"]]:
+            if item["response_truncated"] is not None:
+                item["response_truncated"] = bool(item["response_truncated"])
         for attempt in result["attempts"]:
             ledger_attempt = self.broker.status(attempt["reservation_id"])
             attempt["ledger_state"] = ledger_attempt["state"]
@@ -635,6 +650,8 @@ class Gateway:
             response = b""
             retry: int | None = None
             error_code: str | None = None
+            finish_reason: str | None = None
+            response_truncated: bool | None = None
             try:
                 status, response_headers, response = self.transport(
                     url, headers, payload, 60.0 if target.provider == "nvidia" else 30.0
@@ -642,6 +659,20 @@ class Gateway:
                 answer, input_tokens, output_tokens, neurons, request_id = interpret(
                     target.provider, status, response
                 )
+                if target.provider == "groq":
+                    finish_reason, response_truncated = groq_completion_metadata(status, response)
+                    if answer is not None and not answer.strip():
+                        answer = None
+                    if output_tokens is not None and output_tokens > data["max_output_tokens"]:
+                        input_tokens = output_tokens = None
+                    if request_id is not None and (
+                        not re.fullmatch(
+                            r"(?:req_[A-Za-z0-9_-]{1,100}|chatcmpl-[A-Za-z0-9_-]{1,100}|[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12})",
+                            request_id,
+                        )
+                        or secret.casefold() in request_id.casefold()
+                    ):
+                        request_id = None
                 if status == 429:
                     retry = parse_retry_after(
                         response_headers.get("Retry-After") or response_headers.get("retry-after"),
@@ -669,6 +700,10 @@ class Gateway:
             known_quota_usage = (
                 "input_tokens" not in required_metrics or input_tokens is not None
             ) and ("neurons" not in required_metrics or neurons is not None)
+            if target.provider == "groq":
+                known_quota_usage = (
+                    known_quota_usage and input_tokens is not None and output_tokens is not None
+                )
             completed = status == 200 and answer is not None
             state = (
                 "completed"
@@ -730,6 +765,8 @@ class Gateway:
                 else "provider_reported"
                 if any(value is not None for value in (input_tokens, output_tokens, neurons))
                 else "unknown",
+                "finish_reason": finish_reason,
+                "response_truncated": response_truncated,
             }
             self._attempt_update(key, attempt, result_values)
             self._update(
@@ -823,14 +860,15 @@ class Gateway:
                 "ELSE NULL END AS neurons_unknown_count,"
                 "sum(g.state='quota_rejected') AS quota_rejected_count,"
                 "sum(g.state IN ('unknown','dispatched','preparing')) AS outcome_unknown_count,"
+                "sum(g.response_truncated=1) AS truncated_count,"
                 "sum(r.state IN ('dispatched','unknown')) AS ledger_held_count "
                 "FROM ("
                 "SELECT request_key,reservation_id,provider,model,dispatched_at,"
                 "estimated_input_tokens,reported_input_tokens,reported_output_tokens,"
-                "reported_neurons,state,input_bytes FROM gateway_attempts "
+                "reported_neurons,state,input_bytes,response_truncated FROM gateway_attempts "
                 "UNION ALL SELECT request_key,reservation_id,provider,model,dispatched_at,"
                 "estimated_input_tokens,reported_input_tokens,reported_output_tokens,"
-                "reported_neurons,state,NULL AS input_bytes FROM gateway_tasks legacy "
+                "reported_neurons,state,NULL AS input_bytes,response_truncated FROM gateway_tasks legacy "
                 "WHERE NOT EXISTS (SELECT 1 FROM gateway_attempts a "
                 "WHERE a.request_key=legacy.request_key)) g "
                 "LEFT JOIN reservations r ON r.id=g.reservation_id "

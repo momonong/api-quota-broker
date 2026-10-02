@@ -90,9 +90,27 @@ Browser Integrity Check 是 Groq 作為網站擁有者的 Cloudflare Security �
 
 本地契約核對：`Gateway.run` 的既有完成判定是 HTTP 200 且解析出答案，`interpret()` 不檢查 finish_reason。此次經 Gateway 注入診斷用 curl transport，並由該 wrapper 額外要求 stop；沒有改正式預設 urllib transport 或通用成功條件。Ledger 尚無「已執行但回答截斷」獨立 state，故沿現有 fail-closed 路徑保留 hold。這是專項保守驗收策略，無須本輪臨時改 ledger 契約；若要區分執行確認、答案完整性與用量結算，應另議狀態設計，不回寫本輪或舊收據。
 
-正式路由尚未修復或驗收：常用 `provider_http` 仍走 urllib，本輪成功只證明注入 Gateway 的 curl 路徑可用。後續最小整合可為 Groq 加入沿用已驗證邊界的 curl adapter（固定目的地、stdin 認證、TLS、deadline、無 retry／redirect、有限安全收據），先以 fixture 驗證正式路由選用，再以另行批准的單次完整回答驗證；或另行驗證原 urllib 路徑。選擇與正式整合須由 main 決定，本輪不更換服務 transport、不部署。
+上輪收尾時，正式路由尚未修復或驗收：常用 `provider_http` 仍走 urllib，該輪成功只證明注入 Gateway 的 curl 路徑可用。後續最小整合候選是為 Groq 加入沿用已驗證邊界的 curl adapter，再以另行批准的單次完整回答驗證；或另行驗證原 urllib 路徑。這項待決方案已由下節的新階段取代，沒有回寫上輪結果。
 
 接通方式現在已有真實證據，但舊認證 urllib POST403 與匿名 GET1010 的原因仍不可追認；不同 client／請求不能證明舊 403 必然由 urllib 或 UA 造成。下一個完整回答驗證應調整適合 GPT-OSS 的生成預算或另選適合短回答的免費模型，由 main 決定並另行批准新上限；本輪 1 GET／1 POST 已用完，不自動補呼叫。Mistral／NVIDIA／其餘供應商沒有新呼叫，沒有付費、發信或部署。
+
+### Groq 正式整合階段（2026-10-02）
+
+授權來源已重新核對 main `01a0de5f-8306-71a3-9738-7ac6eb4d7746` 原始 session 第1818行：先把成功呼叫方式接回正式路由，正確記錄已執行但回答截斷，再驗證完整回答；第1825行 role=user、`2026-10-02T04:00:35.375Z`（台北12:00:35）、message `msg_01a0fac5-642f-7493-98d4-4e8c20114877` 回覆「好 照你說的做」。經既定 orchestrate `01a0d4cf-c625-7610-a50e-b9ff278ce901` 交接至原 task `01a0d64c-471b-7e70-b879-0a2ccfe8c890`，本單元只處理 Groq，本地實作／文件／提交與正式審查；不呼叫 NVIDIA／Mistral／其他 provider，不 push／merge／deploy／付費。
+
+整合採最小改動：`provider_http` 的固定 Groq POST 分支使用包內 `quota_broker.bounded_curl`；正常 Gateway／CLI／API 沿相同預設路徑，不需要注入診斷 transport。共用 bounded subprocess／解析器從 script 移入 package；NVIDIA 診斷仍由原 wrapper 限定原請求，其他 provider 的正式 transport 不改。目的地與 payload 契約固定，認證／JSON 只走 stdin，既有 curl 自然身分與 TLS 驗證，connect≤10秒、total≤30秒、child deadline≤33秒、body≤64KiB、總管線輸出≤80KiB，無 retry／redirect／UA／IP／proxy 覆寫或 transport fallback。malformed credential 在 Gateway dispatch 前失敗。
+
+保留既有完成／結算 state：Groq `length` 且有非空可見文字時，不移除答案；首次 caller 取得 partial answer，status／同鍵僅 metadata。新增安全 `finish_reason`／`response_truncated`，讓完整回答與執行結果分開；state `completed` 不代表回答完整。可信 input/output 配對正常結算 requests 與現有 input-token cap，不為截斷歸零或一直 hold；缺失、非整數／負值、total矛盾或輸出超過請求上限時，tokens維持null、state `completed_usage_unknown`、帳本保留估算。截斷、未知用量或錯誤均不自行 fallback／replay。SQLite兩表新增nullable欄位，以 `BEGIN IMMEDIATE` 序列化且可重入，舊 rows、收據與 unknown holds不回寫；usage新增 `truncated_count`。回答／輸入／秘密仍不進SQLite；Groq ID另有格式與已解析key反射過濾。
+
+新驗證腳本 `scripts/v1_groq_formal_once.py` 預設 offline，固定獨立 request key／新DB `.state/v1-groq-formal-2026-10-02.sqlite`、0600獨占建立且拒絕同檔重跑，舊四DB只讀核對兩筆Groq舊POST。正式審查通過才可執行最多 **1筆新獨立POST、零GET**：`openai/gpt-oss-20b`，user=`Reply with exactly READY.`，`max_completion_tokens=512`、low、`include_reasoning=false`、`stream=false`、30秒。Doppler既有 `api-quota-broker/dev` config整個唯讀、5分鐘短效token，只讀 `GROQ_API_KEY` 一次、秘密只留記憶體。只存UTC、安全ID、固定finish/truncation、用量與比對布林；不存raw body或輸入輸出。完整驗收要求stop、非空可見回答、實際用量完整且ledger已正常結算；READY精確比對只作附加診斷，不因標點或措辭差異誤判API未完成。此上限為main階段交接的具體化，正式平台仍可要求本task直接人類批准。
+
+```bash
+.venv/bin/python scripts/v1_groq_formal_once.py --live --db /home/ubuntu/projects/api-quota-broker/.state/v1-groq-formal-2026-10-02.sqlite
+```
+
+本階段完整本地 suite **205 passed**（新增28項正式Groq行為驗證），Ruff／format／mypy／diff检查通过。首次沙箱測試因禁止socket而有5項loopback失敗，經正式工具批准後全suite通過；沒有provider呼叫。新script offline plan亦確認不讀憑證。
+
+本階段目前完成程式整合，尚未執行上述live命令；完整回答的實測證據待正式審查與執行結果。舊403原因仍未知，curl成功不能單變量歸因於UA／urllib或站方解除封鎖。
 
 ## 可檢閱的下一輪最小範圍
 
@@ -126,4 +144,4 @@ Doppler `api-quota-broker/dev` 五分鐘整個 config 唯讀 Service Token 一�
 
 ## 本地驗證
 
-Ubuntu 本地完整 suite 為 `177 passed`；剩餘診斷的 43 項 fixture 驗證 stdin config 真正經既有 curl 解析、`file:///dev/null` 的 write-out delimiter、HTTP/2／1xx、逾時不採用部分回答、輸出上限／deadline kill child、Mistral gate、固定訊息分類與秘密過濾、三個 NVIDIA 模型請求回歸、空答案／length／缺 finish_reason 維持 unknown、malformed HTTP 200 保留狀態與 timing、舊 DB 不變及同檔拒絕重跑；另含上述 Groq 專項 24 項 fixture。測試只用 fixture、loopback 與空本地檔案，不呼叫 provider。`ruff check .`、`ruff format --check .`、`mypy src/quota_broker` 及 `git diff --check` 通過；Groq live 收據已建立，其餘待批准方案尚未建立新 live DB。
+Ubuntu 本地完整 suite 為 `205 passed`；剩餘診斷的 43 項 fixture 驗證 stdin config 真正經既有 curl 解析、`file:///dev/null` 的 write-out delimiter、HTTP/2／1xx、逾時不採用部分回答、輸出上限／deadline kill child、Mistral gate、固定訊息分類與秘密過濾、三個 NVIDIA 模型請求回歸、空答案／length／缺 finish_reason 維持 unknown、malformed HTTP 200 保留狀態與 timing、舊 DB 不變及同檔拒絕重跑；另含上述 Groq 專項 24 項 fixture。測試只用 fixture、loopback 與空本地檔案，不呼叫 provider。`ruff check .`、`ruff format --check .`、`mypy src/quota_broker` 及 `git diff --check` 通過；Groq live 收據已建立，其餘待批准方案尚未建立新 live DB。

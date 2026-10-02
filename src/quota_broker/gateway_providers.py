@@ -62,6 +62,8 @@ def official_request(
             payload["chat_template_kwargs"] = {"enable_thinking": False}
         return url, {"Authorization": "Bearer " + secret}, payload
     if provider in {"groq", "mistral", "openrouter"}:
+        if provider == "groq" and not re.fullmatch(r"[A-Za-z0-9._~-]{8,256}", secret):
+            raise ProviderError("credential_format_rejected")
         payload = {
             "model": model_id,
             "messages": [{"role": "user", "content": content}],
@@ -126,6 +128,11 @@ def provider_http(
         url,
     ):
         raise ProviderError("unapproved provider URL")
+    if url == "https://api.groq.com/openai/v1/chat/completions":
+        # Import lazily: the packaged curl primitives use the provider error/contract types.
+        from .bounded_curl import groq_http
+
+        return groq_http(url, headers, payload, timeout)
     ocr = url == "https://api.ocr.space/parse/image"
     request = urllib.request.Request(
         url,
@@ -170,6 +177,22 @@ def _request_id(value: object) -> str | None:
     if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9._:-]{1,128}", value):
         return value
     return None
+
+
+def groq_completion_metadata(status: int | None, raw: bytes) -> tuple[str | None, bool | None]:
+    """Fixed completion metadata; unrecognized provider values never enter SQLite."""
+    if status != 200:
+        return None, None
+    try:
+        data = json.loads(raw)
+    except (ValueError, TypeError):
+        return None, None
+    choices = data.get("choices") if isinstance(data, dict) else None
+    first = choices[0] if isinstance(choices, list) and choices else None
+    finish = first.get("finish_reason") if isinstance(first, dict) else None
+    if finish in ("stop", "length", "content_filter"):
+        return finish, finish == "length"
+    return ("missing" if finish is None else "unclassified"), None
 
 
 def safe_http_error_code(provider: str, status: int, raw: bytes) -> str:
@@ -467,6 +490,19 @@ def interpret(
         if isinstance(usage, dict):
             input_tokens = _nonnegative(usage.get("prompt_tokens"))
             output_tokens = _nonnegative(usage.get("completion_tokens"))
+            if provider == "groq" and (
+                input_tokens is None
+                or output_tokens is None
+                or (
+                    "total_tokens" in usage
+                    and (
+                        _nonnegative(usage["total_tokens"]) is None
+                        or usage["total_tokens"] != input_tokens + output_tokens
+                    )
+                )
+            ):
+                # A missing/contradictory pair cannot settle a Groq token hold.
+                input_tokens = output_tokens = None
         choices = data.get("choices")
         if isinstance(choices, list) and choices and isinstance(choices[0], dict):
             message = choices[0].get("message")
