@@ -63,6 +63,8 @@ def chat_http(
     if url not in CHAT_ROUTES:
         raise ProviderError("unapproved chat transport")
     provider, model, output_field, limit = CHAT_ROUTES[url]
+    if provider == "mistral" and payload.get("model") == "ministral-3b-latest":
+        model = "ministral-3b-latest"
     messages = payload.get("messages")
     first = messages[0] if isinstance(messages, list) and len(messages) == 1 else None
     content = first.get("content") if isinstance(first, dict) else None

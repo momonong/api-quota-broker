@@ -175,6 +175,20 @@ Mistral本輪已排除「本次models請求未到API／固定Small未列出」�
 
 後續main經既定orchestrate將操作預算增加至最多1認證models GET＋1固定Ministral3B新POST，依同一人類第2702行的解決問題方向與既有免費階段；這是main具體化的有界診斷，**不是人類逐字要求新增次數**。新假設為Small模型bucket受限但小型3B可用；只有固定候選可見且免費資格不矛盾才POST，GET後隔數秒、不重試。另行固定新DB與request key，保留全部Small歷史身份／unknown，其他providers零呼叫。
 
+## 固定 Ministral 3B 模型bucket假設（2026-10-02）
+
+接續上述main有界交接，沒有把代理預算冒充人類逐字次數。[官方Sampling](https://docs.mistral.ai/inference/sampling)以`ministral-3b-latest`作chat範例；[模型頁](https://docs.mistral.ai/models/ministral-3-3b-25-12)列3B、256k context與chat能力；[API pricing](https://mistral.ai/pricing/api/)標示付費計價input/output每百萬tokens各$0.1，**不是零價endpoint**。[官方Free mode](https://docs.mistral.ai/admin/billing-usage/usage-limits)允許內含月用量，這輪沿用人類已確認的Free／no-card／不付費帳戶範圍，沒有把模型可見當作帳戶billing驗證。若回應明確要求付款／paid-only／排除free／billing-enabled即停止；不啟用pay-as-you-go。
+
+catalog最小加入獨立`ministral-3b-latest`身份；正常bounded curl只多允許這個固定Mistral model，同官方POST，32-token實測使用一般非串流chat，不擅加Small的reasoning參數。Small歷史與example profile不改，不自動替代或fallback。專項runtime target有獨立ID，沿原Mistral帳戶scope；5分鐘暫時Free attestation，不宣稱正式常駐路由已驗證。錯誤diagnostics另外保留固定`mistral-correlation-id`／`x-kong-request-id`的UUID以及cf-ray限定格式，去除精確key/input反射；無任意headers、cookie或識別文字。
+
+`scripts/v1_mistral_3b_once.py`預設offline；新exclusive0600 DB `.state/v1-mistral-3b-2026-10-02.sqlite`／新request key。舊DB只讀核對Mistral已派送4次，isolated Small必須為429／code1300、距完成至少60秒。至多1認證GET `/v1/models`，只核固定3B的id/alias/chat/active/archived與明確free矛盾，完整model列表不保存。GET gate未過即停止零POST。通過後固定隔3秒，再以正常Gateway／預設provider_http POST一次：`ministral-3b-latest`、user=`Reply READY.`、max_tokens32、stream=false、30秒。兩筆都無retry／redirect／UA／IP／proxy覆寫。Doppler api-quota-broker/dev整config唯讀5分鐘token一次，MISTRAL_API_KEY只cache讀一次，秘密／回應／回答仅程序記憶體，不續token。其他provider零呼叫、不付費／帳戶變更／部署／push／merge。
+
+```bash
+.venv/bin/python scripts/v1_mistral_3b_once.py --live --db /home/ubuntu/projects/api-quota-broker/.state/v1-mistral-3b-2026-10-02.sqlite
+```
+
+成功要求完整非空回答、stop、未截斷與可信實際input/output及ledger正常結算。若3B同樣限流，不把兩個model同錯當作全帳戶禁止已證，整理精確非秘密UTC／碼／安全headers交官方支援查核；沒有第四個模型嘗試或無限重試。完整本機回歸 **253 passed**，Ruff／format／mypy／diff檢查通過；只有fixture／loopback。涵蓋固定3B正常路由、model gate、付費矛盾零POST、固定3秒間隔、GET429／timeout／length、key只讀一次、防重跑與歷史DB不改。本階段實測待正式工具審查。
+
 ## 先前一次性診斷方案（未執行，已由上述新階段取代）
 
 以下是**待 main 取得一次明確追加批准**的方案；原次數上限已用完。

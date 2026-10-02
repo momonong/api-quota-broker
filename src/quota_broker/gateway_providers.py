@@ -501,6 +501,17 @@ def _mistral_error_fields(
         value = headers.get(name)
         if isinstance(value, str) and re.fullmatch(r"[0-9]{1,10}", value) and not reflected(value):
             result[name.replace("-", "_")] = int(value)
+    for name, pattern in (
+        (
+            "mistral-correlation-id",
+            r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}",
+        ),
+        ("x-kong-request-id", r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}"),
+        ("cf-ray", r"[0-9a-fA-F]{16,32}-[A-Z]{3}"),
+    ):
+        value = headers.get(name)
+        if isinstance(value, str) and re.fullmatch(pattern, value) and not reflected(value):
+            result[name.replace("-", "_")] = value
     return result
 
 
