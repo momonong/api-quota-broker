@@ -1,6 +1,6 @@
 # 七家免費能力接通：剩餘診斷方案（2026-10-02）
 
-**Groq 正式整合與完整回答驗證已完成：正常 Gateway 路由 HTTP 200、stop、實際用量正常結算。** 完成條件是六家文字 API（包含 NVIDIA 一般 LLM）與 OCR.space 各取得免費能力的真實成功，經統一 Gateway 路由並記錄 SQLite。目前五家有完整能力成功證據（原四家加 Groq）；NVIDIA／Mistral 仍未完成。本階段沒有其他 provider 新呼叫，不部署；沒有證據顯示使用者缺信用卡、必須升級或必須更換 key。
+**NVIDIA一般LLM與Groq正式路由已驗證完整回答及用量結算；Mistral429等待帳戶Limits資料。** 完成條件是六家文字 API（包含 NVIDIA 一般 LLM）與 OCR.space 各取得免費能力的真實成功，經統一 Gateway 路由並記錄 SQLite。目前六家有能力成功回應證據（原四家加Groq、NVIDIA一般LLM）；Mistral仍為429，等待帳戶Limits資料。NVIDIA新正常Gateway已取得完整回答及用量結算；Cloudflare歷史Neurons仍未知，不把能力成功等同所有帳務欄位完整。Groq單元以外，本次新增NVIDIA／Mistral各1GET與1POST；不部署；沒有證據顯示使用者缺信用卡、必須升級或必須更換 key。
 
 ## 先更正 NVIDIA 證據
 
@@ -126,11 +126,30 @@ Browser Integrity Check 是 Groq 作為網站擁有者的 Cloudflare Security �
 
 交接上限為每家至多1筆認證models GET、2筆不同明確目的的新POST；輸出≤512 tokens。第二筆只在有新假設且需要資料時另行具體化。首輪 `scripts/v1_nvidia_mistral_once.py` 預設offline，僅每家1 GET與模型gate通過後1 POST，固定NVIDIA Lightning與Mistral Small、各512上限／短READY類prompt、thinking=false（NVIDIA）、stream=false。直接正常Gateway、無diagnostic transport注入，沒有第二筆／poll／token續期；NVIDIA若202只記pending，不另查狀態。Doppler api-quota-broker/dev整個config五分鐘唯讀token，必要兩key各cache讀一次，secret／token／輸入輸出僅程序記憶體。固定新DB `.state/v1-nvidia-mistral-2026-10-02.sqlite` 0600獨占建立、固定新request keys、同檔拒絕重跑；舊收據唯讀核對。每筆GET在送出前存dispatched邊界，POST沿Gateway正常reserve／dispatch／report；只存UTC、安全ID、timing、原因枚舉、用量及驗收布林。
 
-完整本地suite **221 passed**（本階段新增16項正式路由／安全分類／timing／GET gate／防重跑fixture）、Ruff／format／mypy／diff檢查通過；offline plan不讀秘密。尚未live派送。先完成本地提交，再正式審查以下精確命令；若平台要求本task直接批准，依正式拒絕理由處理，不換工具／路徑繞過：
+完整本地suite **221 passed**（本階段新增16項正式路由／安全分類／timing／GET gate／防重跑fixture）、Ruff／format／mypy／diff檢查通過；offline plan不讀秘密。以下精確命令經正式工具審查批准，於本地實作提交 `0d0cc6a` 後已執行一次；**同檔不可重執行**：
 
 ```bash
 .venv/bin/python scripts/v1_nvidia_mistral_once.py --live --db /home/ubuntu/projects/api-quota-broker/.state/v1-nvidia-mistral-2026-10-02.sqlite
 ```
+
+### 本輪真實結果與剩餘必要資料
+
+| 本輪方法 | UTC（台北+08） | 結果與用量 |
+| --- | --- | --- |
+| Mistral models GET | 2026-10-02T05:10:45.850853+00:00 → 05:10:46.664488 | HTTP200，固定Small／chat能力可見；curl total796ms |
+| Mistral正常Gateway POST | 05:10:46.721395 → 05:10:47.238196（台北13:10:46–47） | HTTP429；固定rate-limit句型命中，reason_category=rate_limit_scope_unknown／reason_basis=message_pattern；482ms；無用量／ID，保留unknown hold |
+| NVIDIA models GET | 05:10:48.242914 → 05:10:48.482247 | HTTP200，Lightning可見；curl total218ms |
+| NVIDIA正常Gateway POST | 05:10:48.544824 → 05:11:33.171563（台北13:10:48–13:11:33） | **HTTP200／completed／stop／未截斷／full_answer_verified=true**；latency44601ms，provider input31／output3 tokens，ledger completed／settled_provider_usage |
+
+NVIDIA安全completion ID `chatcmpl-a18a2601-c766-4904-8959-2b45a8b7b791`；curl累積timing為DNS42ms、TCP50ms、TLS121ms、TTFB44589ms、total44589ms。此次主要等待在TLS完成後到首位元組（約44.47秒）；不能細分遠端排隊、prefill、推論或中介等待。這輪44.6秒小於舊60秒界線，因此**不能宣稱單靠延長timeout解決舊問題**；模型與client也不同。舊Gemma／歷史Nemotron逾時的唯一根因仍未知，舊unknown不追認。已證明的修正是正常一般LLM路由採當前可用Lightning、關thinking、具相位診斷的bounded curl，且此次完整回答與實際用量正常結算；不部署。
+
+Mistral本輪已排除「本次models請求未到API／固定Small未列出」；模型查詢200不能替代推論配額驗證。POST實際錯誤為top_level_error，保留error_code=mistral_error_type_unclassified、error_type=unclassified、error_code_present=true、無Retry-After，訊息固定pattern確認rate limit，但沒有可辨識的範圍。原始code/type/message沒有保存，程序已退出，**不能從現有安全收據回補未保存的值**，也不為這個缺口另消耗POST。不能判定是TPM、RPS、月用量、組織／Workspace cap或必須付費。
+
+下一個必要動作是main統一向人類取得同一Organization／Workspace下Small的RPS/RPM、TPM與月included／used／remaining非秘密數值。官方入口已由[Usage and limits](https://docs.mistral.ai/admin/billing-usage/usage-limits)及可見官方DOM核對：[API Limits](https://admin.mistral.ai/plateforme/limits)、[Usage](https://admin.mistral.ai/organization/usage)、[Organization Billing](https://admin.mistral.ai/organization/billing)、[Workspaces](https://admin.mistral.ai/organization/workspaces)。唯讀開啟Limits目前導向登入頁；沒有讀取帳戶數值、填入密碼／key、改設定或付費。原task重複登入問題已停止，資料只由main收集。此次GET完成至POST派送約57ms，可在取得RPS數值後作速率線索；未證明GET也計入同一rate bucket，亦不能解釋舊獨立429。
+
+新DB mode0600／父目錄0700，quick_check=ok／foreign_key_check無錯；各1筆已派送GET與POST。NVIDIArequests按1筆、input cap結算31；Mistral保留本地input上界444及1request hold，**444不是供應商用量**。無secret marker、完整prompt、answer欄位或原始choices；六份舊DB SHA-256前後一致。Service Token／兩key僅記憶體各cache讀一次、不續期。第二筆POST兩家都未使用，沒有poll／其他provider／付費／push／merge／deploy／重啟／發信。
+
+**狀態：NVIDIA一般LLM正常路由及SQLite結算驗證完成；Mistral正式診斷／監控整合完成，429仍待帳戶Limits資料，整個兩問題階段尚未全部完成。** 新資料由main經orchestrate交回原task後再定位必要修正；目前不追加POST或要求使用者換key／升級。
 
 ## 先前一次性診斷方案（未執行，已由上述新階段取代）
 
@@ -164,4 +183,4 @@ Doppler `api-quota-broker/dev` 五分鐘整個 config 唯讀 Service Token 一�
 
 ## 本地驗證
 
-Ubuntu 本地完整 suite 為 `205 passed`；剩餘診斷的 43 項 fixture 驗證 stdin config 真正經既有 curl 解析、`file:///dev/null` 的 write-out delimiter、HTTP/2／1xx、逾時不採用部分回答、輸出上限／deadline kill child、Mistral gate、固定訊息分類與秘密過濾、三個 NVIDIA 模型請求回歸、空答案／length／缺 finish_reason 維持 unknown、malformed HTTP 200 保留狀態與 timing、舊 DB 不變及同檔拒絕重跑；另含上述 Groq 專項 24 項 fixture及正式整合28項行為驗證。測試只用 fixture、loopback 與空本地檔案，不呼叫 provider。`ruff check .`、`ruff format --check .`、`mypy src/quota_broker` 及 `git diff --check` 通過；Groq live 收據已建立，其餘待批准方案尚未建立新 live DB。
+Ubuntu 本地完整 suite 為 `221 passed`；剩餘診斷的 43 項 fixture 驗證 stdin config 真正經既有 curl 解析、`file:///dev/null` 的 write-out delimiter、HTTP/2／1xx、逾時不採用部分回答、輸出上限／deadline kill child、Mistral gate、固定訊息分類與秘密過濾、三個 NVIDIA 模型請求回歸、空答案／length／缺 finish_reason 維持 unknown、malformed HTTP 200 保留狀態與 timing、舊 DB 不變及同檔拒絕重跑；另含上述 Groq 專項 24 項 fixture及正式整合28項行為驗證，以及本階段NVIDIA／Mistral正式路由16項fixture。測試只用 fixture、loopback 與空本地檔案，不呼叫 provider。`ruff check .`、`ruff format --check .`、`mypy src/quota_broker` 及 `git diff --check` 通過；Groq與本輪NVIDIA／Mistral live收據已建立；先前未執行的一次性方案保持未執行。

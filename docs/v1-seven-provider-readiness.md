@@ -2,7 +2,7 @@
 
 ## 目前結果
 
-**完成條件仍是六家文字 API（包含 NVIDIA 一般 LLM）與 OCR.space 均有免費能力真實成功，接統一路由／SQLite；目前五家有完整能力成功證據。** Groq 正式路由整合後的單筆POST已HTTP200、stop、非空完整回答與用量（input76／output18）、ledger正常結算；NVIDIA／Mistral仍未完成。另已唯讀重新核對 2026-09-30 的 `.state/gateway-live-once.sqlite`，NVIDIA Riva 曾經 Gateway 成功並結算（22 輸入、3 輸出 tokens），先前回報漏列這份證據。這是額外的歷史翻譯能力，不能替代一般 LLM 驗收，也不解釋 Gemma 的逾時。實際結果與尚未執行的其餘方案見 [剩餘供應商診斷方案](v1-remaining-provider-plan.md)。
+**完成條件仍是六家文字 API（包含 NVIDIA 一般 LLM）與 OCR.space 均有免費能力真實成功，接統一路由／SQLite；目前六家有能力成功回應證據（Cloudflare Neurons仍未知）。** Groq 正式路由整合後的單筆POST已HTTP200、stop、非空完整回答與用量（input76／output18）、ledger正常結算；NVIDIA一般LLM亦已經正常Gateway取得完整回答與實際用量結算；Mistral仍429、等待main收集帳戶Limits資料。另已唯讀重新核對 2026-09-30 的 `.state/gateway-live-once.sqlite`，NVIDIA Riva 曾經 Gateway 成功並結算（22 輸入、3 輸出 tokens），先前回報漏列這份證據。這是額外的歷史翻譯能力，不能替代一般 LLM 驗收，也不解釋 Gemma 的逾時。實際結果與尚未執行的其餘方案見 [剩餘供應商診斷方案](v1-remaining-provider-plan.md)。
 
 本分支實作七家固定路由與 SQLite 逐次嘗試紀錄。`scripts/v1_smoke_once.py` 的預設模式只列計畫。本地 fixture 是工程驗證，不能視為帳號或真實服務已通。2026-10-02 在使用者批准後，以五分鐘 config 唯讀 Service Token 執行兩輪初始 smoke。第一輪 NVIDIA 單次 POST 逾時，收據為 `unknown`；Gemini 在送出前失敗，沒有派送。第二輪根據第一輪收據排除 NVIDIA，Gemini 與其餘五家各派送一次。初始範圍合計七家各至多一筆已派送 HTTP，均不重送。舊收據保留在 `.state/v1-smoke-2026-10-02.sqlite` 與 `.state/v1-smoke-2026-10-02-remaining.sqlite`，不存憑證、秘密或回應內容。使用者其後明確批准一次追加診斷，結果如下。
 
@@ -47,6 +47,8 @@ HTTP 200 證明單次 API 呼叫回傳，但不證明免費帳號的餘額或刷
 Groq 專項在 main 與本 task 的直接人類批准後，正式工具審查通過，已用五分鐘 Doppler config 唯讀 token、key 程序內讀一次，執行 GET 1／POST 1（上限已用完）。2026-10-02 台北 11:01:05–06，認證 models GET200 且固定模型可見；GPT-OSS 20B POST200、非空可見輸出、供應商 input78／output32 tokens、finish_reason=length。本輪 key／模型權限路徑可用；32-token 截斷未過本地 stop 成功條件，新 attempt／hold 保留 unknown，舊 unknown 不變。詳細 UTC／request ID／cf-ray 與條件說明見 [Groq 專項結果](v1-remaining-provider-plan.md#已批准的-groq-專項本輪結果)。沒有其他 provider 呼叫／付費／部署。最小程式與完整本地 suite 177 passed；fixture 不替代以上 live 收據。
 
 其後 main 人類批准正式整合：Groq 現在於正常 `provider_http` 分支使用 bounded curl，CLI／API 無需診斷 transport 注入。`length` 保留 partial answer、finish／truncation metadata，可信實際用量正常結算；缺失／矛盾用量維持 `completed_usage_unknown` 和hold，不fallback／replay。nullable欄位可重入遷移，舊收據／holds不回寫。完整本地suite **205 passed**，新增28項正式路由、截斷、用量、schema、CLI-HTTP與新單筆script驗證；Ruff／format／mypy通過。獨立新POST完整回答驗證經正式審查獲准，2026-10-02台北12:16:07已用正常Gateway執行成功（HTTP200／stop／76+18 tokens／ledger completed／exact READY比對true），1 POST／零GET上限已用完，舊四DB bytes不變。詳見 [正式整合階段](v1-remaining-provider-plan.md#groq-正式整合階段2026-10-02)；不部署。
+
+最新NVIDIA／Mistral問題解決階段：正常路由與安全diagnostics已整合，完整suite **221 passed**。經正式審查於2026-10-02台北13:10–13:11，各送1認證models GET／1正常Gateway POST；NVIDIA Lightning **200／stop／完整回答／31+3 tokens／ledger completed**，約44.6秒，主要等首位元組；MistralGET200模型可見，POST429且rate-limit範圍未識別，無用量，保留444-token本地估算hold。第二POST未使用、不重播舊unknown，六份舊DB bytes不變。Mistral必要帳戶Limits資料由main統一收集，未登入帳戶或更動設定；七家全面完成仍未達成。詳見 [本輪結果與剩餘資料](v1-remaining-provider-plan.md#本輪真實結果與剩餘必要資料)。
 
 ## 已批准與執行的追加診斷範圍
 
@@ -110,4 +112,4 @@ Groq 專項在 main 與本 task 的直接人類批准後，正式工具審查通
 
 ## 本地驗證
 
-`pytest -q`（205 passed）、`ruff check .`、`ruff format --check .`、`mypy src/quota_broker` 在 Ubuntu 執行；fixture 覆蓋七家固定路由、OCR 表單、秘密不落庫、明確 429 fallback、Cloudflare `3040`／5xx／逾時不 fallback、同帳號 scope 冷卻、逐次監控、smoke plan、前次派送防重跑與個別送出前失敗後續測，以及追加診斷腳本的一筆 fixture GET、四筆 fixture POST、舊收據唯讀與同檔防重跑。另包含未執行的剩餘診斷方案之 curl 邊界、Mistral 固定提示／秘密過濾、NVIDIA 三模型請求回歸及非空答案／stop／用量成功條件 fixture，以及 Groq 專項 gate／安全 ID／異常 credential 零派送。真實 provider 全面可用性、free 帳號資格、配額剩餘和 OCR 對真實文件的品質尚未驗證。
+`pytest -q`（221 passed）、`ruff check .`、`ruff format --check .`、`mypy src/quota_broker` 在 Ubuntu 執行；fixture 覆蓋七家固定路由、OCR 表單、秘密不落庫、明確 429 fallback、Cloudflare `3040`／5xx／逾時不 fallback、同帳號 scope 冷卻、逐次監控、smoke plan、前次派送防重跑與個別送出前失敗後續測，以及追加診斷腳本的一筆 fixture GET、四筆 fixture POST、舊收據唯讀與同檔防重跑。另包含未執行的剩餘診斷方案之 curl 邊界、Mistral 固定提示／秘密過濾、NVIDIA 三模型請求回歸及非空答案／stop／用量成功條件 fixture，以及 Groq 專項 gate／安全 ID／異常 credential 零派送。真實 provider 全面可用性、free 帳號資格、配額剩餘和 OCR 對真實文件的品質尚未驗證。
