@@ -45,11 +45,21 @@
 
 [官方 Groq 相容文件](https://console.groq.com/docs/openai)支援官方 SDK／OpenAI 相容 client；[官方 Python SDK](https://github.com/groq/groq-python)用 httpx、預設兩次重試、預設一分鐘 timeout。[SDK 原始碼](https://github.com/groq/groq-python/blob/main/src/groq/_base_client.py)亦有自己的 SDK 身分／平台 headers，預設 client 可跟 redirect。現有 urllib 只送 JSON／認證，無 SDK 平台 headers，拒絕 redirect、無重試。這些差異不能證明改用 SDK 就能解除 1010。
 
-[GPT-OSS 官方 API](https://console.groq.com/docs/api-reference)支援目前 low reasoning／不輸出 reasoning 參數；[model permissions](https://console.groq.com/docs/model-permissions)的 org/project block 與 [Cloudflare 1010](https://developers.cloudflare.com/support/troubleshooting/http-status-codes/cloudflare-1xxx-errors/error-1010/) 是不同分支。舊 POST body 未留存，不能追認其原因；新的無認證 GET 曾確認本機有 1010。
+[GPT-OSS 官方 API](https://console.groq.com/docs/api-reference)支援目前 low reasoning／不輸出 reasoning 參數；[model permissions](https://console.groq.com/docs/model-permissions)的 org/project block 與 [Cloudflare 1010](https://developers.cloudflare.com/support/troubleshooting/http-status-codes/cloudflare-1xxx-errors/error-1010/) 是不同分支。舊 POST body 未留存，不能追認其原因；新的無認證 GET 曾回 1010。官方 models GET 範例明確帶 Bearer key，匿名探針不等同完整的官方請求，不能直接推論帶認證 SDK／POST 也會被同一規則封鎖。
 
-**本次準備方案對 Groq 為零呼叫。** 站方確認合法 API client 可從目前主機存取後，才提出使用真實官方 SDK 的有界驗證：`max_retries=0`、30 秒 timeout、client `follow_redirects=False`、沒有自訂 UA／proxy／IP、關閉 SDK debug logging；最多一筆 models GET，成功且固定 `openai/gpt-oss-20b` 可見才送一筆 32-token POST。若又 1010，立即停止並交站方；若是官方 org/project block，交帳號管理者檢查權限。未安裝 SDK，不複製其 headers 偽裝成 SDK，也不替 user 聯絡站方或變更設定。
+**現有可執行的 Mistral／NVIDIA 方案對 Groq 為零呼叫。使用者最新方向是先處理 Groq，暫不啟動其餘方案。** 前版「一定先找站方解封」判斷過早，已撤回。最小下一步是另行取得追加上限後，以正式帶認證的官方 client／官方 curl 範例驗證：最多一筆 models GET，成功且固定 `openai/gpt-oss-20b` 可見才送最多一筆 32-token POST；30 秒 timeout、無 retry／redirect／自訂 UA／proxy／IP，不顯示或保存秘密及 raw body。若採 SDK，要明確 `max_retries=0`、client `follow_redirects=False` 並關閉 debug logging；目前 SDK 未安裝，不複製它的 headers 偽裝成 SDK。這個 Groq 階段尚未批准、未新增執行腳本或呼叫。只有正式帶認證請求仍回 1010 才需要站方檢查規則；若官方 org/project block，才查對應帳號設定。
 
-可供使用者經 [Groq 官方 Contact](https://groq.com/contact) 提交的非秘密摘要：Ubuntu 合法 API client、`GET /openai/v1/models` 無認證請求回 403／1010／browser_signature_banned；請站方確認 API 入口的 client fingerprint／WAF 規則。附既有 UTC 收據時間及已知 cf-ray（若有），不附 API key、HAR、raw body。帳號管理者只有在明確看到 `model_permission_blocked_org`／`model_permission_blocked_project` 時，才依官方文件查看 org/project 模型允許清單；目前沒有這兩碼的證據。1010 是站方規則線索，無法斷言使用者漏了哪個設定，也不能斷言 SDK 可解決。
+本次唯讀證據核對：舊 POST attempt 派送於 `2026-10-01T17:47:21.030752+00:00`（台北 10 月 2 日 01:47:21），HTTP 403、126 ms、`provider_http_error`，沒有 provider request ID／用量，DB schema 無 raw headers／body／ray。匿名 GET 原始工具紀錄位於 main session 的 line 695，紀錄時間 `2026-10-01T17:56:11.202Z`（台北 10 月 2 日 01:56:11）；保存的 body 有固定 `error_code=1010`、`error_name=browser_signature_banned`、`retryable=false`、`owner_action_required=true`，没有保存 response headers／cf-ray。此時間是工具紀錄時間，不冒充精確 HTTP 送出時間。
+
+目前執行 shell 沒有 HTTP(S)／ALL／NO proxy 環境變數，urllib 探測 proxy schemes 為空；程式未指定 proxy，中介與自訂 CA 環境變數亦未設定。這只排除已核對的顯式配置，不能排除透明中介層，也不能回溯證明舊請求環境相同。urllib 預設真實 UA 為 Python-urllib/3.12；Groq SDK 使用 httpx 與自己的 SDK／平台 headers，但官方支援 curl／OpenAI 相容 client，沒有證據把缺 SDK 當成根因。目前專案 Python 3.12.3；Groq／OpenAI SDK 均未安裝，既有 curl 可用。
+
+目前沒有已確認需要使用者「開啟」的設定。只在收到明確碼後，按 [官方 Model Permissions](https://console.groq.com/docs/model-permissions) 分支處理：`model_permission_blocked_org` → [Settings → Organization → Limits](https://console.groq.com/settings/limits)，Owner 查看 Only Allow／Only Block；`model_permission_blocked_project` → 選擇 key 所屬 project，再到 [Settings → Projects → Limits](https://console.groq.com/settings/project/limits)，Developer／Owner 查看。固定模型為 `openai/gpt-oss-20b`，organization 限制優先於 project。目前沒有這兩碼的證據，不要求使用者盲目按 Save 或修改權限。
+
+若正式帶認證請求仍 1010，可由使用者透過 Groq Console 組織選單的 **Chat with us**（入口見[官方相容文件](https://console.groq.com/docs/openai)）或 [Groq Contact](https://groq.com/contact) 提交以下非秘密摘要；本 task 不自行聯絡：
+
+> Ubuntu 使用官方 API 路徑時遇到 HTTP 403。既有認證 POST `/openai/v1/chat/completions` 於 UTC 2026-10-01 17:47:21 回 403，原始原因碼／headers 未保存。後續匿名 GET `/openai/v1/models` 的工具紀錄時間為 UTC 2026-10-01 17:56:11，回 403／1010／browser_signature_banned。匿名測試不等同認證請求；cf-ray 未保存。請協助查核 API 入口的 client fingerprint／Browser Integrity Check／WAF 規則與合法 API client 條件。若有新的正式認證診斷，再附該次 UTC／固定錯誤碼／cf-ray。
+
+Browser Integrity Check 是 Groq 作為網站擁有者的 Cloudflare Security 設定，沒有證據可由 Groq 帳號使用者控制台自行切換；Cloudflare support 也不能覆蓋站方設定。不附 API key、HAR、原始 body、proxy 值；不把「關閉安全檢查」當成使用者必須或可以做的步驟。
 
 ## 可檢閱的下一輪最小範圍
 

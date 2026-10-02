@@ -1,7 +1,7 @@
 """Offline plan by default; a proposed, separately approved remaining-provider check.
 
 Live scope: one Mistral model GET, at most one Mistral POST and one NVIDIA
-Nemotron general LLM POST. Groq remains blocked pending site-owner resolution.
+Nemotron general LLM POST. A separate authenticated Groq diagnosis needs approval.
 No automatic retry, token renewal, model substitution or replay of old tasks.
 """
 
@@ -215,7 +215,9 @@ def main() -> int:
         print("plan_only: 1 Mistral model GET; maximum 2 independent POSTs; no credentials read")
         print("mistral mistral-small-latest max_output_tokens=32 timeout=30; GET gate timeout=15")
         print("nvidia", MODEL, "text_generation max_output_tokens=32 timeout=120 connect=10")
-        print("groq: 0 calls; site-owner resolution required; no identity/IP workaround")
+        print(
+            "groq: 0 calls; separate authenticated diagnosis needs approval; no identity/IP workaround"
+        )
         return 0
     if args.db is None or args.db.resolve() != DB.resolve():
         parser.error("live requires the fixed new receipt DB")

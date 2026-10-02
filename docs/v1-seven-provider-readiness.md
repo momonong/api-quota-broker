@@ -56,7 +56,7 @@ HTTP 200 證明單次 API 呼叫回傳，但不證明免費帳號的餘額或刷
 | 4 | Cloudflare `POST https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/run/@cf/meta/llama-3.2-1b-instruct` × 1 | 驗證修正後 `result.usage` 解析；64 輸出 tokens。若回報 tokens 但沒有實際 Neurons，仍保留 `completed_usage_unknown`。 |
 | 5 | NVIDIA `POST https://integrate.api.nvidia.com/v1/chat/completions` × 1 | 固定 `google/gemma-4-31b-it`、64 輸出 tokens、新提示詞與新識別；舊 `unknown` 不變。若再逾時，只區分「收到 HTTP headers 前」與「讀 body 期間」；前者**不能**再區分 DNS／連線／TLS／首位元組等待／模型執行。 |
 
-總上限為**一筆使用憑證的模型清單 GET、四筆新的獨立推論 POST**，已全部使用。Groq 因 Error 1010 暫不觸碰，網站擁有者解封與組織／專案管理者查權限是外部依賴；OpenRouter、OCR.space 已成功，不重測。不使用 Mistral Enterprise Admin key、不升級付費、不部署。Mistral Free mode／Workspace 可用額度仍須由有權限者在 [Admin Panel](https://docs.mistral.ai/admin/billing-usage/usage-limits) 核對；新呼叫也回 429，但不足以證明兩次為同一原因。Cloudflare 舊 200 的實際 Neurons 若需補帳，應由帳號管理者查 Usage dashboard，不能由新呼叫回填。任何新 GET／POST 均須使用者先**明確擴大原次數上限**。
+總上限為**一筆使用憑證的模型清單 GET、四筆新的獨立推論 POST**，已全部使用。Groq 的匿名 GET 1010 不足以證明認證請求同因；使用者最新方向是先查 Groq，最小下一步為另行批准正式帶認證的有界診斷，只有回明確碼後才交站方或對應 org/project 管理者。先前把站方解封列為必要前置條件的判斷已更正，詳見 [Groq 證據與操作分支](v1-remaining-provider-plan.md#groq)。OpenRouter、OCR.space 已成功，不重測。不使用 Mistral Enterprise Admin key、不升級付費、不部署。Mistral Free mode／Workspace 可用額度仍須由有權限者在 [Admin Panel](https://docs.mistral.ai/admin/billing-usage/usage-limits) 核對；新呼叫也回 429，但不足以證明兩次為同一原因。Cloudflare 舊 200 的實際 Neurons 若需補帳，應由帳號管理者查 Usage dashboard，不能由新呼叫回填。任何新 GET／POST 均須使用者先**明確擴大原次數上限**。
 
 本輪已經執行的唯一 live 命令，**不可重執行**：
 
