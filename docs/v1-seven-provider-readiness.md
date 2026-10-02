@@ -2,7 +2,9 @@
 
 ## 目前結果
 
-**七家均已有API回應／能力證據，Mistral完整回答驗收尚差一步（Cloudflare Neurons仍未知）。** Groq正式路由已HTTP200／stop／完整回答及76+18tokens結算；NVIDIA一般LLM亦已正常Gateway取得完整回答與31+3tokens結算。Mistral正常候選改記`ministral-3b-latest`：修正model gate後HTTP200／completed、7+32tokens正常結算，但length／truncated=true，不能把partial當完整回答驗收；接續零GET512-token驗收。Small歷史429（1300／rate_limited）仍未確認bucket，保留原identity與unknown，不稱全帳戶不可用。另已唯讀重新核對2026-09-30 NVIDIA Riva Gateway22+3tokens成功，這是額外翻譯能力，不替代一般LLM或解釋Gemma逾時。完整條件仍是六家文字API與OCR.space均有免費能力真實成功、統一路由與SQLite。詳見[各輪診斷與驗收](v1-remaining-provider-plan.md)。
+**七家代表能力均已有真實成功證據；Mistral完整回答驗收已通過（Cloudflare Neurons仍未知）。** Groq正常路由HTTP200／stop／完整回答及76+18tokens結算；NVIDIA一般LLM正常Gateway取得完整回答與31+3tokens結算。Mistral的可用正常路徑為`ministral-3b-latest`：修正model gate後取得200與partial結算，再以獨立零GET／1POST完成HTTP200／stop／未截斷／完整回答及13+3tokens結算（台北2026-10-02 14:54:40–41，latency614ms）。Small歷史429（1300／rate_limited）的確切bucket仍未知，舊identity／unknown與3B partial收據保留。六家文字API與OCR.space的代表能力已經統一路由與SQLite驗證；這不等於所有模型全通、持續配額保證或已部署。歷史NVIDIA Riva翻譯成功亦不能解釋Gemma逾時。詳見[各輪診斷與驗收](v1-remaining-provider-plan.md)。
+
+3B已納入catalog與正常transport，但`gateway.example.json`仍是disabled Small，live profile未變；沒有預設路由切換或自動模型替代。正常CLI／API選用3B須有明確且當前資格有效的3B target，再指定`provider=mistral`與`model=ministral-3b-latest`；細節見[3B選用方式](v1-remaining-provider-plan.md#3b-選用方式與設定邊界)。以下各輪失敗與待驗描述是當時狀態，最新結果以上述結論為準。
 
 本分支實作七家固定路由與 SQLite 逐次嘗試紀錄。`scripts/v1_smoke_once.py` 的預設模式只列計畫。本地 fixture 是工程驗證，不能視為帳號或真實服務已通。2026-10-02 在使用者批准後，以五分鐘 config 唯讀 Service Token 執行兩輪初始 smoke。第一輪 NVIDIA 單次 POST 逾時，收據為 `unknown`；Gemini 在送出前失敗，沒有派送。第二輪根據第一輪收據排除 NVIDIA，Gemini 與其餘五家各派送一次。初始範圍合計七家各至多一筆已派送 HTTP，均不重送。舊收據保留在 `.state/v1-smoke-2026-10-02.sqlite` 與 `.state/v1-smoke-2026-10-02-remaining.sqlite`，不存憑證、秘密或回應內容。使用者其後明確批准一次追加診斷，結果如下。
 
@@ -74,11 +76,11 @@ Groq 專項在 main 與本 task 的直接人類批准後，正式工具審查通
 
 | 供應商 | 固定模型／能力 | 官方端點 | Doppler 名稱 |
 | --- | --- | --- | --- |
-| NVIDIA | `google/gemma-4-31b-it`，文字 | `https://integrate.api.nvidia.com/v1/chat/completions` | `NVIDIA_API_KEY` |
+| NVIDIA | `nvidia/nemotron-3.5-lightning-30b-a3b`，文字成功；原Gemma逾時保留 | `https://integrate.api.nvidia.com/v1/chat/completions` | `NVIDIA_API_KEY` |
 | Gemini | `gemini-3.5-flash-lite`，文字；原實測為 `gemini-2.5-flash-lite` | `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent` | `GEMINI_API_KEY` |
 | Cloudflare | `@cf/meta/llama-3.2-1b-instruct`，文字 | `https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/run/@cf/meta/llama-3.2-1b-instruct` | `CLOUDFLARE_API_TOKEN`，`CLOUDFLARE_ACCOUNT_ID` |
 | Groq | `openai/gpt-oss-20b`，文字 | `https://api.groq.com/openai/v1/chat/completions` | `GROQ_API_KEY` |
-| Mistral | `mistral-small-latest`，文字 | `https://api.mistral.ai/v1/chat/completions` | `MISTRAL_API_KEY` |
+| Mistral | `ministral-3b-latest`，文字成功；原Small仍429 | `https://api.mistral.ai/v1/chat/completions` | `MISTRAL_API_KEY` |
 | OpenRouter | `liquid/lfm-2.5-2.6b:free`，文字 | `https://openrouter.ai/api/v1/chat/completions` | `OPENROUTER_API_KEY` |
 | OCR.space | Engine 2，單張 PNG/JPEG | `https://api.ocr.space/parse/image` | `OCRSPACE_API_KEY` |
 
@@ -112,4 +114,6 @@ Groq 專項在 main 與本 task 的直接人類批准後，正式工具審查通
 
 ## 本地驗證
 
-`pytest -q`（221 passed）、`ruff check .`、`ruff format --check .`、`mypy src/quota_broker` 在 Ubuntu 執行；fixture 覆蓋七家固定路由、OCR 表單、秘密不落庫、明確 429 fallback、Cloudflare `3040`／5xx／逾時不 fallback、同帳號 scope 冷卻、逐次監控、smoke plan、前次派送防重跑與個別送出前失敗後續測，以及追加診斷腳本的一筆 fixture GET、四筆 fixture POST、舊收據唯讀與同檔防重跑。另包含未執行的剩餘診斷方案之 curl 邊界、Mistral 固定提示／秘密過濾、NVIDIA 三模型請求回歸及非空答案／stop／用量成功條件 fixture，以及 Groq 專項 gate／安全 ID／異常 credential 零派送。真實 provider 全面可用性、free 帳號資格、配額剩餘和 OCR 對真實文件的品質尚未驗證。
+Ubuntu完整suite由221／238／253進展至model gate首版修正的 **263 passed**；之後精確路由優先與派送防護變更另驗 **28項**，最終零GET完整回答script另驗 **6項**。263不是最終HEAD全套測試數，沒有宣稱最終完整273項通過。fixture涵蓋七家路由、OCR表單、秘密不落庫、quota／cooldown、用量結算、curl邊界、模型gate、截斷與未知用量、舊收據唯讀及防重跑，無真實provider呼叫。最後程式變更後Ruff check／59檔format與mypy 15 source files通過；最終文件diff檢查通過。詳見[驗證鏈](v1-remaining-provider-plan.md#本地驗證)。
+
+本階段live證據限於當時帳戶Free資格與各固定代表能力；未驗證未來配額、所有模型、OCR真實文件品質或常駐部署。Cloudflare Neurons與Small429確切bucket仍未知。最終Mistral收據mode0600／父目錄0700、quick_check ok／FK0，十份舊DB hash不變；沒有秘密、原始回應或實際輸入輸出落庫。

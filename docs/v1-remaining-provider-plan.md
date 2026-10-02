@@ -1,6 +1,6 @@
 # 七家免費能力接通：剩餘診斷方案（2026-10-02）
 
-**NVIDIA一般LLM與Groq正式路由已驗證完整回答及用量結算；Mistral Small隔開低量POST仍429，已取得1300／rate_limited。** 完成條件是六家文字 API（包含 NVIDIA 一般 LLM）與 OCR.space 各取得免費能力的真實成功，經統一 Gateway 路由並記錄 SQLite。目前六家有能力成功回應證據（原四家加Groq、NVIDIA一般LLM）；Mistral剩下固定3B候選的模型bucket假設待驗。NVIDIA新正常Gateway已取得完整回答及用量結算；Cloudflare歷史Neurons仍未知，不把能力成功等同所有帳務欄位完整。不部署；沒有證據顯示使用者缺信用卡、必須升級或必須更換 key。
+**七家代表能力均已有真實成功證據；Mistral 的可用正常路徑為 `ministral-3b-latest`。** 六家文字 API（包含 NVIDIA 一般 LLM）與 OCR.space 均已經統一 Gateway 取得能力成功並記錄 SQLite。Mistral 3B 最終 HTTP200／stop／未截斷，完整回答驗證通過，provider input13／output3 tokens 正常結算；Groq與NVIDIA一般LLM亦已驗證完整回答及用量結算。Small 歷史429／code1300／rate_limited的確切bucket仍未知，Cloudflare歷史Neurons仍未知。代表能力成功不等於所有模型全通、所有帳務欄位完整或已部署；沒有升級付費、更換 key或啟用常駐設定。
 
 ## 先更正 NVIDIA 證據
 
@@ -219,7 +219,17 @@ main依本次200與length的具體證據，將操作預算再增加**1筆固定3
 .venv/bin/python scripts/v1_mistral_formal_once.py --live --db /home/ubuntu/projects/api-quota-broker/.state/v1-mistral-formal-2026-10-02.sqlite
 ```
 
-完整成功須stop／未截斷／非空可見答案／可信實際input-output／ledger正常結算；READY精確比對為附加旗標。最小fixture核對單次正常POST／零GET、用量結算、length／缺用量／timeout／壞key、防重跑及舊partial/unknown不改；實測待正式審查。512若仍未通過，回報具體結果後停止，不無限增加上限。
+完整成功須stop／未截斷／非空可見答案／可信實際input-output／ledger正常結算；READY精確比對為附加旗標。6項最小fixture通過，核對單次正常POST／零GET、用量結算、length／缺用量／timeout／壞key、防重跑及舊partial/unknown不改。
+
+上述精確命令經正式審查通過，在實作commit `039809a` 執行一次。POST派送UTC `2026-10-02T06:54:40.920777+00:00`，完成 `2026-10-02T06:54:41.560639+00:00`（台北14:54:40–41）。**HTTP200／completed／finish_reason=stop／response_truncated=false／visible_answer_present=true／ready_exact_match=true／full_answer_verified=true**；provider input13／output3 tokens，ledger completed／settled_provider_usage，latency614ms。curl累積DNS166ms／TCP171ms／TLS185ms／TTFB608ms／total608ms。沒有保留符合規則的provider request ID；原始回應與實際回答均丟棄。
+
+新DB mode0600／父目錄0700，quick_check=ok、foreign_key_check0；恰好1task、1Mistral POST，沒有diagnostic_gets表（零GET）。輸入估算444已按實際13結算，444不是provider用量。秘密／prompt／answer／choices標記未落庫，十份舊DB SHA-256前後一致；前輪7+32／length的partial仍正常結算，歷史unknown與hold未改寫。本輪完整回答驗收完成，上限已使用，不再追加API請求。
+
+### 3B 選用方式與設定邊界
+
+catalog與正常`provider_http`已支援固定`ministral-3b-latest`；這次script建立獨立、短效已核對資格的runtime target，經`Gateway.run`執行。model gate修正為優先採精確latest項的chat／access證據，將exact／canonical／alias候選數分開，避免把多個有效別名誤判為不可見。
+
+`gateway.example.json`的Mistral target仍是Small且disabled；`.state/gateway-live-profile.json`未更動，預設或常駐路由沒有切換。若後續要在正常CLI／API選用3B，須在使用者指定的local config建立明確的3B target：model=`ministral-3b-latest`、官方Mistral chat endpoint、secret_ref=`MISTRAL_API_KEY`，核對當前Free資格／billing／account scope／local caps與期限，並以`provider=mistral`、`model=ministral-3b-latest`限定請求。單改請求model不會建立合格target；沒有自動替代Small或fallback。本階段沒有啟用或部署該設定。
 
 ## 先前一次性診斷方案（未執行，已由上述新階段取代）
 
@@ -253,4 +263,6 @@ Doppler `api-quota-broker/dev` 五分鐘整個 config 唯讀 Service Token 一�
 
 ## 本地驗證
 
-Ubuntu 本地完整 suite 為 `221 passed`；剩餘診斷的 43 項 fixture 驗證 stdin config 真正經既有 curl 解析、`file:///dev/null` 的 write-out delimiter、HTTP/2／1xx、逾時不採用部分回答、輸出上限／deadline kill child、Mistral gate、固定訊息分類與秘密過濾、三個 NVIDIA 模型請求回歸、空答案／length／缺 finish_reason 維持 unknown、malformed HTTP 200 保留狀態與 timing、舊 DB 不變及同檔拒絕重跑；另含上述 Groq 專項 24 項 fixture及正式整合28項行為驗證，以及本階段NVIDIA／Mistral正式路由16項fixture。測試只用 fixture、loopback 與空本地檔案，不呼叫 provider。`ruff check .`、`ruff format --check .`、`mypy src/quota_broker` 及 `git diff --check` 通過；Groq與本輪NVIDIA／Mistral live收據已建立；先前未執行的一次性方案保持未執行。
+Ubuntu完整suite依修正階段為221、238、253，model gate首版修正後 **263 passed**。其後精確路由優先與防意外派送變更的受影響fixture **28 passed**；最終零GET／512-token腳本 **6 passed**。263是其後兩項變更前的完整回歸，不能稱最終HEAD跑過完整273項。安全錯誤／header修正另有受影響77項通過。測試涵蓋正常路由、用量結算、別名gate、秘密過濾、curl邊界、逾時／截斷、舊收據不改及同檔防重跑，只用fixture、loopback與空本地檔案，不呼叫provider。
+
+最後程式變更後`ruff check .`、`ruff format --check .`（59 files）、`mypy src/quota_broker`（15 source files）及diff檢查通過。Groq／NVIDIA／Mistral的live完整回答收據已建立；本次最終文件修改另通過`git diff --check`。先前未執行的一次性方案保持未執行，歷史結果依當時證據保留。
