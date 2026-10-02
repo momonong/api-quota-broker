@@ -2,6 +2,8 @@
 
 ## 目前結果
 
+**完成條件仍是七家各至少一個免費能力真實成功並接統一路由／SQLite；不是四家成功即收尾。** 另已唯讀重新核對 2026-09-30 的 `.state/gateway-live-once.sqlite`，NVIDIA Riva 曾經 Gateway 成功並結算（22 輸入、3 輸出 tokens），先前回報漏列這份證據。這是歷史成功，不能當成今天仍可用，也不解釋 Gemma 的逾時。新 NVIDIA／Mistral／Groq 研究、修正與**未執行**方案見 [剩餘供應商診斷方案](v1-remaining-provider-plan.md)。
+
 本分支實作七家固定路由與 SQLite 逐次嘗試紀錄。`scripts/v1_smoke_once.py` 的預設模式只列計畫。本地 fixture 是工程驗證，不能視為帳號或真實服務已通。2026-10-02 在使用者批准後，以五分鐘 config 唯讀 Service Token 執行兩輪初始 smoke。第一輪 NVIDIA 單次 POST 逾時，收據為 `unknown`；Gemini 在送出前失敗，沒有派送。第二輪根據第一輪收據排除 NVIDIA，Gemini 與其餘五家各派送一次。初始範圍合計七家各至多一筆已派送 HTTP，均不重送。舊收據保留在 `.state/v1-smoke-2026-10-02.sqlite` 與 `.state/v1-smoke-2026-10-02-remaining.sqlite`，不存憑證、秘密或回應內容。使用者其後明確批准一次追加診斷，結果如下。
 
 | 供應商 | 實測收據 | HTTP | 回報用量 | 本地估算／限制 |
@@ -102,4 +104,4 @@ HTTP 200 證明單次 API 呼叫回傳，但不證明免費帳號的餘額或刷
 
 ## 本地驗證
 
-`pytest -q`（110 passed）、`ruff check .`、`ruff format --check .`、`mypy src/quota_broker` 在 Ubuntu 執行；fixture 覆蓋七家固定路由、OCR 表單、秘密不落庫、明確 429 fallback、Cloudflare `3040`／5xx／逾時不 fallback、同帳號 scope 冷卻、逐次監控、smoke plan、前次派送防重跑與個別送出前失敗後續測，以及新診斷腳本的一筆 fixture GET、四筆 fixture POST、舊收據唯讀與同檔防重跑。真實 provider 全面可用性、free 帳號資格、配額剩餘和 OCR 對真實文件的品質尚未驗證。
+`pytest -q`（123 passed）、`ruff check .`、`ruff format --check .`、`mypy src/quota_broker` 在 Ubuntu 執行；fixture 覆蓋七家固定路由、OCR 表單、秘密不落庫、明確 429 fallback、Cloudflare `3040`／5xx／逾時不 fallback、同帳號 scope 冷卻、逐次監控、smoke plan、前次派送防重跑與個別送出前失敗後續測，以及追加診斷腳本的一筆 fixture GET、四筆 fixture POST、舊收據唯讀與同檔防重跑。另包含未執行的剩餘診斷方案之 curl 邊界與 Mistral 安全欄位 fixture。真實 provider 全面可用性、free 帳號資格、配額剩餘和 OCR 對真實文件的品質尚未驗證。

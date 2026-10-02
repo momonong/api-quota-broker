@@ -5,9 +5,11 @@ import re
 import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import UTC, datetime
 
 from .catalog import MODELS, endpoint
 from .client import _NoRedirect
+from .retry import parse_retry_after
 
 MAX_RESPONSE_BYTES = 65_536
 RIVA = "nvidia/riva-translate-4b-instruct-v2"
@@ -224,6 +226,50 @@ def safe_http_error_code(provider: str, status: int, raw: bytes) -> str:
         if error.get("code") == "model_permission_blocked_project":
             return "groq_model_blocked_project"
     return "provider_http_error"
+
+
+def safe_response_diagnostics(
+    provider: str, status: int, headers: dict[str, str], raw: bytes
+) -> dict[str, str | int | bool | None]:
+    """Allowlisted structure only; never copy prose or unrecognized field values."""
+    normalized = {name.lower(): value for name, value in headers.items()}
+    mime = normalized.get("content-type", "").split(";", 1)[0].strip().lower()
+    diagnostics: dict[str, str | int | bool | None] = {
+        "content_type": mime
+        if mime in {"application/json", "text/html", "text/event-stream"}
+        else "other",
+        "retry_after_seconds": parse_retry_after(normalized.get("retry-after"), datetime.now(UTC)),
+    }
+    try:
+        data = json.loads(raw)
+    except (ValueError, TypeError):
+        diagnostics["body_shape"] = "non_json"
+        return diagnostics
+    if not isinstance(data, dict):
+        diagnostics["body_shape"] = "non_object"
+        return diagnostics
+    error = data if data.get("object") == "error" else data.get("error")
+    diagnostics["body_shape"] = (
+        "top_level_error"
+        if data.get("object") == "error"
+        else "nested_error"
+        if isinstance(error, dict)
+        else "other_object"
+    )
+    if isinstance(error, dict):
+        kind = error.get("type")
+        diagnostics["error_type"] = (
+            kind
+            if isinstance(kind, str)
+            and kind
+            in {"invalid_request_error", "authentication_error", "rate_limit_error", "server_error"}
+            else "unclassified"
+        )
+        diagnostics["error_code_present"] = error.get("code") is not None
+        diagnostics["error_param_is_model"] = error.get("param") == "model"
+    if status != 200:
+        diagnostics["error_code"] = safe_http_error_code(provider, status, raw)
+    return diagnostics
 
 
 def explicit_quota_rejection(
