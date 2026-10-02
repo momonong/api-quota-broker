@@ -109,6 +109,8 @@ def test_fixed_request_bucket_headers_are_numeric_bounded_and_secret_filtered():
         "X-RateLimit-Limit-Requests-Minute": "12",
         "X-RateLimit-Remaining-Requests-Day": "0",
         "X-RateLimit-Reset-Requests-Second": "1",
+        "X-RateLimit-Limit-Req-Minute": "4",
+        "X-RateLimit-Remaining-Req-10-Second": "0",
         "X-RateLimit-Unknown": "123",
         "X-RateLimit-Limit-Tokens": "12345678901",
         "X-RateLimit-Remaining-Tokens": "123",
@@ -117,6 +119,8 @@ def test_fixed_request_bucket_headers_are_numeric_bounded_and_secret_filtered():
     assert details["x_ratelimit_limit_requests_minute"] == 12
     assert details["x_ratelimit_remaining_requests_day"] == 0
     assert details["x_ratelimit_reset_requests_second"] == 1
+    assert details["x_ratelimit_limit_req_minute"] == 4
+    assert details["x_ratelimit_remaining_req_10_second"] == 0
     assert "x_ratelimit_unknown" not in details
     assert "x_ratelimit_limit_tokens" not in details
     assert "x_ratelimit_remaining_tokens" not in details

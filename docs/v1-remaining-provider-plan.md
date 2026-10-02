@@ -1,6 +1,6 @@
 # 七家免費能力接通：剩餘診斷方案（2026-10-02）
 
-**NVIDIA一般LLM與Groq正式路由已驗證完整回答及用量結算；Mistral429等待帳戶Limits資料。** 完成條件是六家文字 API（包含 NVIDIA 一般 LLM）與 OCR.space 各取得免費能力的真實成功，經統一 Gateway 路由並記錄 SQLite。目前六家有能力成功回應證據（原四家加Groq、NVIDIA一般LLM）；Mistral仍為429，等待帳戶Limits資料。NVIDIA新正常Gateway已取得完整回答及用量結算；Cloudflare歷史Neurons仍未知，不把能力成功等同所有帳務欄位完整。Groq單元以外，本次新增NVIDIA／Mistral各1GET與1POST；不部署；沒有證據顯示使用者缺信用卡、必須升級或必須更換 key。
+**NVIDIA一般LLM與Groq正式路由已驗證完整回答及用量結算；Mistral Small隔開低量POST仍429，已取得1300／rate_limited。** 完成條件是六家文字 API（包含 NVIDIA 一般 LLM）與 OCR.space 各取得免費能力的真實成功，經統一 Gateway 路由並記錄 SQLite。目前六家有能力成功回應證據（原四家加Groq、NVIDIA一般LLM）；Mistral剩下固定3B候選的模型bucket假設待驗。NVIDIA新正常Gateway已取得完整回答及用量結算；Cloudflare歷史Neurons仍未知，不把能力成功等同所有帳務欄位完整。不部署；沒有證據顯示使用者缺信用卡、必須升級或必須更換 key。
 
 ## 先更正 NVIDIA 證據
 
@@ -167,7 +167,13 @@ Mistral本輪已排除「本次models請求未到API／固定Small未列出」�
 
 完整回歸 **238 passed**；追加固定requests bucket headers數值／秘密過濾fixture另行通過。Ruff／format／mypy／diff檢查通過。測試只使用fixture／loopback，不是Mistral推論證據。成功驗收須HTTP200、非空文字、stop、未截斷、完整可信input/output與ledger已結算；若仍失敗，保留具體安全錯誤資料後交main，沒有第三筆POST。
 
-目前執行狀態：實測待正式工具審查，前輪429仍保留，不追認。
+此精確命令於本地提交`53dc971`後經正式工具審查獲准，**已執行一次、不可重跑**。UTC `2026-10-02T06:17:50.802690+00:00`派送、`06:17:51.231650+00:00`完成（台北14:17:50–51），HTTP429，latency401ms，供應商machine code **1300**、type **rate_limited**、object=error、param=null；安全摘要`rate limit exceeded`（詞彙投影，非全文），未得到Retry-After或allowlist內數值限流headers、無安全ID／用量。傳輸成功，累積DNS43ms／TCP51ms／TLS68ms／TTFB389ms／total389ms。Gateway與ledger保留unknown／held_estimate，input estimate304與1request hold；**304不是供應商用量**。沒有答案或重試。
+
+與前輪Small完成相隔約67分3.6秒，這輪零GET、max_tokens32、reasoning=none；因此前次57ms GET→POST距離不能解釋全部失敗，也不能直接證明是月用量／全帳戶禁止。已確認本次API回報限流；bucket仍未由1300或generic訊息指出。原始headers未存，allowlist未命中不等於供應商完全沒有返回限流header。執行後把固定header命名規則補齊`req/requests/token/tokens`，及second/10-second/minute/hour/day/month；fixture驗證req-minute與req-10-second，**不回補或重跑已結束請求**。
+
+新DB0600／父目錄0700，quick_check=ok、foreign_key_check0；1 task、只有Mistral1已派送POST，零GET（沒有diagnostic_gets表）。未保存secret marker、prompt、answer、choices；七份舊DB SHA-256前後一致。執行後受影響fixture **77 passed**，Ruff／mypy／diff檢查通過；完整238項回歸是此前同階段實作的驗證，新增header規則已補驗。
+
+後續main經既定orchestrate將操作預算增加至最多1認證models GET＋1固定Ministral3B新POST，依同一人類第2702行的解決問題方向與既有免費階段；這是main具體化的有界診斷，**不是人類逐字要求新增次數**。新假設為Small模型bucket受限但小型3B可用；只有固定候選可見且免費資格不矛盾才POST，GET後隔數秒、不重試。另行固定新DB與request key，保留全部Small歷史身份／unknown，其他providers零呼叫。
 
 ## 先前一次性診斷方案（未執行，已由上述新階段取代）
 

@@ -491,26 +491,11 @@ def _mistral_error_fields(
 
     # Exact recognized names only. Values are bounded numeric counters/reset seconds,
     # not raw headers. Their presence is evidence, not proof of a particular bucket.
-    names = (
-        "x-ratelimit-limit",
-        "x-ratelimit-remaining",
-        "x-ratelimit-reset",
-        "x-ratelimit-limit-requests",
-        "x-ratelimit-remaining-requests",
-        "x-ratelimit-reset-requests",
-        "x-ratelimit-limit-tokens",
-        "x-ratelimit-remaining-tokens",
-        "x-ratelimit-reset-tokens",
-        "x-ratelimit-limit-tokens-minute",
-        "x-ratelimit-remaining-tokens-minute",
-        "x-ratelimit-reset-tokens-minute",
-        "x-ratelimit-limit-tokens-month",
-        "x-ratelimit-remaining-tokens-month",
-        "x-ratelimit-reset-tokens-month",
-    ) + tuple(
-        f"x-ratelimit-{kind}-requests-{window}"
+    names = tuple(f"x-ratelimit-{kind}" for kind in ("limit", "remaining", "reset")) + tuple(
+        f"x-ratelimit-{kind}-{metric}{window}"
         for kind in ("limit", "remaining", "reset")
-        for window in ("second", "minute", "day")
+        for metric in ("req", "requests", "token", "tokens")
+        for window in ("", "-second", "-10-second", "-minute", "-hour", "-day", "-month")
     )
     for name in names:
         value = headers.get(name)
@@ -588,7 +573,14 @@ def safe_response_diagnostics(
             kind
             if isinstance(kind, str)
             and kind
-            in {"invalid_request_error", "authentication_error", "rate_limit_error", "server_error"}
+            in {
+                "invalid_request_error",
+                "authentication_error",
+                "rate_limit_error",
+                "rate_limited",
+                "rate_limit_exceeded",
+                "server_error",
+            }
             else "unclassified"
         )
         diagnostics["error_code_present"] = error.get("code") is not None
