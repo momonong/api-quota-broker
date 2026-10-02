@@ -90,6 +90,8 @@ def official_request(
             )
         else:
             payload["max_tokens"] = max_output_tokens
+            if provider == "mistral" and model_id == "mistral-small-latest":
+                payload["reasoning_effort"] = "none"
         return url, {"Authorization": "Bearer " + secret}, payload
     if provider == "google":
         return (
@@ -283,7 +285,7 @@ def safe_http_error_code(provider: str, status: int, raw: bytes) -> str:
         provider == "mistral"
         and status == 429
         and data.get("object") == "error"
-        and data.get("type") == "rate_limit_error"
+        and data.get("type") in ("rate_limit_error", "rate_limited", "rate_limit_exceeded")
     ):
         return "mistral_rate_limit_error"
     if provider == "mistral" and status == 429:
@@ -382,12 +384,138 @@ def _mistral_reason(data: object, sensitive_values: tuple[str, ...]) -> dict[str
                 return result
     elif isinstance(message, str):
         result["message_exceeds_bound"] = True
-    if error.get("type") in ("rate_limit_error", "rate_limited"):
+    if error.get("type") in ("rate_limit_error", "rate_limited", "rate_limit_exceeded"):
         result.update(
             reason_category="rate_limit_scope_unknown",
             reason_basis="fixed_type",
             next_check="check_model_rate_and_monthly_limits",
         )
+    return result
+
+
+def _mistral_error_fields(
+    data: dict[str, object], headers: dict[str, str], sensitive_values: tuple[str, ...]
+) -> dict[str, str | int | bool | None]:
+    """Keep bounded error evidence, never arbitrary text, identifiers or echoed content.
+
+    Unknown code/type/param strings are not safe merely because they are short.
+    Error prose is projected onto a fixed diagnostic vocabulary; all other words,
+    numbers, URLs, addresses and credential-like strings are discarded.
+    """
+    result: dict[str, str | int | bool | None] = {}
+    error = data.get("error") if isinstance(data.get("error"), dict) else data
+    assert isinstance(error, dict)
+
+    def reflected(value: str) -> bool:
+        return any(secret and secret.casefold() in value.casefold() for secret in sensitive_values)
+
+    for field, allowed in (
+        ("object", {"error"}),
+        (
+            "type",
+            {
+                "invalid_request_error",
+                "authentication_error",
+                "rate_limit_error",
+                "rate_limited",
+                "rate_limit_exceeded",
+                "server_error",
+            },
+        ),
+        ("param", {"model", "max_tokens", "reasoning_effort", "messages", "stream"}),
+        ("code", {"unknown_model"}),
+    ):
+        value = error.get(field)
+        safe: str | int | None = None
+        if isinstance(value, str) and not reflected(value):
+            if value in allowed:
+                safe = value
+            elif field == "code" and re.fullmatch(r"[0-9]{1,5}", value):
+                safe = int(value)
+        elif (
+            field == "code"
+            and type(value) is int
+            and 0 <= value <= 99_999
+            and not reflected(str(value))
+        ):
+            safe = value
+        result["provider_error_" + field] = safe
+        result["provider_error_" + field + "_present"] = value is not None
+
+    message = error.get("message")
+    if message is None:
+        detail = error.get("detail")
+        message = detail.get("message") if isinstance(detail, dict) else detail
+    if isinstance(message, str):
+        # Do not cut a long word/identifier into an apparently allowlisted prefix.
+        if len(message) > 4096:
+            result["provider_error_message_safe"] = "[omitted: exceeds bound]"
+            result["provider_error_message_redacted"] = True
+        else:
+            redacted = False
+            for secret in sensitive_values:
+                if secret and re.search(re.escape(secret), message, re.IGNORECASE):
+                    message = re.sub(re.escape(secret), "[redacted]", message, flags=re.IGNORECASE)
+                    redacted = True
+            # Remove grouped credentials, quoted echoes and PII before word projection.
+            message, changes = re.subn(
+                r"\b(?:bearer|basic)\s+\S+|https?://\S+|\S+@\S+|[\"'][^\"']*[\"']",
+                "[redacted]",
+                message,
+                flags=re.IGNORECASE,
+            )
+            redacted |= bool(changes)
+            vocabulary = set(
+                "a an the this for of to and or is are has have been be on in per "  # noqa: SIM905
+                "rate limit limits exceeded reached exhausted too many requests request "
+                "second seconds minute minutes month monthly tokens token quota quotas "
+                "tpm rps rpm workspace organization budget spending service tier capacity "
+                "insufficient unavailable temporarily please try again later maximum "
+                "model models invalid unknown parameter parameters authentication "
+                "unauthorized forbidden api key credits credit balance billing free account "
+                "access denied disabled enabled completion completions server error "
+                "not found supported required current available usage throughput concurrent".split()
+            )
+            words = []
+            for word in message.casefold().split():
+                normalized = word.strip(".,:;!?()")
+                if normalized in vocabulary:
+                    words.append(normalized)
+                else:
+                    redacted = True
+                    if not words or words[-1] != "[redacted]":
+                        words.append("[redacted]")
+            projected = " ".join(words)
+            result["provider_error_message_safe"] = projected[:256]
+            result["provider_error_message_redacted"] = redacted or len(projected) > 256
+
+    # Exact recognized names only. Values are bounded numeric counters/reset seconds,
+    # not raw headers. Their presence is evidence, not proof of a particular bucket.
+    names = (
+        "x-ratelimit-limit",
+        "x-ratelimit-remaining",
+        "x-ratelimit-reset",
+        "x-ratelimit-limit-requests",
+        "x-ratelimit-remaining-requests",
+        "x-ratelimit-reset-requests",
+        "x-ratelimit-limit-tokens",
+        "x-ratelimit-remaining-tokens",
+        "x-ratelimit-reset-tokens",
+        "x-ratelimit-limit-tokens-minute",
+        "x-ratelimit-remaining-tokens-minute",
+        "x-ratelimit-reset-tokens-minute",
+        "x-ratelimit-limit-tokens-month",
+        "x-ratelimit-remaining-tokens-month",
+        "x-ratelimit-reset-tokens-month",
+    ) + tuple(
+        f"x-ratelimit-{kind}-requests-{window}"
+        for kind in ("limit", "remaining", "reset")
+        for window in ("second", "minute", "day")
+    )
+    for name in names:
+        value = headers.get(name)
+        if isinstance(value, str) and re.fullmatch(r"[0-9]{1,10}", value) and not reflected(value):
+            result[name.replace("-", "_")] = int(value)
     return result
 
 
@@ -399,7 +527,7 @@ def safe_response_diagnostics(
     *,
     sensitive_values: tuple[str, ...] = (),
 ) -> dict[str, str | int | bool | None]:
-    """Allowlisted structure only; never copy prose or unrecognized field values."""
+    """Bounded allowlisted diagnostics; Mistral error text uses a fixed vocabulary."""
     normalized = {name.lower(): value for name, value in headers.items()}
     mime = normalized.get("content-type", "").split(";", 1)[0].strip().lower()
     diagnostics: dict[str, str | int | bool | None] = {
@@ -412,6 +540,8 @@ def safe_response_diagnostics(
         data = json.loads(raw)
     except (ValueError, TypeError):
         diagnostics["body_shape"] = "non_json"
+        if provider == "mistral" and status >= 400:
+            diagnostics.update(_mistral_error_fields({}, normalized, sensitive_values))
         if provider == "mistral" and status == 429:
             diagnostics.update(_mistral_reason(None, sensitive_values))
         return diagnostics
@@ -420,6 +550,8 @@ def safe_response_diagnostics(
     if not isinstance(data, dict):
         diagnostics["body_shape"] = "non_object"
         return diagnostics
+    if provider == "mistral" and status >= 400:
+        diagnostics.update(_mistral_error_fields(data, normalized, sensitive_values))
     if provider == "nvidia" and status == 200:
         choices = data.get("choices")
         first = choices[0] if isinstance(choices, list) and choices else None

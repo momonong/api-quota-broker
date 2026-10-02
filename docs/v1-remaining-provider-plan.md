@@ -151,6 +151,24 @@ Mistral本輪已排除「本次models請求未到API／固定Small未列出」�
 
 **狀態：NVIDIA一般LLM正常路由及SQLite結算驗證完成；Mistral正式診斷／監控整合完成，429仍待帳戶Limits資料，整個兩問題階段尚未全部完成。** 新資料由main經orchestrate交回原task後再定位必要修正；目前不追加POST或要求使用者換key／升級。
 
+## Mistral 隔開請求、低用量與錯誤證據修正（2026-10-02）
+
+沿原task續辦，核對main原始session第2702行：UTC `2026-10-02T06:01:37.789Z`、role=user、message `msg_01a0fb34-34fd-7942-915c-67518b103dea`，人類要求直接解決Mistral429。由既定orchestrate交接，不再把瀏覽器Limits存取當成單次診斷前置；保留前階段第二筆新POST上限，其他provider零呼叫、無付費／帳戶變更／部署／push／merge。
+
+先修正本地診斷資料遺失：正常Gateway現在另外記`provider_error_object/type/param/code`及各欄位是否存在；字串僅接受固定allowlist，未知type/code文字不落庫，數值code限0–99999（保留實際機器碼，不推定意義）。精確key與任務input在記憶體先移除；錯誤message≤4096字元才處理，再移除認證字串、引用內容、URL、email，投影到固定錯誤詞彙；其他詞、數字、識別資料均以redacted替代，輸出≤256字元。`provider_error_message_safe`是**刪減後診斷摘要，不是原文**，不保存答案、任意prose或raw body。只保留固定rate-limit headers名稱及≤10位純數值counter/reset；涵蓋requests的second/minute/day與tokens的minute/month，未知headers不保存。這些reported值不等於已定位limit bucket，也不改`explicit_quota_rejection`、hold或fallback契約。
+
+[官方reasoning文件](https://docs.mistral.ai/studio/conversations/reasoning)確認Small支援`reasoning_effort=none`，回應content為字串；[Chat API](https://docs.mistral.ai/api/endpoint/chat)亦列none參數。正常Small路由明確使用none以保持短純文字回答；不能把這項設定或降低max_tokens當作429根因已知。
+
+`scripts/v1_mistral_isolated_once.py`預設offline。live固定新DB `.state/v1-mistral-isolated-2026-10-02.sqlite`／新request key，exclusive0600；舊3份診斷加前階段DB只讀核對Mistral已派送3次，前輪model gate必須為true，與前輪完成時間至少隔60秒（不自動等待）。**零GET、最多1 POST**，正常Gateway／預設provider_http，`mistral-small-latest`、user=`Reply READY.`、max_tokens32、reasoning_effort=none、stream=false、30秒、無retry／redirect／UA／IP／proxy覆寫。Doppler `api-quota-broker/dev`整config唯讀5分鐘token，僅cache讀MISTRAL_API_KEY一次、僅程序記憶體、無續期。只保存安全metadata／UTC／用量／布林；同DB拒絕重跑，歷史unknown不改。
+
+```bash
+.venv/bin/python scripts/v1_mistral_isolated_once.py --live --db /home/ubuntu/projects/api-quota-broker/.state/v1-mistral-isolated-2026-10-02.sqlite
+```
+
+完整回歸 **238 passed**；追加固定requests bucket headers數值／秘密過濾fixture另行通過。Ruff／format／mypy／diff檢查通過。測試只使用fixture／loopback，不是Mistral推論證據。成功驗收須HTTP200、非空文字、stop、未截斷、完整可信input/output與ledger已結算；若仍失敗，保留具體安全錯誤資料後交main，沒有第三筆POST。
+
+目前執行狀態：實測待正式工具審查，前輪429仍保留，不追認。
+
 ## 先前一次性診斷方案（未執行，已由上述新階段取代）
 
 以下是**待 main 取得一次明確追加批准**的方案；原次數上限已用完。

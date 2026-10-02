@@ -688,7 +688,7 @@ class Gateway:
                         status,
                         response_headers,
                         response,
-                        sensitive_values=(secret,),
+                        sensitive_values=(secret, data["input"]),
                     )
                     if isinstance(response_headers, ProviderHeaders):
                         diagnostics.update(safe_transport_diagnostics(response_headers.diagnostics))
