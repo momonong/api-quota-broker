@@ -29,6 +29,18 @@ def _quote(value: str) -> str:
     return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
+def metrics_template() -> str:
+    fields = {"http_code": "%{http_code}", "exitcode": "%{exitcode}"}
+    fields.update({name: "%{" + name + "}" for name in TIMINGS})
+    template = (
+        MARKER.decode().replace("\n", "\\n")
+        + "{"
+        + ",".join(json.dumps(name) + ":" + value for name, value in fields.items())
+        + "}"
+    )
+    return template.replace('"http_code":%{http_code}', '"http_code":"%{http_code}"')
+
+
 def run_curl(config: bytes, timeout: float) -> tuple[int, bytes]:
     """Bound output while draining, and kill on deadline. stderr is discarded."""
     with subprocess.Popen(
@@ -86,16 +98,7 @@ def nvidia_http(
         raise ProviderError("unapproved diagnostic payload")
     if not 0 < timeout <= 120:
         raise ProviderError("unapproved diagnostic timeout")
-    fields = {"http_code": "%{http_code}", "exitcode": "%{exitcode}"}
-    fields.update({name: "%{" + name + "}" for name in TIMINGS})
-    write_out = (
-        MARKER.decode().replace("\n", "\\n")
-        + "{"
-        + ",".join(json.dumps(name) + ":" + value for name, value in fields.items())
-        + "}"
-    )
-    # http_code is emitted as 000 without a response; quote it to remain valid JSON.
-    write_out = write_out.replace('"http_code":%{http_code}', '"http_code":"%{http_code}"')
+    write_out = metrics_template()
     options = [
         "url = " + _quote(URL),
         'request = "POST"',
@@ -114,6 +117,12 @@ def nvidia_http(
         "write-out = " + _quote(write_out),
     ]
     code, output = run_curl(("\n".join(options) + "\n").encode(), timeout)
+    return parse_curl_result(code, output, 123)
+
+
+def parse_curl_result(
+    code: int, output: bytes, max_time: float
+) -> tuple[int | None, dict[str, str], bytes, dict[str, int | str | None]]:
     head_body, sep, metrics_raw = output.rpartition(MARKER)
     if not sep or len(metrics_raw) > 2048:
         raise ProviderError("curl_metrics_missing")
@@ -122,7 +131,11 @@ def nvidia_http(
         diagnostics: dict[str, int | str | None] = {}
         for name in TIMINGS:
             value = metrics[name]
-            if type(value) not in (int, float) or not math.isfinite(value) or not 0 <= value <= 123:
+            if (
+                type(value) not in (int, float)
+                or not math.isfinite(value)
+                or not 0 <= value <= max_time
+            ):
                 raise ValueError("invalid timing")
             diagnostics[name + "_ms"] = round(value * 1000)
         status_text = metrics["http_code"]

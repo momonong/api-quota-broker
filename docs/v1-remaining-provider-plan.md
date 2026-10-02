@@ -1,6 +1,6 @@
 # 七家免費能力接通：剩餘診斷方案（2026-10-02）
 
-**本文件與新腳本已準備；沒有新 live 派送。** 完成條件是六家文字 API（包含 NVIDIA 一般 LLM）與 OCR.space 各取得免費能力的真實成功，經統一 Gateway 路由並記錄 SQLite。目前四家成功；NVIDIA、Mistral、Groq 尚未完成。沒有證據顯示使用者缺信用卡、必須升級或必須更換 key。
+**Groq 專項已執行一筆 GET、一筆 POST，兩筆 HTTP 200；其餘新方案未執行。** 完成條件是六家文字 API（包含 NVIDIA 一般 LLM）與 OCR.space 各取得免費能力的真實成功，經統一 Gateway 路由並記錄 SQLite。目前四家有完整能力成功證據；Groq 已取得認證與推論成功證據，但本輪 32-token 截斷，尚未通過完整回答條件。NVIDIA／Mistral 仍未完成。沒有證據顯示使用者缺信用卡、必須升級或必須更換 key。
 
 ## 先更正 NVIDIA 證據
 
@@ -47,7 +47,7 @@
 
 [GPT-OSS 官方 API](https://console.groq.com/docs/api-reference)支援目前 low reasoning／不輸出 reasoning 參數；[model permissions](https://console.groq.com/docs/model-permissions)的 org/project block 與 [Cloudflare 1010](https://developers.cloudflare.com/support/troubleshooting/http-status-codes/cloudflare-1xxx-errors/error-1010/) 是不同分支。舊 POST body 未留存，不能追認其原因；新的無認證 GET 曾回 1010。官方 models GET 範例明確帶 Bearer key，匿名探針不等同完整的官方請求，不能直接推論帶認證 SDK／POST 也會被同一規則封鎖。
 
-**現有可執行的 Mistral／NVIDIA 方案對 Groq 為零呼叫。使用者最新方向是先處理 Groq，暫不啟動其餘方案。** 前版「一定先找站方解封」判斷過早，已撤回。最小下一步是另行取得追加上限後，以正式帶認證的官方 client／官方 curl 範例驗證：最多一筆 models GET，成功且固定 `openai/gpt-oss-20b` 可見才送最多一筆 32-token POST；30 秒 timeout、無 retry／redirect／自訂 UA／proxy／IP，不顯示或保存秘密及 raw body。若採 SDK，要明確 `max_retries=0`、client `follow_redirects=False` 並關閉 debug logging；目前 SDK 未安裝，不複製它的 headers 偽裝成 SDK。這個 Groq 階段尚未批准、未新增執行腳本或呼叫。只有正式帶認證請求仍回 1010 才需要站方檢查規則；若官方 org/project block，才查對應帳號設定。
+**現有 Mistral／NVIDIA 方案對 Groq 為零呼叫。使用者最新方向是先處理 Groq，暫不啟動其餘方案。** 前版「一定先找站方解封」判斷過早，已撤回。Groq 專項另有最小執行腳本；main 與本執行 task 先後取得直接人類批准，正式審查通過後已執行一筆認證 models GET、一筆固定模型 32-token POST（詳下節）。兩筆各 30 秒 timeout、無 retry／redirect／自訂 UA／proxy／IP，不顯示或保存秘密及 raw body。採本機既有 curl 與它的自然身分，不安裝或偽裝 SDK。本輪兩筆均 200，沒有 1010 或 org/project block，現無證據要求使用者改權限或找站方解封。
 
 本次唯讀證據核對：舊 POST attempt 派送於 `2026-10-01T17:47:21.030752+00:00`（台北 10 月 2 日 01:47:21），HTTP 403、126 ms、`provider_http_error`，沒有 provider request ID／用量，DB schema 無 raw headers／body／ray。匿名 GET 原始工具紀錄位於 main session 的 line 695，紀錄時間 `2026-10-01T17:56:11.202Z`（台北 10 月 2 日 01:56:11）；保存的 body 有固定 `error_code=1010`、`error_name=browser_signature_banned`、`retryable=false`、`owner_action_required=true`，没有保存 response headers／cf-ray。此時間是工具紀錄時間，不冒充精確 HTTP 送出時間。
 
@@ -60,6 +60,39 @@
 > Ubuntu 使用官方 API 路徑時遇到 HTTP 403。既有認證 POST `/openai/v1/chat/completions` 於 UTC 2026-10-01 17:47:21 回 403，原始原因碼／headers 未保存。後續匿名 GET `/openai/v1/models` 的工具紀錄時間為 UTC 2026-10-01 17:56:11，回 403／1010／browser_signature_banned。匿名測試不等同認證請求；cf-ray 未保存。請協助查核 API 入口的 client fingerprint／Browser Integrity Check／WAF 規則與合法 API client 條件。若有新的正式認證診斷，再附該次 UTC／固定錯誤碼／cf-ray。
 
 Browser Integrity Check 是 Groq 作為網站擁有者的 Cloudflare Security 設定，沒有證據可由 Groq 帳號使用者控制台自行切換；Cloudflare support 也不能覆蓋站方設定。不附 API key、HAR、原始 body、proxy 值；不把「關閉安全檢查」當成使用者必須或可以做的步驟。
+
+### 已批准的 Groq 專項：本輪結果
+
+人類來源已核對 main 對話 `01a0de5f-8306-71a3-9738-7ac6eb4d7746`：提案為使用 Doppler 現有 key，模型 GET 至多一次，成功後推論至多一次、32 tokens、不重試；2026-10-02T02:44:55.269Z（台北 10:44:55）userMessage `01a0fa80-1d65-76f1-b4df-e0417270b368` 回覆「好 當然同意 先把這個東西跑通吧」。本機原始 session 第1394／1403行與官方 `read_thread` 均已核對。
+
+`scripts/v1_groq_once.py` 預設 offline；live 固定新 DB `.state/v1-groq-diagnose-2026-10-02.sqlite`／新 request key，獨占 `0600` 建立，舊三份收據只讀、要求 Groq 舊派送數為一。同檔拒絕重跑。沿 Doppler `api-quota-broker/dev` 五分鐘 config 唯讀 Service Token 流程，只在程序記憶體快取讀取 `GROQ_API_KEY` 一次；不續 token。curl 的 key／payload 只在 stdin，argv／stderr／檔案不含秘密。送出前拒絕控制字元、空白或異常長度的 credential，curl quoting 也拒絕控制字元。
+
+正式 `GET https://api.groq.com/openai/v1/models` 至多一次；成功且固定模型可見才經 `Gateway.run` 發送 `POST https://api.groq.com/openai/v1/chat/completions` 一次。兩筆各 30 秒、connect 10 秒、response ≤64 KiB、無 redirect/retry/UA/IP/proxy 覆寫；POST 32 tokens、low reasoning、不輸出 reasoning、非串流。沿用既有免費/no-card 帳號陳述，不改帳務或付費。保留 HTTP、UTC、固定原因／next_check、curl timing；request ID／completion ID／cf-ray 需限定格式且不含已解析秘密。任意 raw header/body/message 不保存；反射在 body ID 的秘密會先移除再交 Gateway。成功要求可見非空答案、stop、完整非負 input/output 用量；length／格式缺失保留 unknown。舊 hold 不更新。
+
+正式工具審查前兩次均在程序啟動前拒絕：第一次表示缺本 task 對精確 live 動作的直接授權；經官方 `read_thread` 補核對人類來源後，第二次仍不接受工具讀回的跨對話授權。這兩次沒有啟動程序或派送。之後本 task 直接收到使用者對完整目的地／payload 的回覆「批准此 Groq 專項診斷」，以相同命令／路徑再走正式審查獲准後執行；沒有繞過拒絕或增加上限。
+
+以下同一命令已執行一次，**不可重執行**：
+
+```bash
+.venv/bin/python scripts/v1_groq_once.py --live --db /home/ubuntu/projects/api-quota-broker/.state/v1-groq-diagnose-2026-10-02.sqlite
+```
+
+本地完整 suite `177 passed`，Groq 專項 24 項 fixture 覆蓋正常 GET+POST、1010、模型未可見、project block、length、timeout、malformed credential 零派送、同 DB 拒絕重跑、stdin config 經實際 curl `--version` 解析（無網路）、ID 秘密過濾、舊收據不變。Ruff／格式／mypy／diff 檢查通過。僅 fixture／loopback，不是 Groq 成功證據。
+
+| 本輪方法 | 實際 UTC（台北 11:01:05–06） | 結果／證據 | 非秘密識別資訊 |
+| --- | --- | --- | --- |
+| 認證 GET models | `2026-10-02T03:01:05.385645+00:00` → `03:01:05.684622` | HTTP 200，固定模型可見；curl total 285 ms | request `req_01m3x8xtycet79b50f74xg2tx3`；cf-ray `a44075e58f85f1f4-KHH` |
+| POST GPT-OSS 20B | `2026-10-02T03:01:05.767686+00:00` → `03:01:06.013743` | HTTP 200、非空可見輸出；供應商 input 78／output 32；finish_reason=`length`，curl total 239 ms | request `req_01m3x8xv63etas8aj20x19ky1w`；cf-ray `a44075e73fe9f20d-KHH`；completion `chatcmpl-05fdcfda-c4c9-4149-8476-cbc8e883a152` |
+
+**目前 key 可認證，固定模型可推論；本輪未見權限封鎖。** 32 輸出 tokens 全用滿且 finish_reason=length，證明本輪被生成上限截斷。沒有保留回答，不能追認它是否已正確完成 READY 指令。[官方 Reasoning 說明](https://console.groq.com/docs/reasoning)指出 GPT-OSS 的 low 仍會使用 reasoning tokens，`include_reasoning=false` 只是隱藏 reasoning 輸出，不是停用；本輪未記錄 reasoning 細分用量，不能斷言其占比。
+
+新 Gateway attempt／reservation 維持 `unknown`，因這個診斷的本地完整回答條件要求 stop。Gateway 的 `provider_response_invalid` 是診斷 wrapper 在不完整時移除答案欄位後產生的本地分類；**不是供應商回了錯誤 JSON，也不是是否執行未知**。HTTP 200、可見文字及供應商用量已確認本輪推論實際執行。固定 details 明確保留 `completion_incomplete`、length、非空旗標及 78／32 用量，不混同舊 403。新收據 mode 0600／父目錄 0700，GET 1／POST 1、quick_check=ok；舊收據／unknown holds 不更新。
+
+本地契約核對：`Gateway.run` 的既有完成判定是 HTTP 200 且解析出答案，`interpret()` 不檢查 finish_reason。此次經 Gateway 注入診斷用 curl transport，並由該 wrapper 額外要求 stop；沒有改正式預設 urllib transport 或通用成功條件。Ledger 尚無「已執行但回答截斷」獨立 state，故沿現有 fail-closed 路徑保留 hold。這是專項保守驗收策略，無須本輪臨時改 ledger 契約；若要區分執行確認、答案完整性與用量結算，應另議狀態設計，不回寫本輪或舊收據。
+
+正式路由尚未修復或驗收：常用 `provider_http` 仍走 urllib，本輪成功只證明注入 Gateway 的 curl 路徑可用。後續最小整合可為 Groq 加入沿用已驗證邊界的 curl adapter（固定目的地、stdin 認證、TLS、deadline、無 retry／redirect、有限安全收據），先以 fixture 驗證正式路由選用，再以另行批准的單次完整回答驗證；或另行驗證原 urllib 路徑。選擇與正式整合須由 main 決定，本輪不更換服務 transport、不部署。
+
+接通方式現在已有真實證據，但舊認證 urllib POST403 與匿名 GET1010 的原因仍不可追認；不同 client／請求不能證明舊 403 必然由 urllib 或 UA 造成。下一個完整回答驗證應調整適合 GPT-OSS 的生成預算或另選適合短回答的免費模型，由 main 決定並另行批准新上限；本輪 1 GET／1 POST 已用完，不自動補呼叫。Mistral／NVIDIA／其餘供應商沒有新呼叫，沒有付費、發信或部署。
 
 ## 可檢閱的下一輪最小範圍
 
@@ -93,4 +126,4 @@ Doppler `api-quota-broker/dev` 五分鐘整個 config 唯讀 Service Token 一�
 
 ## 本地驗證
 
-Ubuntu 本地完整 suite 為 `153 passed`；剩餘診斷的 43 項 fixture 驗證 stdin config 真正經既有 curl 解析、`file:///dev/null` 的 write-out delimiter、HTTP/2／1xx、逾時不採用部分回答、輸出上限／deadline kill child、Mistral gate、固定訊息分類與秘密過濾、三個 NVIDIA 模型請求回歸、空答案／length／缺 finish_reason 維持 unknown、malformed HTTP 200 保留狀態與 timing、舊 DB 不變及同檔拒絕重跑。只有 fixture、loopback 與空本地檔案，沒有 provider live 呼叫。`ruff check .`、`ruff format --check .`、`mypy src/quota_broker` 及 `git diff --check` 通過；新 live DB 尚未建立。
+Ubuntu 本地完整 suite 為 `177 passed`；剩餘診斷的 43 項 fixture 驗證 stdin config 真正經既有 curl 解析、`file:///dev/null` 的 write-out delimiter、HTTP/2／1xx、逾時不採用部分回答、輸出上限／deadline kill child、Mistral gate、固定訊息分類與秘密過濾、三個 NVIDIA 模型請求回歸、空答案／length／缺 finish_reason 維持 unknown、malformed HTTP 200 保留狀態與 timing、舊 DB 不變及同檔拒絕重跑；另含上述 Groq 專項 24 項 fixture。測試只用 fixture、loopback 與空本地檔案，不呼叫 provider。`ruff check .`、`ruff format --check .`、`mypy src/quota_broker` 及 `git diff --check` 通過；Groq live 收據已建立，其餘待批准方案尚未建立新 live DB。
