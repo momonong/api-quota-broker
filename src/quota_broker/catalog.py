@@ -1,4 +1,4 @@
-"""Pinned official origins and a deliberately small text-only catalog."""
+"""Pinned official origins for a small text, translation and image-OCR catalog."""
 
 from dataclasses import dataclass
 

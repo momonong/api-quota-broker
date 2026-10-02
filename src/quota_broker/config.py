@@ -1,6 +1,7 @@
 """Account eligibility, provider evidence, and distinct local admission caps."""
 
 import json
+import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -11,6 +12,52 @@ from .catalog import MODELS, endpoint
 
 class ConfigError(ValueError):
     pass
+
+
+@dataclass(frozen=True)
+class SecretInventory:
+    """Expiring, scope-bound names only; never resolves or validates secret values."""
+
+    names: frozenset[str]
+    verified_at: datetime
+    expires_at: datetime
+    project: str
+    config: str
+
+    def current(self, now: datetime) -> bool:
+        return self.verified_at <= now < self.expires_at
+
+
+def load_secret_inventory(path: str | Path, project: str, config: str) -> SecretInventory:
+    raw = json.loads(Path(path).read_text(encoding="utf-8"))
+    if not isinstance(raw, dict) or set(raw) != {
+        "names",
+        "verified_at",
+        "expires_at",
+        "project",
+        "config",
+    }:
+        raise ConfigError("invalid secret name inventory")
+    names = raw["names"]
+    if (
+        not isinstance(names, list)
+        or len(names) > 256
+        or any(
+            not isinstance(name, str) or not re.fullmatch(r"[A-Z][A-Z0-9_]{0,127}", name)
+            for name in names
+        )
+        or len(set(names)) != len(names)
+        or raw["project"] != project
+        or raw["config"] != config
+    ):
+        raise ConfigError("invalid or differently scoped secret name inventory")
+    try:
+        verified, expires = _instant(raw["verified_at"]), _instant(raw["expires_at"])
+    except (TypeError, ValueError) as exc:
+        raise ConfigError("invalid inventory validity") from exc
+    if verified is None or expires is None or expires <= verified:
+        raise ConfigError("inventory requires a bounded validity interval")
+    return SecretInventory(frozenset(names), verified, expires, project, config)
 
 
 @dataclass(frozen=True)

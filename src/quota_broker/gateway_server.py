@@ -46,6 +46,26 @@ def make_gateway_server(
                 if self.command == "GET" and parsed.path == "/v1/catalog" and not parsed.query:
                     result = gateway.catalog()
                 elif (
+                    self.command == "GET" and parsed.path == "/v1/diagnostics" and not parsed.query
+                ):
+                    result = gateway.diagnostics()
+                elif self.command == "GET" and parsed.path == "/v1/tasks":
+                    query = parse_qs(parsed.query, keep_blank_values=True)
+                    if set(query) - {"limit", "before", "provider", "model", "state"} or any(
+                        len(values) != 1 for values in query.values()
+                    ):
+                        raise GatewayError("invalid_request", "invalid task filters")
+                    raw_limit = query.get("limit", ["20"])[0]
+                    if not raw_limit.isascii() or not raw_limit.isdigit() or len(raw_limit) > 3:
+                        raise GatewayError("invalid_request", "invalid task limit")
+                    result = gateway.recent(
+                        limit=int(raw_limit),
+                        before=query.get("before", [None])[0],
+                        provider=query.get("provider", [None])[0],
+                        model=query.get("model", [None])[0],
+                        state=query.get("state", [None])[0],
+                    )
+                elif (
                     self.command == "GET"
                     and parsed.path.startswith("/v1/tasks/")
                     and not parsed.query

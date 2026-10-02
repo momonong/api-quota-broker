@@ -531,6 +531,19 @@ def safe_response_diagnostics(
         if mime in {"application/json", "text/html", "text/event-stream"}
         else "other",
         "retry_after_seconds": parse_retry_after(normalized.get("retry-after"), datetime.now(UTC)),
+        "http_category": "success"
+        if status == 200
+        else "authentication_rejected"
+        if status == 401
+        else "access_rejected"
+        if status == 403
+        else "not_found"
+        if status == 404
+        else "rate_limited_unclassified"
+        if status == 429
+        else "server_error"
+        if status >= 500
+        else "other_response",
     }
     try:
         data = json.loads(raw)

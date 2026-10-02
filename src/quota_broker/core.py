@@ -665,7 +665,11 @@ class Broker:
             )
             return self._view(con, data["reservation_id"])
 
-    def status(self, reservation_id: str) -> dict:
+    def status(self, reservation_id: str, *, expire_unsent: bool = True) -> dict:
+        if not expire_unsent:
+            with sqlite3.connect(self.db, timeout=15) as con:
+                con.row_factory = sqlite3.Row
+                return self._view(con, reservation_id)
         with self._tx() as con:
             self._expire_unsent(con, self.clock())
             return self._view(con, reservation_id)

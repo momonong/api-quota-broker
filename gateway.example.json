@@ -668,6 +668,117 @@
       "secret_ref": "GROQ_API_KEY"
     },
     {
+      "id": "mistral-ministral-3b-unverified",
+      "provider": "mistral",
+      "model": "ministral-3b-latest",
+      "account_id": "replace-with-organization-id",
+      "enabled": false,
+      "free_eligible": false,
+      "billing_enabled": false,
+      "verified_at": null,
+      "expires_at": null,
+      "source": "Manual Free plan, API access, billing and model eligibility check required",
+      "priority": 2,
+      "concurrency_limit": 1,
+      "shared_concurrency_scope": "mistral:organization:replace",
+      "shared_concurrency_limit": 1,
+      "max_output_tokens": 512,
+      "local_safety_caps": [
+        {
+          "bucket": "mistral:organization:replace:rpm",
+          "metric": "requests",
+          "limit": 1,
+          "window": "rolling_minute",
+          "timezone": "UTC"
+        },
+        {
+          "bucket": "mistral:organization:replace:tpm",
+          "metric": "input_tokens",
+          "limit": 1024,
+          "window": "rolling_minute",
+          "timezone": "UTC"
+        },
+        {
+          "bucket": "mistral:organization:replace:rpd",
+          "metric": "requests",
+          "limit": 1,
+          "window": "day",
+          "timezone": "UTC"
+        }
+      ],
+      "provider_quota_facts": [
+        {
+          "metric": "requests",
+          "window": "rolling_minute",
+          "limit": {
+            "value": null,
+            "provenance": "unknown",
+            "as_of": null,
+            "source": null,
+            "scope": null,
+            "valid_until": null
+          },
+          "remaining": {
+            "value": null,
+            "provenance": "unknown",
+            "as_of": null,
+            "source": null,
+            "scope": null,
+            "valid_until": null
+          }
+        },
+        {
+          "metric": "input_tokens",
+          "window": "rolling_minute",
+          "limit": {
+            "value": null,
+            "provenance": "unknown",
+            "as_of": null,
+            "source": null,
+            "scope": null,
+            "valid_until": null
+          },
+          "remaining": {
+            "value": null,
+            "provenance": "unknown",
+            "as_of": null,
+            "source": null,
+            "scope": null,
+            "valid_until": null
+          }
+        },
+        {
+          "metric": "requests",
+          "window": "day",
+          "limit": {
+            "value": null,
+            "provenance": "unknown",
+            "as_of": null,
+            "source": null,
+            "scope": null,
+            "valid_until": null
+          },
+          "remaining": {
+            "value": null,
+            "provenance": "unknown",
+            "as_of": null,
+            "source": null,
+            "scope": null,
+            "valid_until": null
+          }
+        }
+      ],
+      "capacity": {
+        "kind": "unknown",
+        "refresh_seconds": null,
+        "as_of": null,
+        "source": null,
+        "scope": null,
+        "expires_at": null
+      },
+      "secret_ref": "MISTRAL_API_KEY"
+    },
+    {
       "id": "mistral-organization-unverified",
       "provider": "mistral",
       "model": "mistral-small-latest",

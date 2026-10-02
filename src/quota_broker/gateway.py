@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from .catalog import MODELS
-from .config import Target
+from .config import SecretInventory, Target
 from .core import Broker, BrokerError, canonical, stamp, utcnow
 from .gateway_providers import (
     ProviderError,
@@ -227,6 +227,7 @@ class Gateway:
         secret_resolver: SecretResolver,
         transport: ProviderTransport = provider_http,
         clock: Callable[[], datetime] = utcnow,
+        secret_inventory: SecretInventory | None = None,
     ) -> None:
         if len(digest_key) < 32:
             raise ValueError("persisted HMAC key must be at least 32 bytes")
@@ -238,6 +239,7 @@ class Gateway:
         self.secret_resolver = secret_resolver
         self.transport = transport
         self.clock = clock
+        self.secret_inventory = secret_inventory
         self.broker = Broker(db, targets, clock)
         with sqlite3.connect(self.db) as con:
             con.execute("BEGIN IMMEDIATE")
@@ -309,7 +311,7 @@ class Gateway:
             if item["response_truncated"] is not None:
                 item["response_truncated"] = bool(item["response_truncated"])
         for attempt in result["attempts"]:
-            ledger_attempt = self.broker.status(attempt["reservation_id"])
+            ledger_attempt = self.broker.status(attempt["reservation_id"], expire_unsent=False)
             attempt["ledger_state"] = ledger_attempt["state"]
             attempt["ledger_basis"] = (
                 "settled_provider_usage"
@@ -326,7 +328,7 @@ class Gateway:
             ]
         if result["reservation_id"]:
             # A crash at either boundary is not permission to issue another POST.
-            ledger = self.broker.status(result["reservation_id"])
+            ledger = self.broker.status(result["reservation_id"], expire_unsent=False)
             result["ledger_state"] = ledger["state"]
             result["ledger_dispatched_at"] = ledger["dispatched_at"]
             result["ledger_basis"] = (
@@ -367,6 +369,140 @@ class Gateway:
     def catalog(self) -> list[dict[str, Any]]:
         return self.broker.catalog()
 
+    def _credentials(self, target: Target) -> dict[str, Any]:
+        required = sorted({name for name in (target.secret_ref, target.account_id_ref) if name})
+        inventory = self.secret_inventory
+        current = inventory is not None and inventory.current(self.clock())
+        missing = sorted(set(required) - inventory.names) if current and inventory else None
+        return {
+            "required_names": required,
+            "missing_names": missing,
+            "state": "missing" if missing else "present" if current else "unknown",
+            "verified_at": stamp(inventory.verified_at) if inventory else None,
+            "expires_at": stamp(inventory.expires_at) if inventory else None,
+        }
+
+    def diagnostics(self) -> dict[str, Any]:
+        """Read-only minimum-admission snapshot; no secret lookup or provider I/O."""
+        rows = []
+        with sqlite3.connect(self.db) as con:
+            con.row_factory = sqlite3.Row
+            for target in sorted(self.targets, key=self._sort_key):
+                model = MODELS[target.model]
+                data = {
+                    "provider": None,
+                    "model": None,
+                    "capability": model.capability,
+                    "max_output_tokens": 1,
+                    "neuron_bound": 1,
+                }
+                reasons = self._reasons(con, target, data, 1)
+                credentials = self._credentials(target)
+                if credentials["state"] == "unknown":
+                    reasons.append("credential_inventory_unknown")
+                untils = [
+                    row[0]
+                    for row in con.execute(
+                        "SELECT until_at FROM cooldowns WHERE target_id=? UNION ALL "
+                        "SELECT until_at FROM quota_scope_cooldowns WHERE scope=?",
+                        (
+                            target.id,
+                            self.broker._quota_scope(json.loads(self.broker._snapshot(target))),
+                        ),
+                    )
+                    if row[0] > stamp(self.clock())
+                ]
+                rows.append(
+                    {
+                        "target_id": target.id,
+                        "provider": target.provider,
+                        "model": target.model,
+                        "capability": model.capability,
+                        "state": "blocked"
+                        if any(reason != "credential_inventory_unknown" for reason in reasons)
+                        else "unknown"
+                        if reasons
+                        else "ready",
+                        "reasons": reasons,
+                        "credentials": credentials,
+                        "cooldown_until": max(untils) if untils else None,
+                        "capacity": target.capacity.view(),
+                        "effective_capacity_kind": self._capacity_kind(target),
+                    }
+                )
+        return {
+            "as_of": stamp(self.clock()),
+            "ready_targets": sum(row["state"] == "ready" for row in rows),
+            "targets": rows,
+            "basis": "local_minimum_admission_snapshot",
+        }
+
+    def recent(
+        self,
+        *,
+        limit: int = 20,
+        before: str | None = None,
+        provider: str | None = None,
+        model: str | None = None,
+        state: str | None = None,
+    ) -> dict[str, Any]:
+        """Stable bounded pagination over content-free task/attempt status."""
+        if type(limit) is not int or not 1 <= limit <= 100:
+            raise GatewayError("invalid_request", "limit must be 1..100")
+        if provider is not None and provider not in {item.provider for item in MODELS.values()}:
+            raise GatewayError("invalid_request", "invalid provider filter")
+        if model is not None and model not in MODELS:
+            raise GatewayError("invalid_request", "invalid model filter")
+        if state is not None and state not in {
+            "preparing",
+            "dispatched",
+            "unknown",
+            "completed",
+            "completed_usage_unknown",
+            "quota_rejected",
+            "quota_exhausted",
+            "rejected",
+        }:
+            raise GatewayError("invalid_request", "invalid state filter")
+        conditions = []
+        params: list[Any] = []
+        with sqlite3.connect(self.db) as con:
+            if before is not None:
+                if not re.fullmatch(r"[A-Za-z0-9._~-]{1,120}", before):
+                    raise GatewayError("invalid_request", "invalid pagination key")
+                cursor = con.execute(
+                    "SELECT created_at,request_key FROM gateway_tasks WHERE request_key=?",
+                    (before,),
+                ).fetchone()
+                if cursor is None:
+                    raise GatewayError("not_found", "pagination task not found")
+                conditions.append("(g.created_at,g.request_key)<(?,?)")
+                params.extend(cursor)
+            effective_state = (
+                "CASE WHEN g.state IN ('preparing','dispatched') AND r.state IN ('dispatched','unknown') "
+                "THEN 'unknown' WHEN g.state IN ('preparing','dispatched') AND r.state='quota_rejected' "
+                "THEN 'quota_rejected' ELSE g.state END"
+            )
+            for column, value in (
+                ("g.provider", provider),
+                ("g.model", model),
+                (effective_state, state),
+            ):
+                if value is not None:
+                    conditions.append(column + "=?")
+                    params.append(value)
+            keys = con.execute(
+                "SELECT g.request_key FROM gateway_tasks g LEFT JOIN reservations r ON r.id=g.reservation_id"
+                + (" WHERE " + " AND ".join(conditions) if conditions else "")
+                + " ORDER BY g.created_at DESC,g.request_key DESC LIMIT ?",
+                (*params, limit + 1),
+            ).fetchall()
+        tasks = [self._view(row[0]) for row in keys[:limit]]
+        return {
+            "tasks": tasks,
+            "next_before": tasks[-1]["request_key"] if len(keys) > limit else None,
+        }
+
     def _capacity_kind(self, target: Target) -> str:
         if target.capacity.expires_at and target.capacity.expires_at <= self.clock():
             return "unknown"
@@ -397,6 +533,33 @@ class Gateway:
             reasons.append("credential_scope_missing")
         if not target.available(now):
             reasons.append("eligibility_or_official_capacity")
+            if not target.enabled:
+                reasons.append("disabled")
+            if not target.free_eligible:
+                reasons.append("free_eligibility_unverified")
+            if target.billing_enabled:
+                reasons.append("billing_enabled")
+            if target.verified_at is None or target.expires_at is None:
+                reasons.append("free_evidence_missing")
+            elif not target.verified_at <= now < target.expires_at:
+                reasons.append("free_evidence_not_current")
+            if any(
+                f.remaining.provenance == "official"
+                and f.remaining.value == 0
+                and f.remaining.as_of is not None
+                and f.remaining.as_of <= now
+                and f.remaining.valid_until is not None
+                and now < f.remaining.valid_until
+                for f in target.provider_quota_facts
+            ):
+                reasons.append("official_capacity_zero")
+        if self._credentials(target)["state"] == "missing":
+            reasons.append("credential_name_missing")
+        if con.execute(
+            "SELECT 1 FROM reservations WHERE target_snapshot IS NULL "
+            "AND state IN ('reserved','dispatched','unknown') LIMIT 1"
+        ).fetchone():
+            reasons.append("legacy_active_requires_reconciliation")
         if bound + data["max_output_tokens"] > model.context_tokens:
             reasons.append("context_limit")
         if data["max_output_tokens"] > target.max_output_tokens:
@@ -520,7 +683,9 @@ class Gateway:
         input_bound = (
             1 if data["capability"] == "ocr" else 4 * len(data["input"].encode("utf-8")) + 256
         )
-        excluded: list[str] = []
+        excluded: list[str] = [
+            target.id for target in self.targets if self._credentials(target)["state"] == "missing"
+        ]
         for attempt in range(min(len(self.targets), 3)):
             request = {
                 "request_key": f"gw:{key}:{attempt}",
@@ -682,19 +847,25 @@ class Gateway:
                 answer, input_tokens, output_tokens, neurons, request_id = interpret(
                     target.provider, status, response, model_id=target.model
                 )
+                diagnostics = safe_response_diagnostics(
+                    target.provider,
+                    status,
+                    response_headers,
+                    response,
+                    sensitive_values=(secret, account_id, data["input"]),
+                )
+                if request_id is not None and any(
+                    value and value.casefold() in request_id.casefold()
+                    for value in (secret, account_id, data["input"])
+                ):
+                    request_id = None
+                if target.provider in {"nvidia", "groq", "mistral", "openrouter"}:
+                    finish_reason, response_truncated = chat_completion_metadata(status, response)
+                if answer is not None and not answer.strip():
+                    answer = None
                 if bounded_chat:
-                    diagnostics = safe_response_diagnostics(
-                        target.provider,
-                        status,
-                        response_headers,
-                        response,
-                        sensitive_values=(secret, data["input"]),
-                    )
                     if isinstance(response_headers, ProviderHeaders):
                         diagnostics.update(safe_transport_diagnostics(response_headers.diagnostics))
-                    finish_reason, response_truncated = chat_completion_metadata(status, response)
-                    if answer is not None and not answer.strip():
-                        answer = None
                     if output_tokens is not None and output_tokens > data["max_output_tokens"]:
                         input_tokens = output_tokens = None
                     if request_id is not None and (
@@ -729,6 +900,7 @@ class Gateway:
             quota_rejected = status is not None and explicit_quota_rejection(
                 target.provider, status, response_headers, response
             )
+            diagnostics["non_execution_quota_proven"] = quota_rejected
             elapsed = round((time.monotonic() - started) * 1000)
             required_metrics = {quota.metric for quota in target.quotas}
             known_quota_usage = (

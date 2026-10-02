@@ -13,7 +13,7 @@ from pathlib import Path
 from urllib.parse import urlencode, urlsplit
 
 from .client import DirectClient, _json_http
-from .config import Quota, Target, load_config, load_gateway_config
+from .config import Quota, Target, load_config, load_gateway_config, load_secret_inventory
 from .core import Broker, utcnow
 from .gateway import Gateway
 from .gateway_server import make_gateway_server
@@ -113,6 +113,23 @@ def gateway_cli(args: argparse.Namespace) -> None:
     headers = {"Authorization": "Bearer " + token}
     if args.action == "catalog":
         result = _json_http(base + "/v1/catalog", None, headers)
+    elif args.action == "diagnostics":
+        result = _json_http(base + "/v1/diagnostics", None, headers)
+    elif args.action == "recent":
+        query = urlencode(
+            {
+                k: v
+                for k, v in {
+                    "limit": args.limit,
+                    "before": args.before,
+                    "provider": args.provider,
+                    "model": args.model,
+                    "state": args.state,
+                }.items()
+                if v is not None
+            }
+        )
+        result = _json_http(base + "/v1/tasks?" + query, None, headers)
     elif args.action == "status":
         result = _json_http(base + "/v1/tasks/" + args.request_key, None, headers)
     elif args.action == "usage":
@@ -166,17 +183,47 @@ def gateway_cli(args: argparse.Namespace) -> None:
                 item["model"],
                 "requests=" + str(item["requests"]),
                 "input=" + str(item["reported_input_tokens"]),
+                "input_estimate=" + str(item["estimated_input_tokens"]),
+                "ledger_input=" + str(item["ledger_input_tokens"]),
                 "input_unknown=" + str(item["input_unknown_count"]),
                 "output=" + str(item["reported_output_tokens"]),
                 "output_unknown=" + str(item["output_unknown_count"]),
                 "quota_rejected=" + str(item["quota_rejected_count"]),
                 "ledger_held=" + str(item["ledger_held_count"]),
+                "neurons=" + str(item["reported_neurons"]),
+                "neurons_unknown=" + str(item["neurons_unknown_count"]),
+                "ledger_neurons=" + str(item["ledger_neurons"]),
+                "outcome_unknown=" + str(item["outcome_unknown_count"]),
+                "truncated=" + str(item["truncated_count"]),
                 "image_bytes=" + str(item["input_bytes"]),
             )
     elif args.action == "explain":
         print("selected:", result["selected_target_id"] or "none")
         for item in result["candidates"]:
             print(item["target_id"], "eligible" if item["eligible"] else ",".join(item["reasons"]))
+    elif args.action == "diagnostics":
+        print("ready_targets=" + str(result["ready_targets"]), result["basis"])
+        for item in result["targets"]:
+            print(
+                item["target_id"],
+                item["state"],
+                ",".join(item["reasons"]),
+                "missing_names=" + str(item["credentials"]["missing_names"]),
+                "cooldown_until=" + str(item["cooldown_until"]),
+            )
+    elif args.action == "recent":
+        for item in result["tasks"]:
+            print(
+                item["request_key"],
+                item["provider"],
+                item["model"],
+                item["state"],
+                "attempts=" + str(len(item["attempts"])),
+                "truncated=" + str(item["response_truncated"]),
+                "latency_ms=" + str(item["latency_ms"]),
+                "ledger=" + str(item["ledger_basis"]),
+            )
+        print("next_before:", result["next_before"] or "none")
     else:
         print(
             result["state"],
@@ -228,6 +275,7 @@ def main() -> None:
     gateway_serve.add_argument("--doppler-token-file", required=True)
     gateway_serve.add_argument("--doppler-project", required=True)
     gateway_serve.add_argument("--doppler-config", required=True)
+    gateway_serve.add_argument("--secret-names-file", help="optional expiring names-only inventory")
     gateway = sub.add_parser("gateway")
     gateway.add_argument("--url", default="http://127.0.0.1:18084")
     credential = gateway.add_mutually_exclusive_group(required=True)
@@ -236,6 +284,13 @@ def main() -> None:
     gateway.add_argument("--json", action="store_true")
     actions = gateway.add_subparsers(dest="action", required=True)
     actions.add_parser("catalog")
+    actions.add_parser("diagnostics")
+    recent = actions.add_parser("recent")
+    recent.add_argument("--limit", type=int, default=20)
+    recent.add_argument("--before")
+    recent.add_argument("--provider")
+    recent.add_argument("--model")
+    recent.add_argument("--state")
     status = actions.add_parser("status")
     status.add_argument("request_key")
     usage = actions.add_parser("usage")
@@ -287,6 +342,11 @@ def main() -> None:
         gateway_cli(args)
         return
     if args.command == "gateway-serve":
+        inventory = (
+            load_secret_inventory(args.secret_names_file, args.doppler_project, args.doppler_config)
+            if args.secret_names_file
+            else None
+        )
         resolver = doppler_resolver(
             args.doppler_token_file, args.doppler_project, args.doppler_config
         )
@@ -295,6 +355,7 @@ def main() -> None:
             load_gateway_config(args.config),
             Path(args.digest_key_file).read_bytes(),
             resolver,
+            secret_inventory=inventory,
         )
         client_token = Path(args.client_token_file).read_text(encoding="utf-8").strip()
         server = make_gateway_server(gateway_instance, client_token, port=args.port)

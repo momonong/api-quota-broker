@@ -229,7 +229,7 @@ main依本次200與length的具體證據，將操作預算再增加**1筆固定3
 
 catalog與正常`provider_http`已支援固定`ministral-3b-latest`；這次script建立獨立、短效已核對資格的runtime target，經`Gateway.run`執行。model gate修正為優先採精確latest項的chat／access證據，將exact／canonical／alias候選數分開，避免把多個有效別名誤判為不可見。
 
-`gateway.example.json`的Mistral target仍是Small且disabled；`.state/gateway-live-profile.json`未更動，預設或常駐路由沒有切換。若後續要在正常CLI／API選用3B，須在使用者指定的local config建立明確的3B target：model=`ministral-3b-latest`、官方Mistral chat endpoint、secret_ref=`MISTRAL_API_KEY`，核對當前Free資格／billing／account scope／local caps與期限，並以`provider=mistral`、`model=ministral-3b-latest`限定請求。單改請求model不會建立合格target；沒有自動替代Small或fallback。本階段沒有啟用或部署該設定。
+完整回答驗收時`gateway.example.json`的Mistral target仍是Small且disabled；後續v1.0框架階段新增獨立disabled 3B範例，保留Small與共享帳戶bucket身份。`.state/gateway-live-profile.json`未更動，預設或常駐路由沒有啟用。正常CLI／API選用3B，須在使用者指定的local config設定明確的3B target：model=`ministral-3b-latest`、官方Mistral chat endpoint、secret_ref=`MISTRAL_API_KEY`，核對當前Free資格／billing／account scope／local caps與期限，並以`provider=mistral`、`model=ministral-3b-latest`限定請求。單改請求model不會建立合格target；沒有自動替代Small或fallback。本階段沒有啟用或部署該設定。日常查詢與設定契約見[v1本地使用指南](v1-local-guide.md)。
 
 ## 先前一次性診斷方案（未執行，已由上述新階段取代）
 

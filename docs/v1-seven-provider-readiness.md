@@ -4,7 +4,9 @@
 
 **七家代表能力均已有真實成功證據；Mistral完整回答驗收已通過（Cloudflare Neurons仍未知）。** Groq正常路由HTTP200／stop／完整回答及76+18tokens結算；NVIDIA一般LLM正常Gateway取得完整回答與31+3tokens結算。Mistral的可用正常路徑為`ministral-3b-latest`：修正model gate後取得200與partial結算，再以獨立零GET／1POST完成HTTP200／stop／未截斷／完整回答及13+3tokens結算（台北2026-10-02 14:54:40–41，latency614ms）。Small歷史429（1300／rate_limited）的確切bucket仍未知，舊identity／unknown與3B partial收據保留。六家文字API與OCR.space的代表能力已經統一路由與SQLite驗證；這不等於所有模型全通、持續配額保證或已部署。歷史NVIDIA Riva翻譯成功亦不能解釋Gemma逾時。詳見[各輪診斷與驗收](v1-remaining-provider-plan.md)。
 
-3B已納入catalog與正常transport，但`gateway.example.json`仍是disabled Small，live profile未變；沒有預設路由切換或自動模型替代。正常CLI／API選用3B須有明確且當前資格有效的3B target，再指定`provider=mistral`與`model=ministral-3b-latest`；細節見[3B選用方式](v1-remaining-provider-plan.md#3b-選用方式與設定邊界)。以下各輪失敗與待驗描述是當時狀態，最新結果以上述結論為準。
+3B已納入catalog與正常transport；其後v1.0本地框架階段在`gateway.example.json`新增獨立disabled 3B target，原disabled Small及live profile未變，沒有啟用路由或自動模型替代。正常CLI／API選用3B須有明確且當前資格有效的3B target，再指定`provider=mistral`與`model=ministral-3b-latest`；細節見[v1本地使用指南](v1-local-guide.md)。以下各輪失敗與待驗描述是當時狀態，最新結果以上述結論為準。
+
+後續v1.0框架工程驗證：完整312項fixture回歸、Ruff／mypy通過，新增唯讀diagnostics／recent與CLI查詢；本階段零新live請求。詳見[v1框架驗證](v1-local-guide.md#本階段驗證)。
 
 本分支實作七家固定路由與 SQLite 逐次嘗試紀錄。`scripts/v1_smoke_once.py` 的預設模式只列計畫。本地 fixture 是工程驗證，不能視為帳號或真實服務已通。2026-10-02 在使用者批准後，以五分鐘 config 唯讀 Service Token 執行兩輪初始 smoke。第一輪 NVIDIA 單次 POST 逾時，收據為 `unknown`；Gemini 在送出前失敗，沒有派送。第二輪根據第一輪收據排除 NVIDIA，Gemini 與其餘五家各派送一次。初始範圍合計七家各至多一筆已派送 HTTP，均不重送。舊收據保留在 `.state/v1-smoke-2026-10-02.sqlite` 與 `.state/v1-smoke-2026-10-02-remaining.sqlite`，不存憑證、秘密或回應內容。使用者其後明確批准一次追加診斷，結果如下。
 
