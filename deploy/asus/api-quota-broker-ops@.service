@@ -1,0 +1,30 @@
+[Unit]
+Description=Disposable Broker operation worker
+CollectMode=inactive-or-failed
+
+[Service]
+Type=exec
+Slice=system.slice
+User=broker-deploy
+Group=broker-deploy
+ExecStart=/usr/bin/python3.14 -I -B -S /usr/local/lib/api-quota-broker-ops/ops_entry.py worker
+StandardInput=socket
+StandardOutput=socket
+StandardError=null
+LoadCredentialEncrypted=ops_doppler:/etc/api-quota-broker-ops/ops_doppler.cred
+UMask=0077
+WorkingDirectory=/
+MemoryMax=128M
+MemorySwapMax=0
+LimitCORE=0
+CPUQuota=25%
+TasksMax=16
+RuntimeMaxSec=45
+TimeoutStopSec=5
+KillMode=control-group
+Restart=no
+NoNewPrivileges=no
+ProtectSystem=strict
+ProtectHome=yes
+InaccessiblePaths=/etc/api-quota-broker/credentials /var/lib/api-quota-broker
+ReadWritePaths=/var/lib/api-quota-broker-ops -/run/sudo -/run/sudo-rs
