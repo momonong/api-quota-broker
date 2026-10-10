@@ -12,7 +12,7 @@ from pathlib import Path
 
 from quota_broker.nvidia import doppler_resolver_from_token
 
-PROJECT = "api-provider-nvidia"
+PROJECT = "api-quota-broker"
 CONFIG = "dev"
 SECRET_NAME = "NVIDIA_API_KEY"
 MAX_AGE = "5m"
@@ -94,7 +94,7 @@ def main() -> int:
     if not sys.stdin.isatty():
         print("interactive TTY required")
         return 1
-    print("Target: api-provider-nvidia/dev/NVIDIA_API_KEY")
+    print(f"Target: {PROJECT}/{CONFIG}/{SECRET_NAME}")
     print("Create: read-only, config-scoped Service Token, automatic expiry 5m")
     print("Destination: this process memory only; no secret value or token displayed")
     print("No NVIDIA request or service change; token/secret not written to local files")

@@ -1,0 +1,115 @@
+{
+  "targets": [
+    {
+      "account_id": "asus-dev-groq-key",
+      "billing_enabled": false,
+      "capacity": {
+        "as_of": null,
+        "expires_at": null,
+        "kind": "unknown",
+        "refresh_seconds": null,
+        "scope": null,
+        "source": null
+      },
+      "concurrency_limit": 1,
+      "enabled": false,
+      "expires_at": null,
+      "free_eligible": false,
+      "id": "asus-groq-e2e-once",
+      "local_safety_caps": [
+        {
+          "bucket": "groq:asus-dev-key:requests:rolling_minute",
+          "limit": 1,
+          "metric": "requests",
+          "timezone": "UTC",
+          "window": "rolling_minute"
+        },
+        {
+          "bucket": "groq:asus-dev-key:input_tokens:rolling_minute",
+          "limit": 1024,
+          "metric": "input_tokens",
+          "timezone": "UTC",
+          "window": "rolling_minute"
+        },
+        {
+          "bucket": "groq:asus-dev-key:requests:day",
+          "limit": 1,
+          "metric": "requests",
+          "timezone": "UTC",
+          "window": "day"
+        }
+      ],
+      "max_output_tokens": 512,
+      "model": "openai/gpt-oss-20b",
+      "priority": 2,
+      "provider": "groq",
+      "provider_quota_facts": [
+        {
+          "limit": {
+            "as_of": null,
+            "provenance": "unknown",
+            "scope": null,
+            "source": null,
+            "valid_until": null,
+            "value": null
+          },
+          "metric": "requests",
+          "remaining": {
+            "as_of": null,
+            "provenance": "unknown",
+            "scope": null,
+            "source": null,
+            "valid_until": null,
+            "value": null
+          },
+          "window": "rolling_minute"
+        },
+        {
+          "limit": {
+            "as_of": null,
+            "provenance": "unknown",
+            "scope": null,
+            "source": null,
+            "valid_until": null,
+            "value": null
+          },
+          "metric": "input_tokens",
+          "remaining": {
+            "as_of": null,
+            "provenance": "unknown",
+            "scope": null,
+            "source": null,
+            "valid_until": null,
+            "value": null
+          },
+          "window": "rolling_minute"
+        },
+        {
+          "limit": {
+            "as_of": null,
+            "provenance": "unknown",
+            "scope": null,
+            "source": null,
+            "valid_until": null,
+            "value": null
+          },
+          "metric": "requests",
+          "remaining": {
+            "as_of": null,
+            "provenance": "unknown",
+            "scope": null,
+            "source": null,
+            "valid_until": null,
+            "value": null
+          },
+          "window": "day"
+        }
+      ],
+      "secret_ref": "GROQ_API_KEY",
+      "shared_concurrency_limit": 1,
+      "shared_concurrency_scope": "groq:asus-dev-key:shared",
+      "source": "pending human ASUS E2E Free/billing attestation; disabled proposal",
+      "verified_at": null
+    }
+  ]
+}

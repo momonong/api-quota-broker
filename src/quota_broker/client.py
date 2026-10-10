@@ -13,7 +13,9 @@ from .retry import parse_retry_after
 
 
 class ClientError(RuntimeError):
-    pass
+    def __init__(self, message: str, *, detail: dict | None = None):
+        super().__init__(message)
+        self.detail = detail
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -28,7 +30,9 @@ def _json_http(url: str, data: dict | None, headers: dict, timeout: float = 15) 
         headers={"Content-Type": "application/json", **headers},
         method="POST" if data is not None else "GET",
     )
-    opener = urllib.request.build_opener(_NoRedirect())
+    # Broker authentication stays on the selected local endpoint regardless of
+    # ambient HTTP_PROXY/HTTPS_PROXY settings; redirects remain disabled.
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
     try:
         with opener.open(request, timeout=timeout) as response:
             return json.load(response)
@@ -37,7 +41,7 @@ def _json_http(url: str, data: dict | None, headers: dict, timeout: float = 15) 
             detail = json.load(exc)
         except (json.JSONDecodeError, ValueError):
             detail = {"error": "http_error"}
-        raise ClientError(f"broker HTTP {exc.code}: {detail.get('error')}") from exc
+        raise ClientError(f"broker HTTP {exc.code}: {detail.get('error')}", detail=detail) from exc
 
 
 def _provider_http(

@@ -2,6 +2,8 @@
 
 狀態：2026-09-29 本地候選實作；已驗證一次短時唯讀 Doppler executor 秘密讀取，尚未驗證 NVIDIA 帳號、金鑰有效性、人工驗收或部署授權。起始版本 `0f2ad46529f0a22db35541bc02c737a5c046635e`，工作分支 `feat/nvidia-executor-admin`。本階段保留原 Google / Cloudflare 直連客戶端與配額服務，新增獨立 NVIDIA 執行服務及同源管理頁。
 
+現行 Doppler project 於 2026-10-01 原地改名為 `api-quota-broker`，config 仍為 `dev`。下文的 `api-provider-nvidia/dev` 是改名前執行與紀錄的歷史範圍；目前腳本的固定 project 已改為新 ID，歷史請求與收據未重跑或改寫。
+
 ## 行為契約
 
 - 客戶端只帶 broker 的獨立 bearer token，呼叫 `POST /v1/nvidia/text`，JSON 為 `request_key`（穩定不含敏感資料、只用 URI unreserved 字元的 opaque ID）、`prompt`、`max_output_tokens`。固定模型 `google/gemma-4-31b-it`、關閉推理（`enable_thinking=false`），固定 `https://integrate.api.nvidia.com/v1/chat/completions`；客戶端不能提供網址、模型、金鑰或標頭。僅支援單則純文字 user message、非串流。成功時回傳文字及供應商 usage；後續同鍵只回傳狀態，不重送或保存回答。
@@ -34,9 +36,9 @@ Doppler 讀取僅使用明確 project/config/name 的 HTTPS API `GET /v3/configs
 
 ## 本機短時唯讀驗證
 
-為先驗證 Doppler 而不依賴目標主機 TPM，管理者可在本機完成 Doppler CLI 互動登入（只限管理者；scope 不代表 OS 隔離）。先執行 `secrets --only-names --json` 並顯式指定 `api-provider-nvidia/dev`，只判斷 `NVIDIA_API_KEY` 名稱是否存在；不得執行會顯示值的 `secrets`、`secrets get --plain` 或 `doppler run`。網頁登入不等於 CLI 已登入。本機於 2026-09-29 使用上述顯式 project/config、`--no-read-env` 的唯讀名稱查詢，CLI exit=0；回應可解析為 4 個名稱，含 `NVIDIA_API_KEY`。原始 CLI 輸出已攔截而未顯示，也未讀取秘密值。這證實當次管理端 CLI 可查該 config 的名稱 metadata。
+為先驗證 Doppler 而不依賴目標主機 TPM，管理者可在本機完成 Doppler CLI 互動登入（只限管理者；scope 不代表 OS 隔離）。先執行 `secrets --only-names --json` 並顯式指定現行 `api-quota-broker/dev`，只判斷 `NVIDIA_API_KEY` 名稱是否存在；不得執行會顯示值的 `secrets`、`secrets get --plain` 或 `doppler run`。網頁登入不等於 CLI 已登入。本機於 2026-09-29 使用當時的 `api-provider-nvidia/dev`、`--no-read-env` 的唯讀名稱查詢，CLI exit=0；回應可解析為 4 個名稱，含 `NVIDIA_API_KEY`。原始 CLI 輸出已攔截而未顯示，也未讀取秘密值。這證實當次管理端 CLI 可查該 config 的名稱 metadata。
 
-`scripts/verify_doppler_executor_read.py` 是須經 main／使用者核准的一次性工具：要求互動 TTY 再次確認；以已登入的管理端 CLI 明確指定 project `api-provider-nvidia`、config `dev`、`--access read`、`--max-age 5m` 建立單一短時 Service Token（名稱帶隨機後綴），CLI stdout 只被 Python 捕獲於記憶體，不出現在 shell argv/history/log/chat 或明文檔。接著用與 executor 相同的直接 HTTPS API adapter 讀取 `NVIDIA_API_KEY`，只印成功／失敗，絕不印 token 或秘密值，也不呼叫 NVIDIA。程序退出後不保留 token；該 access 在最多 5 分鐘內自動到期。若建立結果不明，必須於 Doppler Access 的 metadata 核對是否出現短時 token，不以重試建立新 token 代替核對。這個工具不是常駐服務的 credential bootstrap，也不變更前述 TPM 部署候選。
+`scripts/verify_doppler_executor_read.py` 是須經 main／使用者核准的一次性工具：要求互動 TTY 再次確認；以已登入的管理端 CLI 明確指定現行 project `api-quota-broker`、config `dev`、`--access read`、`--max-age 5m` 建立單一短時 Service Token（名稱帶隨機後綴），CLI stdout 只被 Python 捕獲於記憶體，不出現在 shell argv/history/log/chat 或明文檔。接著用與 executor 相同的直接 HTTPS API adapter 讀取 `NVIDIA_API_KEY`，只印成功／失敗，絕不印 token 或秘密值，也不呼叫 NVIDIA。程序退出後不保留 token；該 access 在最多 5 分鐘內自動到期。若建立結果不明，必須於 Doppler Access 的 metadata 核對是否出現短時 token，不以重試建立新 token 代替核對。這個工具不是常駐服務的 credential bootstrap，也不變更前述 TPM 部署候選。
 
 使用者於 2026-09-29 明確核准本機一次性建立及讀取。本機執行工具 exit=0，僅回報 `metadata_name_present: yes`、`executor_secret_read: success`、`temporary_access_expiry: 5m from creation`。隨後只查 Doppler access metadata：符合本次 one-shot 名稱的紀錄恰為 1 個，`access=read`、project/config 為 `api-provider-nvidia/dev`、`expires_at=2026-09-29T09:08:37.000Z`。token 與秘密值均未輸出或保存；沒有呼叫 NVIDIA，也沒有部署。這只證明當次短時憑證可經 executor 的直接 HTTPS API adapter 讀取指定秘密，不能證明 NVIDIA 金鑰有效、免費資格或真實推論品質。此 Service Token 五分鐘到期，不能作為常駐服務 credential。
 
@@ -44,7 +46,7 @@ Doppler 讀取僅使用明確 project/config/name 的 HTTPS API `GET /v3/configs
 
 2026-09-29 核對 NVIDIA 官方 [Gemma 4 31B IT 頁面](https://build.nvidia.com/google/gemma-4-31b-it)：`google/gemma-4-31b-it` 的 Free Endpoint 顯示 Available，範例使用固定的 `https://integrate.api.nvidia.com/v1/chat/completions`；[API reference](https://docs.api.nvidia.com/nim/reference/google-gemma-4-31b-it-infer) 支援純文字 message，並明示 `chat_template_kwargs.enable_thinking=false` 可關閉推理。原固定模型 `meta/llama-3.1-8b-instruct` 的官方 Free Endpoint 已顯示 Deprecated，因此改用此仍有免費端點的固定模型。這是產品頁的公開證據，不代表本帳號可用、剩餘額度或不會收費。
 
-`uv run --locked python -m scripts.nvidia_smoke_once` 是僅供已授權、在本機 TTY 執行的一次性檢查。它沿用已登入的 Doppler 管理端 CLI，先只查 `NVIDIA_API_KEY` 名稱；以 `api-provider-nvidia/dev` 的整個 config 建立 5 分鐘到期唯讀 Service Token，記憶體中經 executor 的 HTTPS adapter 讀取秘密一次，再用相同固定路由 transport 送出 `Reply with OK.`，關閉推理，`max_tokens=16`。此路徑不使用 `NvidiaExecutor` 的正式配額 admission，也不填入猜測的 RPM、RPD 或 input TPM；程序只送一次、同時最多一個請求、無重試或付費 fallback。發送前建立忽略 Git 的 `.state/nvidia-smoke-once.json`，僅保存模型、狀態、時間、HTTP status 與可核對的 usage/request ID；不保存 token、供應商金鑰、prompt 或回答文字。檔案存在即拒絕再跑；超時、斷線或 HTTP 202 保留 unknown/pending，絕不再 POST。若 202 回傳可辨識 request ID，僅保存該 ID 供人工另行核對。CLI 只回報安全狀態與用量，不輸出秘密或原始 provider 回應。
+`uv run --locked python -m scripts.nvidia_smoke_once` 是僅供已授權、在本機 TTY 執行的一次性檢查。它沿用已登入的 Doppler 管理端 CLI，先只查 `NVIDIA_API_KEY` 名稱；以現行 `api-quota-broker/dev` 的整個 config 建立 5 分鐘到期唯讀 Service Token，記憶體中經 executor 的 HTTPS adapter 讀取秘密一次，再用相同固定路由 transport 送出 `Reply with OK.`，關閉推理，`max_tokens=16`。此路徑不使用 `NvidiaExecutor` 的正式配額 admission，也不填入猜測的 RPM、RPD 或 input TPM；程序只送一次、同時最多一個請求、無重試或付費 fallback。發送前建立忽略 Git 的 `.state/nvidia-smoke-once.json`，僅保存模型、狀態、時間、HTTP status 與可核對的 usage/request ID；不保存 token、供應商金鑰、prompt 或回答文字。檔案存在即拒絕再跑；超時、斷線或 HTTP 202 保留 unknown/pending，絕不再 POST。若 202 回傳可辨識 request ID，僅保存該 ID 供人工另行核對。CLI 只回報安全狀態與用量，不輸出秘密或原始 provider 回應。
 
 ### 2026-09-29 單次真實 smoke 的逾時收尾
 

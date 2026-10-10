@@ -1,0 +1,125 @@
+# 七家 API v1 本地驗證邊界（2026-10-02）
+
+**歷史驗收紀錄（2026-10-02）。** 2026-10-09正常1.0部署、三筆新live呼叫與重啟驗收見[ASUS維運](asus-broker-ops.md)；下列64-token smoke及未部署描述保留當時範圍，不是現行正常池上限。
+
+本地可擴充資源池、加密queue及工程驗收另見[v1-core-contract.md](v1-core-contract.md)；本輪零新live呼叫，以下收據與unknown未改。
+
+## 目前結果
+
+**七家代表能力均已有真實成功證據；Mistral完整回答驗收已通過（Cloudflare Neurons仍未知）。** Groq正常路由HTTP200／stop／完整回答及76+18tokens結算；NVIDIA一般LLM正常Gateway取得完整回答與31+3tokens結算。Mistral的可用正常路徑為`ministral-3b-latest`：修正model gate後取得200與partial結算，再以獨立零GET／1POST完成HTTP200／stop／未截斷／完整回答及13+3tokens結算（台北2026-10-02 14:54:40–41，latency614ms）。Small歷史429（1300／rate_limited）的確切bucket仍未知，舊identity／unknown與3B partial收據保留。六家文字API與OCR.space的代表能力已經統一路由與SQLite驗證；這不等於所有模型全通、持續配額保證或已部署。歷史NVIDIA Riva翻譯成功亦不能解釋Gemma逾時。詳見[各輪診斷與驗收](v1-remaining-provider-plan.md)。
+
+3B已納入catalog與正常transport；其後v1.0本地框架階段在`gateway.example.json`新增獨立disabled 3B target，原disabled Small及live profile未變，沒有啟用路由或自動模型替代。正常CLI／API選用3B須有明確且當前資格有效的3B target，再指定`provider=mistral`與`model=ministral-3b-latest`；細節見[v1本地使用指南](v1-local-guide.md)。以下各輪失敗與待驗描述是當時狀態，最新結果以上述結論為準。
+
+後續v1.0框架工程驗證：完整312項fixture回歸、Ruff／mypy通過，新增唯讀diagnostics／recent與CLI查詢；本階段零新live請求。詳見[v1框架驗證](v1-local-guide.md#本階段驗證)。
+
+本分支實作七家固定路由與 SQLite 逐次嘗試紀錄。`scripts/v1_smoke_once.py` 的預設模式只列計畫。本地 fixture 是工程驗證，不能視為帳號或真實服務已通。2026-10-02 在使用者批准後，以五分鐘 config 唯讀 Service Token 執行兩輪初始 smoke。第一輪 NVIDIA 單次 POST 逾時，收據為 `unknown`；Gemini 在送出前失敗，沒有派送。第二輪根據第一輪收據排除 NVIDIA，Gemini 與其餘五家各派送一次。初始範圍合計七家各至多一筆已派送 HTTP，均不重送。舊收據保留在 `.state/v1-smoke-2026-10-02.sqlite` 與 `.state/v1-smoke-2026-10-02-remaining.sqlite`，不存憑證、秘密或回應內容。使用者其後明確批准一次追加診斷，結果如下。
+
+| 供應商 | 實測收據 | HTTP | 回報用量 | 本地估算／限制 |
+| --- | --- | --- | --- | --- |
+| NVIDIA | `unknown`，60 秒逾時 | 無回應 | 未知 | 輸入上界 376 tokens；實際是否執行未知 |
+| Gemini | `unknown` | 404 | 未知 | 輸入上界 376 tokens；首輪送出前失敗，次輪才派送 |
+| Cloudflare | `completed_usage_unknown` | 200 | 未回報 tokens／Neurons | 輸入上界 376 tokens、Neurons 本地上界 30；實際 Neurons 未知，保留 hold |
+| Groq | `unknown` | 403 | 未知 | 輸入上界 376 tokens |
+| Mistral | `unknown` | 429 | 未知 | 輸入上界 376 tokens；未證明明確配額拒絕 |
+| OpenRouter | `completed` | 200 | 17 輸入、47 輸出 tokens，供應商回報 | 固定零價 `:free` 模型 |
+| OCR.space | `completed`，合成 `OK` 圖辨識成功 | 200 | conversion 用量未回報 | 送出 129-byte PNG；本地只記 1 筆 HTTP |
+
+HTTP 200 證明單次 API 呼叫回傳，但不證明免費帳號的餘額或刷新週期。404／403／429 的原因沒有可靠的細分證據；不推定模型不可用、權限或配額耗盡。`unknown` 與 `completed_usage_unknown` 均不自動重送。上述輸入上界是本地保留量，不是供應商用量。
+
+### 已批准追加診斷的結果
+
+使用者明確回答「同意這輪追加診斷」，批准一筆 Gemini 模型 GET 與 Gemini／Mistral／Cloudflare／NVIDIA 各最多一筆新 POST；精確 live 命令經正式執行審查通過後於 2026-10-02 執行一次。新收據 `.state/v1-diagnose-2026-10-02.sqlite` mode `0600`，沒有重跑。
+
+| 供應商／方法 | 新結果 | 延遲 | 供應商回報用量／限制 |
+| --- | --- | --- | --- |
+| Gemini models GET | 200，3.5 Flash-Lite 可見並支援 `generateContent` | 未單獨記錄 | 單頁 GET 一次；沒有翻頁 |
+| Gemini 3.5 Flash-Lite POST | 200，`completed` | 879 ms | 輸入 20、輸出 1 token；本地 reservation 已結算 |
+| Mistral POST | 429，`unknown`，`provider_http_error` | 563 ms | 未回報用量，未產生符合白名單的細分類別；保留 hold |
+| Cloudflare POST | 200，`completed_usage_unknown` | 1174 ms | `result.usage` 正確取得輸入 60、輸出 2 tokens；Neurons 未回報，保留 hold |
+| NVIDIA POST | `unknown`，`timeout_before_headers` | 60219 ms | 未取得 HTTP headers 或用量；保留新 hold，舊 hold 亦保留 |
+
+這輪已證明 Gemini 的新免費候選可被此 key 呼叫，以及 Cloudflare 用量解析修正可處理真實 `result.usage`；不能由此倒推舊 404 或舊 Cloudflare body 的具體內容。NVIDIA 已縮小到收到 headers 前逾時，仍無法分辨 DNS／連線／TLS／TTFB／模型等待。Mistral 429 的確切限額或帳號原因仍須有權限者在 Admin Panel 查證，沒有升級或使用 Admin key。Groq／OpenRouter／OCR.space 沒有新請求。這輪共一筆 GET、四筆 POST；舊七筆派送收據與舊 `unknown` 原樣保全。七家全面可用的驗收仍未通過。
+
+## 2026-10-02 根因追查與修正
+
+- **Cloudflare 解析缺陷已確認並修正。** [官方 REST API](https://developers.cloudflare.com/workers-ai/get-started/rest-api/)以 `result` 包裝模型輸出，[模型 schema](https://developers.cloudflare.com/workers-ai/models/llama-3.2-1b-instruct/)及[Run API schema](https://developers.cloudflare.com/api/resources/ai/methods/run/)列出模型 `usage`。舊解析器只讀最外層 `usage`，會漏掉 `result.usage`。新解析器接受兩種已知位置，若兩處衝突則不採用用量。官方 schema 的 token 用量欄位不保證包含 Neurons；缺 Neurons 時仍保留配額 hold。第一次真實回應內容未保存，故不能追認它實際帶有任何 token 數值。
+- **Gemini 新模型已成功，舊 404 仍不可追認原因。** [Google 退場／存取頁](https://ai.google.dev/gemini-api/docs/deprecations)明確限制新專案使用 2.5 Flash-Lite，推薦 3.5 Flash-Lite；[官方定價](https://ai.google.dev/gemini-api/docs/pricing)列 3.5 Flash-Lite 的免費輸入與輸出。v1 的停用範例路由已改為 `gemini-3.5-flash-lite`，舊 2.5 模型保留於 catalog 供歷史收據辨識。Google 標準錯誤也可能是數字 `error.code=404` 與 `error.status=NOT_FOUND`；新診斷器只分類為 `google_not_found`，不從自由文字猜測模型原因。原始 404 body 未保存，仍不能確認本帳號是否因這項限制而失敗；追加診斷已取得新模型 GET 可見及 POST 200 的真實證據。
+- **Groq 的新唯讀探針確認本機還有邊緣封鎖。** 協調 task 對 `GET /openai/v1/models` 做的無認證唯讀檢查回 HTTP 403，頂層 `error_code=1010`、`error_name=browser_signature_banned`。這符合 [Cloudflare Error 1010](https://developers.cloudflare.com/support/troubleshooting/http-status-codes/cloudflare-1xxx-errors/error-1010/) 的客戶端指紋封鎖，應由網站擁有者處理；不改 User-Agent／IP 或偽裝瀏覽器繞過。此 GET 的證據不能倒推先前 POST 403 必然同因：舊回應 body 未保存。[Groq 官方錯誤碼](https://console.groq.com/docs/errors)及[模型權限文件](https://console.groq.com/docs/model-permissions)也列 403 權限受限與組織／專案模型封鎖。新增固定白名單分類，以後若看到 1010 或官方模型封鎖碼才記錄相應非秘密代碼；不保存任意訊息。
+- **Mistral 兩次 429 仍未能細分。** [官方用量與限制](https://docs.mistral.ai/admin/billing-usage/usage-limits)說明 Free mode 的組織、Workspace 和模型限額；[錯誤格式](https://docs.mistral.ai/resources/error-glossary)使用頂層 `object/type/code`，`rate_limit_error` 是固定類別。追加回應未符合已知白名單，兩次收據均沒有足以判斷確切限制的錯誤類別或用量。原始 body 已丟棄，不能回補分類。診斷器其後補上固定結構類別，區分非 JSON、非物件、未識別的頂層 error、巢狀 error 與其他 envelope；不保存任意 `type/code/message` 值，也不改寫此次收據。這只改善未來診斷，尚未解決實際 429，不會自動重送、釋放 hold 或升級付費。
+- **NVIDIA 新逾時已定位在收到 HTTP headers 前。** 協調 task 的無認證 `GET /v1/models` 回 200、包含模型列表且約 155 ms，證明當時從主機可達模型列表端點；不能推論推論 POST 成功或失敗。舊收據只有 60 秒 timeout 與無 HTTP 回應；追加的新請求約 60 秒逾時，記錄 `timeout_before_headers`，排除了收到 headers 後讀 body 的逾時，但仍不能區分 DNS／連線／TLS／首位元組等待／模型執行。兩筆均維持 `unknown`，沒有重播。
+
+未來回應會以固定、非秘密診斷碼區分憑證取得與請求建構的送出前失敗，並對 Google／Groq／Mistral 的已知官方錯誤碼做白名單分類。這些修正不會改寫舊收據或推定舊 body。使用者已批准並完成一次追加診斷，該次一筆 GET、四筆 POST 上限已用完；若要再做供應商查詢或新推論，需明確擴大次數上限。
+
+本地又補上 Mistral 記憶體內秘密過濾及固定訊息提示／next_check，未知字句仍保守未分類；提示不等於已確認根因。待批准方案的 NVIDIA 改為既有 Nemotron 3.5 一般 LLM、32 tokens、thinking=false、120 秒上限及 DNS／TCP／TLS／首位元組 timing，要求非空可見回答、`finish_reason=stop` 與完整用量；Riva／Gemma 請求契約保持既有行為。沒有新 live 呼叫，沒有要求使用者付款、換 key 或變更服務。
+
+Groq 專項在 main 與本 task 的直接人類批准後，正式工具審查通過，已用五分鐘 Doppler config 唯讀 token、key 程序內讀一次，執行 GET 1／POST 1（上限已用完）。2026-10-02 台北 11:01:05–06，認證 models GET200 且固定模型可見；GPT-OSS 20B POST200、非空可見輸出、供應商 input78／output32 tokens、finish_reason=length。本輪 key／模型權限路徑可用；32-token 截斷未過本地 stop 成功條件，新 attempt／hold 保留 unknown，舊 unknown 不變。詳細 UTC／request ID／cf-ray 與條件說明見 [Groq 專項結果](v1-remaining-provider-plan.md#已批准的-groq-專項本輪結果)。沒有其他 provider 呼叫／付費／部署。最小程式與完整本地 suite 177 passed；fixture 不替代以上 live 收據。
+
+其後 main 人類批准正式整合：Groq 現在於正常 `provider_http` 分支使用 bounded curl，CLI／API 無需診斷 transport 注入。`length` 保留 partial answer、finish／truncation metadata，可信實際用量正常結算；缺失／矛盾用量維持 `completed_usage_unknown` 和hold，不fallback／replay。nullable欄位可重入遷移，舊收據／holds不回寫。完整本地suite **205 passed**，新增28項正式路由、截斷、用量、schema、CLI-HTTP與新單筆script驗證；Ruff／format／mypy通過。獨立新POST完整回答驗證經正式審查獲准，2026-10-02台北12:16:07已用正常Gateway執行成功（HTTP200／stop／76+18 tokens／ledger completed／exact READY比對true），1 POST／零GET上限已用完，舊四DB bytes不變。詳見 [正式整合階段](v1-remaining-provider-plan.md#groq-正式整合階段2026-10-02)；不部署。
+
+最新NVIDIA／Mistral問題解決階段：正常路由與安全diagnostics已整合，完整suite **221 passed**。經正式審查於2026-10-02台北13:10–13:11，各送1認證models GET／1正常Gateway POST；NVIDIA Lightning **200／stop／完整回答／31+3 tokens／ledger completed**，約44.6秒，主要等首位元組；MistralGET200模型可見，POST429且rate-limit範圍未識別，無用量，保留444-token本地估算hold。第二POST未使用、不重播舊unknown，六份舊DB bytes不變。Mistral必要帳戶Limits資料由main統一收集，未登入帳戶或更動設定；七家全面完成仍未達成。詳見 [本輪結果與剩餘資料](v1-remaining-provider-plan.md#本輪真實結果與剩餘必要資料)。
+
+## 已批准與執行的追加診斷範圍
+
+`scripts/v1_diagnose_once.py` 預設只列計畫；使用者擴大原次數上限後已執行 live 一次，**本輪上限已用完，不可重執行**。它先唯讀核對兩份舊 smoke DB 各供應商的派送數，再以 `0600` 獨占建立固定新收據 `.state/v1-diagnose-2026-10-02.sqlite`，新 request key 和不同的 `READY` 提示詞不重播舊請求。Doppler `api-quota-broker/dev` 五分鐘整個 config 唯讀 Service Token 只在程序記憶體；單次序列執行，近到期即停，不自動換 token。舊 `unknown` 與配額 hold 保留原樣。新收據只存固定診斷碼、狀態及供應商回報的數值用量，不存 token、key、輸入、輸出或任意回應本文。
+
+| 順序 | 新請求上限 | 用途與停止條件 |
+| --- | --- | --- |
+| 1 | Gemini `GET https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000` × 1 | 用現有 `GEMINI_API_KEY` 查 `gemini-3.5-flash-lite` 是否列出且支援 `generateContent`；單頁不完整或未列出就跳過 Gemini POST，不自動翻頁。[官方 ListModels](https://ai.google.dev/api/models) |
+| 2 | Gemini `POST /v1beta/models/gemini-3.5-flash-lite:generateContent` × 1 | 只有上一步明確符合才送；固定官方免費級別候選，64 輸出 tokens 上限。 |
+| 3 | Mistral `POST https://api.mistral.ai/v1/chat/completions` × 1 | 固定 `mistral-small-latest`、64 輸出 tokens；白名單記錄官方頂層錯誤類別，不把 429 自動重試或視為已釋放 hold。 |
+| 4 | Cloudflare `POST https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/run/@cf/meta/llama-3.2-1b-instruct` × 1 | 驗證修正後 `result.usage` 解析；64 輸出 tokens。若回報 tokens 但沒有實際 Neurons，仍保留 `completed_usage_unknown`。 |
+| 5 | NVIDIA `POST https://integrate.api.nvidia.com/v1/chat/completions` × 1 | 固定 `google/gemma-4-31b-it`、64 輸出 tokens、新提示詞與新識別；舊 `unknown` 不變。若再逾時，只區分「收到 HTTP headers 前」與「讀 body 期間」；前者**不能**再區分 DNS／連線／TLS／首位元組等待／模型執行。 |
+
+總上限為**一筆使用憑證的模型清單 GET、四筆新的獨立推論 POST**，已全部使用。Groq 的匿名 GET 1010 不足以證明認證請求同因；使用者最新方向是先查 Groq，最小下一步為另行批准正式帶認證的有界診斷，只有回明確碼後才交站方或對應 org/project 管理者。先前把站方解封列為必要前置條件的判斷已更正，詳見 [Groq 證據與操作分支](v1-remaining-provider-plan.md#groq)。OpenRouter、OCR.space 已成功，不重測。不使用 Mistral Enterprise Admin key、不升級付費、不部署。Mistral Free mode／Workspace 可用額度仍須由有權限者在 [Admin Panel](https://docs.mistral.ai/admin/billing-usage/usage-limits) 核對；新呼叫也回 429，但不足以證明兩次為同一原因。Cloudflare 舊 200 的實際 Neurons 若需補帳，應由帳號管理者查 Usage dashboard，不能由新呼叫回填。任何新 GET／POST 均須使用者先**明確擴大原次數上限**。
+
+本輪已經執行的唯一 live 命令，**不可重執行**：
+
+```bash
+.venv/bin/python scripts/v1_diagnose_once.py --live --db /home/ubuntu/projects/api-quota-broker/.state/v1-diagnose-2026-10-02.sqlite
+```
+
+## 固定路由與唯讀名稱
+
+| 供應商 | 固定模型／能力 | 官方端點 | Doppler 名稱 |
+| --- | --- | --- | --- |
+| NVIDIA | `nvidia/nemotron-3.5-lightning-30b-a3b`，文字成功；原Gemma逾時保留 | `https://integrate.api.nvidia.com/v1/chat/completions` | `NVIDIA_API_KEY` |
+| Gemini | `gemini-3.5-flash-lite`，文字；原實測為 `gemini-2.5-flash-lite` | `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent` | `GEMINI_API_KEY` |
+| Cloudflare | `@cf/meta/llama-3.2-1b-instruct`，文字 | `https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/run/@cf/meta/llama-3.2-1b-instruct` | `CLOUDFLARE_API_TOKEN`，`CLOUDFLARE_ACCOUNT_ID` |
+| Groq | `openai/gpt-oss-20b`，文字 | `https://api.groq.com/openai/v1/chat/completions` | `GROQ_API_KEY` |
+| Mistral | `ministral-3b-latest`，文字成功；原Small仍429 | `https://api.mistral.ai/v1/chat/completions` | `MISTRAL_API_KEY` |
+| OpenRouter | `liquid/lfm-2.5-2.6b:free`，文字 | `https://openrouter.ai/api/v1/chat/completions` | `OPENROUTER_API_KEY` |
+| OCR.space | Engine 2，單張 PNG/JPEG | `https://api.ocr.space/parse/image` | `OCRSPACE_API_KEY` |
+
+2026-10-02 Doppler `api-quota-broker/dev` 唯讀名稱核對顯示上表名稱均存在；`GOOGLE_API_KEY` 不存在，故 Gemini 用 `GEMINI_API_KEY`。這只證明名稱存在，沒有驗證值、權限、帳號方案或餘額。舊 `api-provider-nvidia/dev` 名稱查詢失敗；不能以舊名稱的批准建立新專案 token。
+
+## 官方依據與資料語義
+
+- [Gemini 錯誤碼](https://ai.google.dev/gemini-api/docs/api-errors)區分 429 `RESOURCE_EXHAUSTED`／配額碼與 503；[速率限制](https://ai.google.dev/gemini-api/docs/rate-limits)依專案和模型，實際帳號值仍未知。
+- [Cloudflare Workers AI 錯誤碼](https://developers.cloudflare.com/workers-ai/platform/errors/)把每日免費額度耗盡列為 429／`3036`，容量不足是不同的 `3040`；[定價](https://developers.cloudflare.com/workers-ai/platform/pricing/)提供每日 10,000 Neurons 免費配額與所選模型換算率。smoke 的 `neuron_bound=30` 是根據每百萬輸入 2,457／輸出 18,252 Neurons、短輸入與 64 輸出 token 所設的保守**本地估算**，不是供應商用量回報。
+- [Groq 限制與 429 回應](https://console.groq.com/docs/rate-limits)記載 `openai/gpt-oss-20b` Free 基準 30 RPM、1,000 RPD、8,000 TPM、200,000 TPD；實際組織額度可能不同。僅帶 `retry-after` 的結構化 429 才可轉往不同帳號 scope。
+- [Mistral Free mode](https://docs.mistral.ai/getting-started/quickstarts/studio/activate-and-generate-api-key)不要求信用卡；[用量限制](https://docs.mistral.ai/admin/billing-usage/usage-limits)包含組織層級及月度用量，帳號數值未知。
+- [OCR.space Free API](https://ocr.space/ocrapi)提供每月 25,000 次 Engine 1/2 conversion、每日每 IP 500 次、免費檔案上限 1 MB。本 v1 限縮為單張不超過 36 KB 的 PNG/JPEG；OCR 回傳文字不進 SQLite。此前 OCR 真實 key 讀取與 POST 曾被自動審查拒絕；本輪使用者已明確批准七家各一次，續測仍須經正式執行審查。
+- [OpenRouter 公開模型目錄](https://openrouter.ai/api/v1/models)在 2026-10-02 顯示固定 `:free` 模型 prompt/completion 價格為零。live 前腳本會重新核對所有回傳價格欄位均為零及純文字輸入輸出；[額度說明](https://openrouter.ai/docs/api_reference/limits)的帳號餘額仍須與實際 key 分開確認。請勿加入 OpenRouter `models` 自動 fallback。
+- NVIDIA 現有模型的[官方 API 參考](https://docs.api.nvidia.com/nim/reference/google-gemma-4-31b-it-infer)證明路徑與請求形式；使用者提到的 40 RPM 是速率上限，**不等於**總免費額度或刷新週期。帳號可用性仍待真實回應。
+
+曾檢查 `nemotron-mini-4b-instruct` 作更小的 NVIDIA smoke 候選；[NVIDIA 模型詳情頁](https://build.nvidia.com/nvidia/nemotron-mini-4b-instruct)目前未提供可核對的 Free Endpoint 狀態，因此沒有僅憑搜尋列表將固定候選改成它。
+
+停用的 `gateway.example.json` 也包含 Cloudflare 官方每日 10,000 Neurons、UTC 00:00 重置的 `short_renewable`／86,400 秒證據，標明 placeholder account scope、來源及七天有效期；target 仍 disabled、free_eligible=false，不能因此推定帳號可用。bounded smoke 會以同一官方規則建立五分鐘有效的 runtime profile，作**免費額度刷新排序**；實際帳號餘額仍未知。其他供應商 capacity 保持 unknown：OCR 月 conversion、Groq 日請求上限與 Mistral 月 included usage 尚不能以此短刷新欄位可靠表達。RPM/TPM 只作限流，不代表免費額度按分鐘刷新。`gateway_attempts` 記錄每次派送的 HTTP、延遲、供應商回報量和本地估算；`gateway_tasks` 是任務摘要。`usage.requests` 計數已派送 HTTP 次數，包括已明確拒絕的請求；`ledger_charges` 為配額核算，其中已確認未執行的配額拒絕歸零。未知結果保留 hold，不重送。
+
+## 故障切換與有界 smoke
+
+只有官方文件明確表示未執行的配額拒絕會釋放本地 hold、設定 account/project scope 冷卻，並在同一任務依明確max_attempts上限（1..32）、每目標最多一次的邊界內改選其他帳號 scope。現有辨識：Gemini 結構化配額碼、Cloudflare `3036`、Groq 帶 `retry-after` 的結構化 429，以及 OpenRouter 平台 `error.metadata.error_type=rate_limit_exceeded`、沒有 upstream `provider_code`、同時帶齊三項 `X-RateLimit-*` 標頭的 429。帶 usage／partial content 的 429 不切換。NVIDIA、Mistral、OCR.space 尚無足夠可靠的結構化配額拒絕辨識，故不會由其 429 自動 fallback。其餘 429、逾時、斷線、5xx、回應格式錯誤維持 unknown，不能自動重送或改路由。認證／模型錯誤只診斷，不認定配額耗盡。
+
+`scripts/v1_smoke_once.py` 的 live 方案是 `api-quota-broker/dev` 整個 config 唯讀、五分鐘到期的 Doppler Service Token，只留在程序記憶體；每家至多一筆，七筆總量，輸出上限 64 token，循序執行，每筆 provider HTTP 最多 60 秒，臨近 token 到期即停。使用新 `v1-smoke-*` SQLite 檔先獨占建立非敏感收據，不能對同一 DB 意外重跑。腳本使用本地產生的 `OK` PNG，驗證 OCR 回應是否含預期字樣，只輸出布林結果。個別供應商送出前失敗後可繼續獨立測其他家；token 時效則停止。續測指定 `--provider` 與 `--prior-db`，會以唯讀方式核對前次收據並拒絕再次派送已送出供應商。
+
+兩份收據檔 mode 均為 `0600`，父目錄 `0700`。32-byte HMAC key 在程序記憶體隨機產生，不另存 key 檔。第二輪實際執行的續測命令如下，**不可重執行**：
+
+```bash
+.venv/bin/python scripts/v1_smoke_once.py --live --db /home/ubuntu/projects/api-quota-broker/.state/v1-smoke-2026-10-02-remaining.sqlite --prior-db /home/ubuntu/projects/api-quota-broker/.state/v1-smoke-2026-10-02.sqlite --provider google --provider cloudflare --provider groq --provider mistral --provider openrouter --provider ocrspace
+```
+
+## 本地驗證
+
+Ubuntu完整suite由221／238／253進展至model gate首版修正的 **263 passed**；之後精確路由優先與派送防護變更另驗 **28項**，最終零GET完整回答script另驗 **6項**。263不是最終HEAD全套測試數，沒有宣稱最終完整273項通過。fixture涵蓋七家路由、OCR表單、秘密不落庫、quota／cooldown、用量結算、curl邊界、模型gate、截斷與未知用量、舊收據唯讀及防重跑，無真實provider呼叫。最後程式變更後Ruff check／59檔format與mypy 15 source files通過；最終文件diff檢查通過。詳見[驗證鏈](v1-remaining-provider-plan.md#本地驗證)。
+
+本階段live證據限於當時帳戶Free資格與各固定代表能力；未驗證未來配額、所有模型、OCR真實文件品質或常駐部署。Cloudflare Neurons與Small429確切bucket仍未知。最終Mistral收據mode0600／父目錄0700、quick_check ok／FK0，十份舊DB hash不變；沒有秘密、原始回應或實際輸入輸出落庫。

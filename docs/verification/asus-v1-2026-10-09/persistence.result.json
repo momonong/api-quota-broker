@@ -1,0 +1,48 @@
+{
+  "snapshot_checks": {
+    "keys": true,
+    "recent": true,
+    "usage": true,
+    "catalog": true
+  },
+  "services": {
+    "api-quota-broker.service": {
+      "ActiveState": "active",
+      "SubState": "running",
+      "MainPID": "391487",
+      "Result": "success",
+      "NRestarts": "0",
+      "ExecMainStartTimestampMonotonic": "1051551404789",
+      "LimitNOFILE": "128"
+    },
+    "api-quota-broker-client.service": {
+      "ActiveState": "active",
+      "SubState": "exited",
+      "MainPID": "0",
+      "Result": "success",
+      "NRestarts": "0",
+      "ExecMainStartTimestampMonotonic": "1051551418525",
+      "LimitNOFILE": "524288"
+    },
+    "orderflow.service": {
+      "ActiveState": "active",
+      "SubState": "running",
+      "MainPID": "240075",
+      "Result": "success",
+      "NRestarts": "0",
+      "ExecMainStartTimestampMonotonic": "690258498304",
+      "LimitNOFILE": "524288"
+    },
+    "ssh.service": {
+      "ActiveState": "active",
+      "SubState": "running",
+      "MainPID": "172081",
+      "Result": "success",
+      "NRestarts": "0",
+      "ExecMainStartTimestampMonotonic": "515138274924",
+      "LimitNOFILE": "524288"
+    }
+  },
+  "provider_posts_added_by_restart": 0,
+  "original_queue_execution_retained": true
+}

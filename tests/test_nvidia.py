@@ -421,7 +421,7 @@ def test_runtime_doppler_adapter_rejects_personal_cli_token():
     from quota_broker.nvidia import doppler_resolver_from_token
 
     with pytest.raises(ValueError, match="Service Token"):
-        doppler_resolver_from_token("dp.ct." + "a" * 40, "api-provider-nvidia", "dev")
+        doppler_resolver_from_token("dp.ct." + "a" * 40, "api-quota-broker", "dev")
 
 
 def test_nvidia_429_header_metadata_and_cooldown(tmp_path, monkeypatch):

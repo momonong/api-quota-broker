@@ -164,9 +164,15 @@ def make_nvidia_server(
             providers = "".join(
                 "<tr><td>"
                 + html.escape(
-                    {"google": "Google", "cloudflare": "Cloudflare", "nvidia": "NVIDIA"}[
-                        model.provider
-                    ]
+                    {
+                        "google": "Google",
+                        "cloudflare": "Cloudflare",
+                        "nvidia": "NVIDIA",
+                        "groq": "Groq",
+                        "mistral": "Mistral",
+                        "openrouter": "OpenRouter",
+                        "ocrspace": "OCR.space",
+                    }[model.provider]
                 )
                 + "</td><td>"
                 + html.escape(model.model)

@@ -224,3 +224,7 @@ config.local.json
 
 # Local non-secret smoke receipt; preserve uncertain dispatch state.
 .state/
+
+# Local account/catalog state, deployment seals and historical machine receipts.
+/data/
+/docs/evidence/

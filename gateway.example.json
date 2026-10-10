@@ -1,0 +1,1041 @@
+{
+  "targets": [
+    {
+      "id": "google-project-unverified",
+      "provider": "google",
+      "model": "gemini-3.5-flash-lite",
+      "account_id": "replace-with-project-id",
+      "enabled": false,
+      "free_eligible": false,
+      "billing_enabled": false,
+      "verified_at": null,
+      "expires_at": null,
+      "source": "Manual free-eligibility and billing check required",
+      "priority": 0,
+      "concurrency_limit": 1,
+      "shared_concurrency_scope": "google:project:replace",
+      "shared_concurrency_limit": 1,
+      "max_output_tokens": 256,
+      "local_safety_caps": [
+        {
+          "bucket": "google:project:replace:rpm",
+          "metric": "requests",
+          "limit": 1,
+          "window": "rolling_minute",
+          "timezone": "UTC"
+        },
+        {
+          "bucket": "google:project:replace:tpm",
+          "metric": "input_tokens",
+          "limit": 1024,
+          "window": "rolling_minute",
+          "timezone": "UTC"
+        },
+        {
+          "bucket": "google:project:replace:rpd",
+          "metric": "requests",
+          "limit": 1,
+          "window": "day",
+          "timezone": "America/Los_Angeles"
+        }
+      ],
+      "provider_quota_facts": [
+        {
+          "metric": "requests",
+          "window": "rolling_minute",
+          "limit": {
+            "value": null,
+            "provenance": "unknown",
+            "as_of": null,
+            "source": null,
+            "scope": null,
+            "valid_until": null
+          },
+          "remaining": {
+            "value": null,
+            "provenance": "unknown",
+            "as_of": null,
+            "source": null,
+            "scope": null,
+            "valid_until": null
+          }
+        },
+        {
+          "metric": "input_tokens",
+          "window": "rolling_minute",
+          "limit": {
+            "value": null,
+            "provenance": "unknown",
+            "as_of": null,
+            "source": null,
+            "scope": null,
+            "valid_until": null
+          },
+          "remaining": {
+            "value": null,
+            "provenance": "unknown",
+            "as_of": null,
+            "source": null,
+            "scope": null,
+            "valid_until": null
+          }
+        },
+        {
+          "metric": "requests",
+          "window": "day",
+          "limit": {
+            "value": null,
+            "provenance": "unknown",
+            "as_of": null,
+            "source": null,
+            "scope": null,
+            "valid_until": null
+          },
+          "remaining": {
+            "value": null,
+            "provenance": "unknown",
+            "as_of": null,
+            "source": null,
+            "scope": null,
+            "valid_until": null
+          }
+        }
+      ],
+      "capacity": {
+        "kind": "unknown",
+        "refresh_seconds": null,
+        "as_of": null,
+        "source": null,
+        "scope": null,
+        "expires_at": null
+      },
+      "secret_ref": "GEMINI_API_KEY"
+    },
+    {
+      "id": "cloudflare-account-unverified",
+      "provider": "cloudflare",
+      "model": "@cf/meta/llama-3.2-1b-instruct",
+      "account_id": "replace-with-account-id",
+      "account_id_ref": "CLOUDFLARE_ACCOUNT_ID",
+      "enabled": false,
+      "free_eligible": false,
+      "billing_enabled": false,
+      "verified_at": null,
+      "expires_at": null,
+      "source": "Manual free-eligibility and billing check required",
+      "priority": 1,
+      "concurrency_limit": 1,
+      "shared_concurrency_scope": "cloudflare:account:replace",
+      "shared_concurrency_limit": 1,
+      "max_output_tokens": 256,
+      "local_safety_caps": [
+        {
+          "bucket": "cloudflare:account:replace:neurons",
+          "metric": "neurons",
+          "limit": 1,
+          "window": "day",
+          "timezone": "UTC"
+        },
+        {
+          "bucket": "cloudflare:account:replace:text-rpm",
+          "metric": "requests",
+          "limit": 1,
+          "window": "rolling_minute",
+          "timezone": "UTC"
+        },
+        {
+          "bucket": "cloudflare:account:replace:text-rpd",
+          "metric": "requests",
+          "limit": 1,
+          "window": "day",
+          "timezone": "UTC"
+        }
+      ],
+      "provider_quota_facts": [
+        {
+          "metric": "neurons",
+          "window": "day",
+          "limit": {
+            "value": null,
+            "provenance": "unknown",
+            "as_of": null,
+            "source": null,
+            "scope": null,
+            "valid_until": null
+          },
+          "remaining": {
+            "value": null,
+            "provenance": "unknown",
+            "as_of": null,
+            "source": null,
+            "scope": null,
+            "valid_until": null
+          }
+        },
+        {
+          "metric": "requests",
+          "window": "rolling_minute",
+          "limit": {
+            "value": null,
+            "provenance": "unknown",
+            "as_of": null,
+            "source": null,
+            "scope": null,
+            "valid_until": null
+          },
+          "remaining": {
+            "value": null,
+            "provenance": "unknown",
+            "as_of": null,
+            "source": null,
+            "scope": null,
+            "valid_until": null
+          }
+        },
+        {
+          "metric": "requests",
+          "window": "day",
+          "limit": {
+            "value": null,
+            "provenance": "unknown",
+            "as_of": null,
+            "source": null,
+            "scope": null,
+            "valid_until": null
+          },
+          "remaining": {
+            "value": null,
+            "provenance": "unknown",
+            "as_of": null,
+            "source": null,
+            "scope": null,
+            "valid_until": null
+          }
+        }
+      ],
+      "capacity": {
+        "kind": "short_renewable",
+        "refresh_seconds": 86400,
+        "as_of": "2026-10-02T00:00:00+00:00",
+        "source": "https://developers.cloudflare.com/workers-ai/platform/pricing/",
+        "scope": "cloudflare:account:replace daily free neurons; account eligibility unverified",
+        "expires_at": "2026-10-09T00:00:00+00:00"
+      },
+      "secret_ref": "CLOUDFLARE_API_TOKEN"
+    },
+    {
+      "provider": "nvidia",
+      "account_id": "replace-with-confirmed-account-scope",
+      "enabled": false,
+      "free_eligible": false,
+      "billing_enabled": false,
+      "verified_at": null,
+      "expires_at": null,
+      "source": "Manual account and Free Endpoint eligibility check required",
+      "priority": 0,
+      "concurrency_limit": 1,
+      "shared_concurrency_scope": "nvidia:account:replace",
+      "shared_concurrency_limit": 1,
+      "max_output_tokens": 16,
+      "secret_ref": "NVIDIA_API_KEY",
+      "local_safety_caps": [
+        {
+          "bucket": "nvidia:account:replace:rpm",
+          "metric": "requests",
+          "limit": 1,
+          "window": "rolling_minute",
+          "timezone": "UTC"
+        },
+        {
+          "bucket": "nvidia:account:replace:rpd",
+          "metric": "requests",
+          "limit": 1,
+          "window": "day",
+          "timezone": "UTC"
+        },
+        {
+          "bucket": "nvidia:account:replace:input-tpm",
+          "metric": "input_tokens",
+          "limit": 1024,
+          "window": "rolling_minute",
+          "timezone": "UTC"
+        }
+      ],
+      "provider_quota_facts": [
+        {
+          "metric": "requests",
+          "window": "rolling_minute",
+          "limit": {
+            "value": null,
+            "provenance": "unknown",
+            "as_of": null,
+            "source": null,
+            "scope": null,
+            "valid_until": null
+          },
+          "remaining": {
+            "value": null,
+            "provenance": "unknown",
+            "as_of": null,
+            "source": null,
+            "scope": null,
+            "valid_until": null
+          }
+        },
+        {
+          "metric": "requests",
+          "window": "day",
+          "limit": {
+            "value": null,
+            "provenance": "unknown",
+            "as_of": null,
+            "source": null,
+            "scope": null,
+            "valid_until": null
+          },
+          "remaining": {
+            "value": null,
+            "provenance": "unknown",
+            "as_of": null,
+            "source": null,
+            "scope": null,
+            "valid_until": null
+          }
+        },
+        {
+          "metric": "input_tokens",
+          "window": "rolling_minute",
+          "limit": {
+            "value": null,
+            "provenance": "unknown",
+            "as_of": null,
+            "source": null,
+            "scope": null,
+            "valid_until": null
+          },
+          "remaining": {
+            "value": null,
+            "provenance": "unknown",
+            "as_of": null,
+            "source": null,
+            "scope": null,
+            "valid_until": null
+          }
+        }
+      ],
+      "capacity": {
+        "kind": "unknown",
+        "refresh_seconds": null,
+        "as_of": null,
+        "source": null,
+        "scope": null,
+        "expires_at": null
+      },
+      "id": "nvidia-riva-unverified",
+      "model": "nvidia/riva-translate-4b-instruct-v2"
+    },
+    {
+      "provider": "nvidia",
+      "account_id": "replace-with-confirmed-account-scope",
+      "enabled": false,
+      "free_eligible": false,
+      "billing_enabled": false,
+      "verified_at": null,
+      "expires_at": null,
+      "source": "Manual account and Free Endpoint eligibility check required",
+      "priority": 0,
+      "concurrency_limit": 1,
+      "shared_concurrency_scope": "nvidia:account:replace",
+      "shared_concurrency_limit": 1,
+      "max_output_tokens": 16,
+      "secret_ref": "NVIDIA_API_KEY",
+      "local_safety_caps": [
+        {
+          "bucket": "nvidia:account:replace:rpm",
+          "metric": "requests",
+          "limit": 1,
+          "window": "rolling_minute",
+          "timezone": "UTC"
+        },
+        {
+          "bucket": "nvidia:account:replace:rpd",
+          "metric": "requests",
+          "limit": 1,
+          "window": "day",
+          "timezone": "UTC"
+        },
+        {
+          "bucket": "nvidia:account:replace:input-tpm",
+          "metric": "input_tokens",
+          "limit": 1024,
+          "window": "rolling_minute",
+          "timezone": "UTC"
+        }
+      ],
+      "provider_quota_facts": [
+        {
+          "metric": "requests",
+          "window": "rolling_minute",
+          "limit": {
+            "value": null,
+            "provenance": "unknown",
+            "as_of": null,
+            "source": null,
+            "scope": null,
+            "valid_until": null
+          },
+          "remaining": {
+            "value": null,
+            "provenance": "unknown",
+            "as_of": null,
+            "source": null,
+            "scope": null,
+            "valid_until": null
+          }
+        },
+        {
+          "metric": "requests",
+          "window": "day",
+          "limit": {
+            "value": null,
+            "provenance": "unknown",
+            "as_of": null,
+            "source": null,
+            "scope": null,
+            "valid_until": null
+          },
+          "remaining": {
+            "value": null,
+            "provenance": "unknown",
+            "as_of": null,
+            "source": null,
+            "scope": null,
+            "valid_until": null
+          }
+        },
+        {
+          "metric": "input_tokens",
+          "window": "rolling_minute",
+          "limit": {
+            "value": null,
+            "provenance": "unknown",
+            "as_of": null,
+            "source": null,
+            "scope": null,
+            "valid_until": null
+          },
+          "remaining": {
+            "value": null,
+            "provenance": "unknown",
+            "as_of": null,
+            "source": null,
+            "scope": null,
+            "valid_until": null
+          }
+        }
+      ],
+      "capacity": {
+        "kind": "unknown",
+        "refresh_seconds": null,
+        "as_of": null,
+        "source": null,
+        "scope": null,
+        "expires_at": null
+      },
+      "id": "nvidia-gemma-unverified",
+      "model": "google/gemma-4-31b-it"
+    },
+    {
+      "provider": "nvidia",
+      "account_id": "replace-with-confirmed-account-scope",
+      "enabled": false,
+      "free_eligible": false,
+      "billing_enabled": false,
+      "verified_at": null,
+      "expires_at": null,
+      "source": "Manual account and Free Endpoint eligibility check required",
+      "priority": 0,
+      "concurrency_limit": 1,
+      "shared_concurrency_scope": "nvidia:account:replace",
+      "shared_concurrency_limit": 1,
+      "max_output_tokens": 16,
+      "secret_ref": "NVIDIA_API_KEY",
+      "local_safety_caps": [
+        {
+          "bucket": "nvidia:account:replace:rpm",
+          "metric": "requests",
+          "limit": 1,
+          "window": "rolling_minute",
+          "timezone": "UTC"
+        },
+        {
+          "bucket": "nvidia:account:replace:rpd",
+          "metric": "requests",
+          "limit": 1,
+          "window": "day",
+          "timezone": "UTC"
+        },
+        {
+          "bucket": "nvidia:account:replace:input-tpm",
+          "metric": "input_tokens",
+          "limit": 1024,
+          "window": "rolling_minute",
+          "timezone": "UTC"
+        }
+      ],
+      "provider_quota_facts": [
+        {
+          "metric": "requests",
+          "window": "rolling_minute",
+          "limit": {
+            "value": null,
+            "provenance": "unknown",
+            "as_of": null,
+            "source": null,
+            "scope": null,
+            "valid_until": null
+          },
+          "remaining": {
+            "value": null,
+            "provenance": "unknown",
+            "as_of": null,
+            "source": null,
+            "scope": null,
+            "valid_until": null
+          }
+        },
+        {
+          "metric": "requests",
+          "window": "day",
+          "limit": {
+            "value": null,
+            "provenance": "unknown",
+            "as_of": null,
+            "source": null,
+            "scope": null,
+            "valid_until": null
+          },
+          "remaining": {
+            "value": null,
+            "provenance": "unknown",
+            "as_of": null,
+            "source": null,
+            "scope": null,
+            "valid_until": null
+          }
+        },
+        {
+          "metric": "input_tokens",
+          "window": "rolling_minute",
+          "limit": {
+            "value": null,
+            "provenance": "unknown",
+            "as_of": null,
+            "source": null,
+            "scope": null,
+            "valid_until": null
+          },
+          "remaining": {
+            "value": null,
+            "provenance": "unknown",
+            "as_of": null,
+            "source": null,
+            "scope": null,
+            "valid_until": null
+          }
+        }
+      ],
+      "capacity": {
+        "kind": "unknown",
+        "refresh_seconds": null,
+        "as_of": null,
+        "source": null,
+        "scope": null,
+        "expires_at": null
+      },
+      "id": "nvidia-lightning-unverified",
+      "model": "nvidia/nemotron-3.5-lightning-30b-a3b"
+    },
+    {
+      "id": "groq-organization-unverified",
+      "provider": "groq",
+      "model": "openai/gpt-oss-20b",
+      "account_id": "replace-with-organization-id",
+      "enabled": false,
+      "free_eligible": false,
+      "billing_enabled": false,
+      "verified_at": null,
+      "expires_at": null,
+      "source": "Manual Free plan, API access, billing and model eligibility check required",
+      "priority": 2,
+      "concurrency_limit": 1,
+      "shared_concurrency_scope": "groq:organization:replace",
+      "shared_concurrency_limit": 1,
+      "max_output_tokens": 256,
+      "local_safety_caps": [
+        {
+          "bucket": "groq:organization:replace:rpm",
+          "metric": "requests",
+          "limit": 1,
+          "window": "rolling_minute",
+          "timezone": "UTC"
+        },
+        {
+          "bucket": "groq:organization:replace:tpm",
+          "metric": "input_tokens",
+          "limit": 1024,
+          "window": "rolling_minute",
+          "timezone": "UTC"
+        },
+        {
+          "bucket": "groq:organization:replace:rpd",
+          "metric": "requests",
+          "limit": 1,
+          "window": "day",
+          "timezone": "UTC"
+        }
+      ],
+      "provider_quota_facts": [
+        {
+          "metric": "requests",
+          "window": "rolling_minute",
+          "limit": {
+            "value": null,
+            "provenance": "unknown",
+            "as_of": null,
+            "source": null,
+            "scope": null,
+            "valid_until": null
+          },
+          "remaining": {
+            "value": null,
+            "provenance": "unknown",
+            "as_of": null,
+            "source": null,
+            "scope": null,
+            "valid_until": null
+          }
+        },
+        {
+          "metric": "input_tokens",
+          "window": "rolling_minute",
+          "limit": {
+            "value": null,
+            "provenance": "unknown",
+            "as_of": null,
+            "source": null,
+            "scope": null,
+            "valid_until": null
+          },
+          "remaining": {
+            "value": null,
+            "provenance": "unknown",
+            "as_of": null,
+            "source": null,
+            "scope": null,
+            "valid_until": null
+          }
+        },
+        {
+          "metric": "requests",
+          "window": "day",
+          "limit": {
+            "value": null,
+            "provenance": "unknown",
+            "as_of": null,
+            "source": null,
+            "scope": null,
+            "valid_until": null
+          },
+          "remaining": {
+            "value": null,
+            "provenance": "unknown",
+            "as_of": null,
+            "source": null,
+            "scope": null,
+            "valid_until": null
+          }
+        }
+      ],
+      "capacity": {
+        "kind": "unknown",
+        "refresh_seconds": null,
+        "as_of": null,
+        "source": null,
+        "scope": null,
+        "expires_at": null
+      },
+      "secret_ref": "GROQ_API_KEY"
+    },
+    {
+      "id": "mistral-ministral-3b-unverified",
+      "provider": "mistral",
+      "model": "ministral-3b-latest",
+      "account_id": "replace-with-organization-id",
+      "enabled": false,
+      "free_eligible": false,
+      "billing_enabled": false,
+      "verified_at": null,
+      "expires_at": null,
+      "source": "Manual Free plan, API access, billing and model eligibility check required",
+      "priority": 2,
+      "concurrency_limit": 1,
+      "shared_concurrency_scope": "mistral:organization:replace",
+      "shared_concurrency_limit": 1,
+      "max_output_tokens": 512,
+      "local_safety_caps": [
+        {
+          "bucket": "mistral:organization:replace:rpm",
+          "metric": "requests",
+          "limit": 1,
+          "window": "rolling_minute",
+          "timezone": "UTC"
+        },
+        {
+          "bucket": "mistral:organization:replace:tpm",
+          "metric": "input_tokens",
+          "limit": 1024,
+          "window": "rolling_minute",
+          "timezone": "UTC"
+        },
+        {
+          "bucket": "mistral:organization:replace:rpd",
+          "metric": "requests",
+          "limit": 1,
+          "window": "day",
+          "timezone": "UTC"
+        }
+      ],
+      "provider_quota_facts": [
+        {
+          "metric": "requests",
+          "window": "rolling_minute",
+          "limit": {
+            "value": null,
+            "provenance": "unknown",
+            "as_of": null,
+            "source": null,
+            "scope": null,
+            "valid_until": null
+          },
+          "remaining": {
+            "value": null,
+            "provenance": "unknown",
+            "as_of": null,
+            "source": null,
+            "scope": null,
+            "valid_until": null
+          }
+        },
+        {
+          "metric": "input_tokens",
+          "window": "rolling_minute",
+          "limit": {
+            "value": null,
+            "provenance": "unknown",
+            "as_of": null,
+            "source": null,
+            "scope": null,
+            "valid_until": null
+          },
+          "remaining": {
+            "value": null,
+            "provenance": "unknown",
+            "as_of": null,
+            "source": null,
+            "scope": null,
+            "valid_until": null
+          }
+        },
+        {
+          "metric": "requests",
+          "window": "day",
+          "limit": {
+            "value": null,
+            "provenance": "unknown",
+            "as_of": null,
+            "source": null,
+            "scope": null,
+            "valid_until": null
+          },
+          "remaining": {
+            "value": null,
+            "provenance": "unknown",
+            "as_of": null,
+            "source": null,
+            "scope": null,
+            "valid_until": null
+          }
+        }
+      ],
+      "capacity": {
+        "kind": "unknown",
+        "refresh_seconds": null,
+        "as_of": null,
+        "source": null,
+        "scope": null,
+        "expires_at": null
+      },
+      "secret_ref": "MISTRAL_API_KEY"
+    },
+    {
+      "id": "mistral-organization-unverified",
+      "provider": "mistral",
+      "model": "mistral-small-latest",
+      "account_id": "replace-with-organization-id",
+      "enabled": false,
+      "free_eligible": false,
+      "billing_enabled": false,
+      "verified_at": null,
+      "expires_at": null,
+      "source": "Manual Free plan, API access, billing and model eligibility check required",
+      "priority": 3,
+      "concurrency_limit": 1,
+      "shared_concurrency_scope": "mistral:organization:replace",
+      "shared_concurrency_limit": 1,
+      "max_output_tokens": 256,
+      "local_safety_caps": [
+        {
+          "bucket": "mistral:organization:replace:rpm",
+          "metric": "requests",
+          "limit": 1,
+          "window": "rolling_minute",
+          "timezone": "UTC"
+        },
+        {
+          "bucket": "mistral:organization:replace:tpm",
+          "metric": "input_tokens",
+          "limit": 1024,
+          "window": "rolling_minute",
+          "timezone": "UTC"
+        },
+        {
+          "bucket": "mistral:organization:replace:rpd",
+          "metric": "requests",
+          "limit": 1,
+          "window": "day",
+          "timezone": "UTC"
+        }
+      ],
+      "provider_quota_facts": [
+        {
+          "metric": "requests",
+          "window": "rolling_minute",
+          "limit": {
+            "value": null,
+            "provenance": "unknown",
+            "as_of": null,
+            "source": null,
+            "scope": null,
+            "valid_until": null
+          },
+          "remaining": {
+            "value": null,
+            "provenance": "unknown",
+            "as_of": null,
+            "source": null,
+            "scope": null,
+            "valid_until": null
+          }
+        },
+        {
+          "metric": "input_tokens",
+          "window": "rolling_minute",
+          "limit": {
+            "value": null,
+            "provenance": "unknown",
+            "as_of": null,
+            "source": null,
+            "scope": null,
+            "valid_until": null
+          },
+          "remaining": {
+            "value": null,
+            "provenance": "unknown",
+            "as_of": null,
+            "source": null,
+            "scope": null,
+            "valid_until": null
+          }
+        },
+        {
+          "metric": "requests",
+          "window": "day",
+          "limit": {
+            "value": null,
+            "provenance": "unknown",
+            "as_of": null,
+            "source": null,
+            "scope": null,
+            "valid_until": null
+          },
+          "remaining": {
+            "value": null,
+            "provenance": "unknown",
+            "as_of": null,
+            "source": null,
+            "scope": null,
+            "valid_until": null
+          }
+        }
+      ],
+      "capacity": {
+        "kind": "unknown",
+        "refresh_seconds": null,
+        "as_of": null,
+        "source": null,
+        "scope": null,
+        "expires_at": null
+      },
+      "secret_ref": "MISTRAL_API_KEY"
+    },
+    {
+      "id": "openrouter-free-unverified",
+      "provider": "openrouter",
+      "model": "liquid/lfm-2.5-2.6b:free",
+      "account_id": "replace-with-account-scope",
+      "enabled": false,
+      "free_eligible": false,
+      "billing_enabled": false,
+      "verified_at": null,
+      "expires_at": null,
+      "source": "Account free eligibility and key access not yet verified",
+      "priority": 4,
+      "concurrency_limit": 1,
+      "shared_concurrency_scope": "openrouter:account:replace",
+      "shared_concurrency_limit": 1,
+      "max_output_tokens": 64,
+      "local_safety_caps": [
+        {
+          "bucket": "openrouter:account:replace:rpm",
+          "metric": "requests",
+          "limit": 1,
+          "window": "rolling_minute",
+          "timezone": "UTC"
+        },
+        {
+          "bucket": "openrouter:account:replace:rpd",
+          "metric": "requests",
+          "limit": 1,
+          "window": "day",
+          "timezone": "UTC"
+        }
+      ],
+      "provider_quota_facts": [
+        {
+          "metric": "requests",
+          "window": "day",
+          "limit": {
+            "value": null,
+            "provenance": "unknown",
+            "as_of": null,
+            "source": null,
+            "scope": null,
+            "valid_until": null
+          },
+          "remaining": {
+            "value": null,
+            "provenance": "unknown",
+            "as_of": null,
+            "source": null,
+            "scope": null,
+            "valid_until": null
+          }
+        }
+      ],
+      "capacity": {
+        "kind": "unknown",
+        "refresh_seconds": null,
+        "as_of": null,
+        "source": null,
+        "scope": null,
+        "expires_at": null
+      },
+      "secret_ref": "OPENROUTER_API_KEY"
+    },
+    {
+      "id": "ocrspace-engine2-unverified",
+      "provider": "ocrspace",
+      "model": "ocr.space/engine2",
+      "account_id": "replace-with-account-scope",
+      "enabled": false,
+      "free_eligible": false,
+      "billing_enabled": false,
+      "verified_at": null,
+      "expires_at": null,
+      "source": "Account free eligibility and key access not yet verified",
+      "priority": 5,
+      "concurrency_limit": 1,
+      "shared_concurrency_scope": "ocrspace:key-ip:replace",
+      "shared_concurrency_limit": 1,
+      "max_output_tokens": 1,
+      "local_safety_caps": [
+        {
+          "bucket": "ocrspace:key-ip:replace:rpm",
+          "metric": "requests",
+          "limit": 1,
+          "window": "rolling_minute",
+          "timezone": "UTC"
+        },
+        {
+          "bucket": "ocrspace:key-ip:replace:rpd",
+          "metric": "requests",
+          "limit": 1,
+          "window": "day",
+          "timezone": "UTC"
+        }
+      ],
+      "provider_quota_facts": [
+        {
+          "metric": "requests",
+          "window": "day",
+          "limit": {
+            "value": null,
+            "provenance": "unknown",
+            "as_of": null,
+            "source": null,
+            "scope": null,
+            "valid_until": null
+          },
+          "remaining": {
+            "value": null,
+            "provenance": "unknown",
+            "as_of": null,
+            "source": null,
+            "scope": null,
+            "valid_until": null
+          }
+        },
+        {
+          "metric": "conversions",
+          "window": "month",
+          "limit": {
+            "value": null,
+            "provenance": "unknown",
+            "as_of": null,
+            "source": null,
+            "scope": null,
+            "valid_until": null
+          },
+          "remaining": {
+            "value": null,
+            "provenance": "unknown",
+            "as_of": null,
+            "source": null,
+            "scope": null,
+            "valid_until": null
+          }
+        }
+      ],
+      "capacity": {
+        "kind": "unknown",
+        "refresh_seconds": null,
+        "as_of": null,
+        "source": null,
+        "scope": null,
+        "expires_at": null
+      },
+      "secret_ref": "OCRSPACE_API_KEY"
+    }
+  ]
+}

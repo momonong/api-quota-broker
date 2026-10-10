@@ -1,0 +1,40 @@
+[Unit]
+Description=Volatile morris API quota broker client credential
+After=api-quota-broker.service
+Requires=api-quota-broker.service
+PartOf=api-quota-broker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+User=root
+Group=root
+RuntimeDirectory=api-quota-broker-client
+RuntimeDirectoryMode=0711
+RuntimeDirectoryPreserve=yes
+UMask=0077
+LoadCredentialEncrypted=client_token:/etc/api-quota-broker/credentials/client_token.cred
+ExecStart=/usr/bin/python3.14 -I -B -S /opt/api-quota-broker/current/deploy/asus/export_client_credential.py publish
+ExecStopPost=/usr/bin/python3.14 -I -B -S /opt/api-quota-broker/current/deploy/asus/export_client_credential.py cleanup
+StandardOutput=null
+StandardError=journal
+LimitCORE=0
+MemoryMax=64M
+MemorySwapMax=0
+TasksMax=8
+NoNewPrivileges=yes
+CapabilityBoundingSet=CAP_CHOWN
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+PrivateNetwork=yes
+RestrictAddressFamilies=AF_UNIX
+ReadWritePaths=/run/api-quota-broker-client
+InaccessiblePaths=/var/lib/api-quota-broker /var/backups/api-quota-broker /etc/api-quota-broker/credentials /etc/api-quota-broker-ops
+TimeoutStartSec=15
+TimeoutStopSec=15
+
+[Install]
+WantedBy=multi-user.target

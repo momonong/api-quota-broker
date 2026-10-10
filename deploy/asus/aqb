@@ -1,0 +1,3 @@
+#!/bin/sh
+# Run as the invoking user; no sudo, token value, shell evaluation, or provider key.
+exec /opt/api-quota-broker/current/runtime/bin/python -I -m quota_broker.cli gateway "$@"

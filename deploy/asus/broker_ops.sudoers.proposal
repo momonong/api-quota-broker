@@ -1,0 +1,3 @@
+# Review candidate only; must check effective policy, not just this fragment.
+Defaults:broker-deploy timestamp_timeout=0, passwd_tries=1, !pwfeedback, !use_pty, !rootpw, !targetpw, !noninteractive_auth
+broker-deploy ALL=(root:root) PASSWD: /usr/local/libexec/api-quota-broker-control ""

@@ -1,0 +1,39 @@
+[Unit]
+Description=Fixed bounded Broker private history audit
+
+[Service]
+Type=oneshot
+Slice=system.slice
+User=root
+Group=root
+ExecStart=/usr/bin/python3.14 -I -B -S /usr/local/lib/api-quota-broker-ops/history_audit_reader.py %i
+StandardInput=null
+StandardOutput=file:/var/lib/api-quota-broker-ops/history-audit/%i.result.json
+StandardError=null
+UMask=0077
+MemoryMax=384M
+MemorySwapMax=0
+LimitCORE=0
+CPUQuota=50%
+TasksMax=16
+RuntimeMaxSec=90
+TimeoutStartSec=90
+TimeoutStopSec=5
+KillMode=control-group
+Restart=no
+RemainAfterExit=no
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectControlGroups=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+PrivateDevices=yes
+PrivateNetwork=yes
+RestrictAddressFamilies=AF_UNIX
+IPAddressDeny=any
+CapabilityBoundingSet=CAP_DAC_READ_SEARCH
+ReadOnlyPaths=/var/lib/api-quota-broker /var/backups/api-quota-broker
+InaccessiblePaths=/etc/api-quota-broker/credentials /etc/api-quota-broker-ops/ops_doppler.cred /run/credentials
+ReadWritePaths=/var/lib/api-quota-broker-ops/history-audit

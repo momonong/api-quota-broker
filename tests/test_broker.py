@@ -83,7 +83,9 @@ def report(reservation, key, *, state="completed", usage=None, **extra):
         "state": state,
         "usage": usage
         if usage is not None
-        else (None if state == "unknown" else {"requests": 1, "input_tokens": 40}),
+        else (
+            None if state in {"unknown", "quota_rejected"} else {"requests": 1, "input_tokens": 40}
+        ),
         **extra,
     }
 
@@ -184,6 +186,34 @@ def test_429_cooldown_and_free_fail_closed(tmp_path):
         broker.reserve(request("during"))
     assert exc.value.wait_until == (clock.now + timedelta(seconds=90)).isoformat()
     clock.advance(seconds=91)
+    assert broker.reserve(request("after"))["state"] == "reserved"
+
+
+def test_quota_rejection_requires_429_and_releases_all_held_metrics(tmp_path):
+    clock = Clock(datetime(2026, 9, 25, 12, tzinfo=UTC))
+    broker = Broker(tmp_path / "quota.db", (target(clock, rpm=1),), clock)
+    reservation = broker.reserve(request("quota"))
+    broker.dispatch(reservation["reservation_id"])
+    bad = report(reservation, "bad", state="quota_rejected", usage=None, error_status=400)
+    with pytest.raises(BrokerError) as exc:
+        broker.report(bad)
+    assert exc.value.code == "invalid_request"
+    assert broker.status(reservation["reservation_id"])["state"] == "dispatched"
+    good = report(
+        reservation,
+        "good",
+        state="quota_rejected",
+        usage=None,
+        error_status=429,
+        retry_after_seconds=60,
+    )
+    result = broker.report(good)
+    assert result["state"] == "quota_rejected"
+    assert all(charge["amount"] == 0 for charge in result["charges"])
+    assert broker.report(good)["state"] == "quota_rejected"
+    with pytest.raises(BrokerError):
+        broker.reserve(request("during"))
+    clock.advance(seconds=61)
     assert broker.reserve(request("after"))["state"] == "reserved"
 
 

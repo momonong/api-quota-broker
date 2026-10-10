@@ -1,0 +1,36 @@
+{
+  "projection": {
+    "receipts": [
+      {
+        "mode": "asus_ops_socket_bootstrap",
+        "mtime_ns": "1791260682969549998",
+        "preflight_checks_passed": [
+          "identity",
+          "artifact_absence",
+          "parent_metadata",
+          "native_tools",
+          "sudo_version",
+          "socket_absence",
+          "template_absence",
+          "sudoers_syntax",
+          "proposal_syntax",
+          "service_baseline",
+          "gateway_metadata",
+          "broker_pins",
+          "host_key",
+          "credential_tool",
+          "ssh_policy",
+          "ssh_reload_interface",
+          "ssh_candidate",
+          "home_absence",
+          "job_absence",
+          "bootstrap_guard",
+          "receipt_storage"
+        ],
+        "provider_calls": 0,
+        "ssh_change_needed": true,
+        "status": "prepared"
+      }
+    ]
+  }
+}
