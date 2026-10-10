@@ -9,8 +9,44 @@ from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
 from .core import stamp
+from .discovery import DiscoveryError
+from .families import MediaLimits
 from .gateway import Gateway, GatewayError
 from .queue import DurableQueue
+
+
+def _json_depth(raw: bytes, maximum: int = 32) -> None:
+    depth = 0
+    quoted = escaped = False
+    for char in raw:
+        if quoted:
+            if escaped:
+                escaped = False
+            elif char == 92:
+                escaped = True
+            elif char == 34:
+                quoted = False
+        elif char == 34:
+            quoted = True
+        elif char in (91, 123):
+            depth += 1
+            if depth > maximum:
+                raise ValueError("invalid JSON depth")
+        elif char in (93, 125):
+            depth -= 1
+
+
+def _bounded_json(data: object, maximum: int) -> bytes:
+    pieces = []
+    size = 0
+    encoder = json.JSONEncoder(separators=(",", ":"), ensure_ascii=False, allow_nan=False)
+    for piece in encoder.iterencode(data):
+        encoded = piece.encode()
+        size += len(encoded)
+        if size > maximum:
+            raise ValueError("response exceeds limit")
+        pieces.append(encoded)
+    return b"".join(pieces)
 
 
 def make_gateway_server(
@@ -31,6 +67,7 @@ def make_gateway_server(
         len(admin_token) < 32 or hmac.compare_digest(admin_token, token)
     ):
         raise ValueError("separate administrator token required")
+    media_limits = getattr(gateway, "media_limits", MediaLimits())
     worker_state: dict[str, Any] = {
         "enabled": queue is not None and worker,
         "running": False,
@@ -44,7 +81,10 @@ def make_gateway_server(
             pass
 
         def _send(self, status: int, data: object) -> None:
-            body = json.dumps(data, separators=(",", ":"), ensure_ascii=True).encode()
+            try:
+                body = _bounded_json(data, media_limits.result_bytes)
+            except (ValueError, TypeError, OverflowError, RecursionError, UnicodeError):
+                status, body = 503, b'{"error":"internal_error"}'
             self.send_response(status)
             self.send_header("Content-Type", "application/json")
             self.send_header("Cache-Control", "no-store")
@@ -79,6 +119,41 @@ def make_gateway_server(
                     else:
                         raise GatewayError("invalid_request", "invalid administrator operation")
                     result = {"state": "updated", "target_id": parts[0]}
+                elif (
+                    self.command == "POST"
+                    and not parsed.query
+                    and parsed.path in {"/v1/admin/discovery/refresh", "/v1/admin/discovery/attest"}
+                ):
+                    if body is None:
+                        raise DiscoveryError("invalid_request", "missing discovery metadata")
+                    result = (
+                        gateway.discovery.refresh(body)
+                        if parsed.path.endswith("/refresh")
+                        else gateway.discovery.attest(body)
+                    )
+                elif self.command == "GET" and parsed.path == "/v1/coverage":
+                    query = parse_qs(parsed.query, keep_blank_values=True)
+                    if set(query) - {"provider", "model", "capability", "limit", "before"} or any(
+                        len(values) != 1 for values in query.values()
+                    ):
+                        raise DiscoveryError("invalid_request", "invalid coverage filters")
+                    raw_limit = query.get("limit", ["100"])[0]
+                    if not raw_limit.isascii() or not raw_limit.isdigit() or len(raw_limit) > 4:
+                        raise DiscoveryError("invalid_request", "invalid coverage limit")
+                    result = gateway.discovery.coverage(
+                        provider=query.get("provider", [None])[0],
+                        model=query.get("model", [None])[0],
+                        capability=query.get("capability", [None])[0],
+                        limit=int(raw_limit),
+                        before=query.get("before", [None])[0],
+                    )
+                elif self.command == "GET" and parsed.path == "/v1/coverage/candidates":
+                    query = parse_qs(parsed.query, keep_blank_values=True)
+                    if set(query) - {"provider"} or any(
+                        len(values) != 1 for values in query.values()
+                    ):
+                        raise DiscoveryError("invalid_request", "invalid candidate filters")
+                    result = gateway.discovery_candidates(provider=query.get("provider", [None])[0])
                 elif parsed.path == "/v1/queue" or parsed.path.startswith("/v1/queue/"):
                     if queue is None:
                         raise GatewayError("queue_disabled", "queue is not enabled")
@@ -162,7 +237,7 @@ def make_gateway_server(
                     return
                 self._send(200, result)
             except Exception as exc:  # noqa: BLE001 - never log provider or secret errors
-                if not isinstance(exc, GatewayError):
+                if not isinstance(exc, (GatewayError, DiscoveryError)):
                     self._send(503, {"error": "internal_error"})
                     return
                 status = {
@@ -172,7 +247,17 @@ def make_gateway_server(
                     "unavailable": 503,
                 }.get(exc.code, 503)
                 self._send(
-                    status, {"error": exc.code, "message": str(exc), "wait_until": exc.wait_until}
+                    status,
+                    {
+                        "error": exc.code,
+                        "message": str(exc),
+                        **(
+                            {"details": exc.details}
+                            if isinstance(exc, GatewayError) and exc.details is not None
+                            else {}
+                        ),
+                        "wait_until": getattr(exc, "wait_until", None),
+                    },
                 )
 
         def do_GET(self) -> None:
@@ -184,14 +269,21 @@ def make_gateway_server(
                 return
             try:
                 length = int(self.headers.get("Content-Length", "0"))
-                if not 0 < length <= 65_536:
+                max_bytes = (
+                    min(5 * 1024 * 1024, media_limits.request_bytes)
+                    if urlsplit(self.path).path == "/v1/admin/discovery/refresh"
+                    else media_limits.request_bytes
+                )
+                if not 0 < length <= max_bytes:
                     raise ValueError
                 if self.headers.get("Content-Type", "").split(";", 1)[0] != "application/json":
                     raise ValueError
-                body = json.loads(self.rfile.read(length))
+                raw = self.rfile.read(length)
+                _json_depth(raw)
+                body = json.loads(raw)
                 if not isinstance(body, dict):
                     raise TypeError
-            except (ValueError, TypeError, json.JSONDecodeError):
+            except (ValueError, TypeError, RecursionError, UnicodeError):
                 self._send(400, {"error": "invalid_request"})
                 return
             self._handle(body)

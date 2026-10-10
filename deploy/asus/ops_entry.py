@@ -40,11 +40,233 @@ MANIFEST_SHA = RELEASE.rsplit("-", 1)[1]
 UNIT_SHA = "6596ebca936ef42b8ff12d5bb25cdd2baf395791f172ee8403948006778ec060"
 ENV = {"PATH": "/usr/bin:/bin", "LANG": "C", "LC_ALL": "C"}
 READY = b"BROKER_AUTH_READY\n"
+SERVICE_TOKEN_PATTERN = rb"dp\.st\.(?:[a-z0-9\-_]{2,35}\.)?[a-zA-Z0-9]{40,44}"
 PROPS = "ActiveState,SubState,MainPID,ExecMainStartTimestampMonotonic,NRestarts"
+
+DIAGNOSTIC_STAGES = frozenset(
+    (
+        "entry",
+        "worker_peer",
+        "worker_request",
+        "worker_prepare",
+        "worker_package",
+        "worker_policy",
+        "worker_identity",
+        "worker_guard",
+        "worker_probe",
+        "worker_credential",
+        "worker_doppler",
+        "worker_session",
+        "worker_operation",
+        "worker_cleanup",
+        "helper_identity",
+        "helper_package",
+        "helper_policy",
+        "helper_sudo_identity",
+        "helper_guard",
+        "helper_pins",
+        "helper_request",
+        "helper_operation",
+        "client_identity",
+        "client_socket",
+        "client_connect",
+        "client_response",
+        "native_socket_start",
+        "native_client",
+        "native_worker_cleanup",
+    )
+)
+DIAGNOSTIC_CODES = frozenset(
+    (
+        "arguments_denied",
+        "authentication_bypass_or_probe_failure",
+        "authentication_failed",
+        "claim_storage_limit",
+        "client_denied",
+        "core_limit",
+        "core_limit_set_failed",
+        "core_limit_query_failed",
+        "credential_acl",
+        "credential_format",
+        "credential_metadata",
+        "credential_read_denied",
+        "credential_scope",
+        "diagnostic_unverified",
+        "directory_mode_untrusted",
+        "doppler_body_bound",
+        "doppler_endpoint",
+        "doppler_unavailable",
+        "doppler_auth_denied",
+        "doppler_rate_limited",
+        "doppler_response_unverified",
+        "dumpability",
+        "duplicate_json",
+        "file_mode_untrusted",
+        "helper_identity",
+        "identity_changed",
+        "invalid_json",
+        "memory_limit",
+        "native_exit",
+        "native_failed",
+        "native_os_failure",
+        "native_output_bound",
+        "native_timeout",
+        "operation_denied",
+        "operation_lock_untrusted",
+        "operation_unknown",
+        "package_digest",
+        "package_files",
+        "package_loader",
+        "package_schema",
+        "path_denied",
+        "peer_denied",
+        "pin_changed",
+        "pipe_bound",
+        "pipe_timeout",
+        "policy_fields",
+        "policy_values",
+        "release_changed",
+        "release_link_untrusted",
+        "release_path_untrusted",
+        "request_bound",
+        "request_denied",
+        "request_fields",
+        "request_id_invalid",
+        "required_path_inaccessible",
+        "required_path_missing",
+        "response_bound",
+        "response_unverified",
+        "restart_not_enabled",
+        "restart_unverified",
+        "root_directory_untrusted",
+        "root_file_changed",
+        "root_file_untrusted",
+        "runtime_file_type",
+        "runtime_link_untrusted",
+        "runtime_mutable",
+        "service_denied",
+        "service_unhealthy",
+        "socket_type",
+        "socket_untrusted",
+        "state_unverified",
+        "sudo_identity",
+        "sudo_privilege_transition_unavailable",
+        "swap_limit",
+        "tls_key_logging_denied",
+        "token_expired",
+        "unit_dropins_changed",
+        "unit_scope",
+        "unverified_exception",
+        "worker_cleanup_unverified",
+        "worker_identity",
+    )
+)
+DIAGNOSTIC_FIELDS = frozenset(
+    (
+        "status",
+        "stage",
+        "code",
+        "rc",
+        "operation",
+        "request_id",
+        "service",
+        "operation_may_have_completed",
+        "cleanup_unverified",
+        "automatic_retry",
+    )
+)
 
 
 class Denied(ValueError):
     """Fixed diagnostic codes; never stringify external exceptions."""
+
+    def __init__(self, code, *, rc=None, diagnostic=None):
+        super().__init__(code)
+        self.rc = rc
+        self.diagnostic = diagnostic
+
+
+def diagnostic(stage, error, *, req=None, rc=None, committed=False):
+    """Project fixed values only. Unknown/native text never crosses the boundary."""
+    require(stage in DIAGNOSTIC_STAGES, "diagnostic_unverified")
+    if not (
+        type(req) is dict
+        and set(req) == {"operation", "request_id"}
+        and req["operation"] in ("inspect", "restart")
+        and type(req["request_id"]) is str
+        and re.fullmatch("[a-f0-9]{32}", req["request_id"])
+    ):
+        req = None
+    existing = getattr(error, "diagnostic", None) if type(error) is Denied else None
+    if existing is not None:
+        return validate_diagnostic(existing, req=req, allow_unbound=True)
+    code = "unverified_exception"
+    if (
+        type(error) is Denied
+        and len(error.args) == 1
+        and type(error.args[0]) is str
+        and error.args[0] in DIAGNOSTIC_CODES
+    ):
+        code = error.args[0]
+        rc = error.rc if rc is None else rc
+    elif isinstance(error, OSError):
+        code = {2: "required_path_missing", 13: "required_path_inaccessible"}.get(
+            error.errno, "native_os_failure"
+        )
+    return {
+        "status": "blocked",
+        "stage": stage,
+        "code": code,
+        "rc": rc if type(rc) is int and -64 <= rc <= 255 else None,
+        "operation": req["operation"] if req else None,
+        "request_id": req["request_id"] if req else None,
+        "service": SERVICE,
+        "operation_may_have_completed": bool(committed),
+        "cleanup_unverified": False,
+        "automatic_retry": False,
+    }
+
+
+def validate_diagnostic(value, *, req=None, allow_unbound=False):
+    require(
+        type(value) is dict
+        and set(value) == DIAGNOSTIC_FIELDS
+        and value["status"] == "blocked"
+        and type(value["stage"]) is str
+        and value["stage"] in DIAGNOSTIC_STAGES
+        and type(value["code"]) is str
+        and value["code"] in DIAGNOSTIC_CODES
+        and value["service"] == SERVICE
+        and (value["rc"] is None or type(value["rc"]) is int and -64 <= value["rc"] <= 255)
+        and type(value["operation_may_have_completed"]) is bool
+        and type(value["cleanup_unverified"]) is bool
+        and value["automatic_retry"] is False,
+        "diagnostic_unverified",
+    )
+    unbound = value["operation"] is None and value["request_id"] is None
+    require(
+        unbound
+        and allow_unbound
+        or value["operation"] in ("inspect", "restart")
+        and type(value["request_id"]) is str
+        and re.fullmatch("[a-f0-9]{32}", value["request_id"]),
+        "diagnostic_unverified",
+    )
+    if req is not None:
+        require(
+            unbound
+            and allow_unbound
+            or (value["operation"], value["request_id"]) == (req["operation"], req["request_id"]),
+            "diagnostic_unverified",
+        )
+    result = dict(value)
+    if req is not None:
+        result.update(operation=req["operation"], request_id=req["request_id"])
+    return result
+
+
+def deny_diagnostic(value):
+    raise Denied(value["code"], rc=value["rc"], diagnostic=value)
 
 
 def require(ok, code):
@@ -55,6 +277,13 @@ def require(ok, code):
 def wipe(value):
     if isinstance(value, bytearray):
         value[:] = b"\0" * len(value)
+
+
+def valid_service_token(value):
+    # Official token-type syntax only; not proof of project/config/RO scope.
+    return (
+        type(value) in (bytes, bytearray) and re.fullmatch(SERVICE_TOKEN_PATTERN, value) is not None
+    )
 
 
 def strict_json(raw):
@@ -150,8 +379,23 @@ def package():
     return module
 
 
+def prevent_process_dumps():
+    """Re-establish process protection after exec/PAM, before any secret input."""
+    try:
+        resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+    except Exception:  # noqa: BLE001 - only a fixed code, never syscall text.
+        raise Denied("core_limit_set_failed") from None
+    try:
+        limits = resource.getrlimit(resource.RLIMIT_CORE)
+    except Exception:  # noqa: BLE001
+        raise Denied("core_limit_query_failed") from None
+    require(limits == (0, 0), "core_limit")
+    libc = ctypes.CDLL(None, use_errno=True)
+    require(libc.prctl(4, 0, 0, 0, 0) == 0 and libc.prctl(3, 0, 0, 0, 0) == 0, "dumpability")
+
+
 def memory_guard(*, bootstrap=False):
-    require(resource.getrlimit(resource.RLIMIT_CORE) == (0, 0), "core_limit")
+    prevent_process_dumps()
     cgroup = Path("/proc/self/cgroup").read_text().strip()
     prefix = "0::/system.slice/"
     require(cgroup.startswith(prefix), "unit_scope")
@@ -166,13 +410,12 @@ def memory_guard(*, bootstrap=False):
     require((p / "memory.swap.max").read_text().strip() == "0", "swap_limit")
     require((p / "memory.max").read_text().strip() == "134217728", "memory_limit")
     libc = ctypes.CDLL(None, use_errno=True)
-    require(libc.prctl(4, 0, 0, 0, 0) == 0 and libc.prctl(3, 0, 0, 0, 0) == 0, "dumpability")
     # sudo needs setuid; reject accidental systemd hardening that disables it.
     require(libc.prctl(39, 0, 0, 0, 0) == 0, "sudo_privilege_transition_unavailable")
 
 
-def native(argv, *, data=None, limit=16384, timeout=10):
-    """Caller constructs fixed commands. Never forward external stderr/argv."""
+def native_result(argv, *, data=None, limit=16384, timeout=10):
+    """Bounded fixed-command capture; callers validate bytes before projection."""
     p = subprocess.Popen(
         argv,
         stdin=subprocess.PIPE,
@@ -183,12 +426,25 @@ def native(argv, *, data=None, limit=16384, timeout=10):
     )
     try:
         out, _ = p.communicate(data, timeout=timeout)
-        require(p.returncode == 0 and len(out) <= limit, "native_failed")
-        return out
-    except Exception:  # noqa: BLE001 - external errors may contain secrets.
+        require(len(out) <= limit, "native_output_bound")
+        return p.returncode, out
+    except BaseException as error:
         p.kill()
         p.communicate()
+        if not isinstance(error, Exception):
+            raise
+        if type(error) is Denied:
+            raise
+        if isinstance(error, subprocess.TimeoutExpired):
+            raise Denied("native_timeout") from None
         raise Denied("native_failed") from None
+
+
+def native(argv, *, data=None, limit=16384, timeout=10):
+    rc, out = native_result(argv, data=data, limit=limit, timeout=timeout)
+    if rc != 0:
+        raise Denied("native_exit", rc=rc)
+    return out
 
 
 def service_state(name=SERVICE):
@@ -316,7 +572,7 @@ def token_read():
             acl = os.getxattr(fd, "system.posix_acl_access")
         credential_metadata(info, os.getuid(), acl)
         raw = bytearray(os.read(fd, 301))
-        require(re.fullmatch(rb"dp\.st\.dev\.[A-Za-z0-9_-]{32,256}", raw), "credential_format")
+        require(valid_service_token(raw), "credential_format")
         return raw
     except BaseException:
         wipe(raw)
@@ -422,14 +678,26 @@ class SudoSession:
         self.p.stdin.write(memoryview(password))
         self.p.stdin.write(b"\n")
         self.p.stdin.flush()
-        require(pipe_line(self.p.stdout.fileno(), limit=64) == READY, "authentication_failed")
+        first = pipe_line(self.p.stdout.fileno(), limit=4096)
+        if first != READY:
+            tail, _ = self.p.communicate(timeout=5)
+            if first and tail == b"":
+                value = validate_diagnostic(strict_json(first), req=req, allow_unbound=True)
+                require(self.p.returncode == 1, "diagnostic_unverified")
+                deny_diagnostic(value)
+            raise Denied("authentication_failed", rc=self.p.returncode)
         self.p.stdin.write(json.dumps(req, separators=(",", ":")).encode() + b"\n")
         self.p.stdin.close()
         self.p.stdin = None
         raw = pipe_line(self.p.stdout.fileno(), limit=4096, seconds=20)
         tail, _ = self.p.communicate(timeout=5)
-        require(self.p.returncode == 0 and tail == b"", "operation_unknown")
+        require(tail == b"", "operation_unknown")
         result = strict_json(raw)
+        if type(result) is dict and result.get("status") == "blocked":
+            value = validate_diagnostic(result, req=req)
+            require(self.p.returncode == 1, "diagnostic_unverified")
+            deny_diagnostic(value)
+        require(self.p.returncode == 0, "operation_unknown")
         require(
             type(result) is dict
             and result.get("status") == "passed"
@@ -491,44 +759,65 @@ def manage(
 ):
     token, password, session = None, None, None
     committed = False
+    doppler_code = "doppler_unavailable"
+
+    def checked_transport(path, headers):
+        nonlocal doppler_code
+        status, body = transport(path, headers)
+        if status in (401, 403):
+            doppler_code = "doppler_auth_denied"
+        elif status == 429:
+            doppler_code = "doppler_rate_limited"
+        elif status != 200:
+            doppler_code = "doppler_response_unverified"
+        return status, body
+
+    stage = "worker_request"
     try:
         request(json.dumps(req).encode())
+        stage = "worker_guard"
         guard()
+        stage = "worker_probe"
         probe()
+        stage = "worker_credential"
         token = load()
-        password = policy_module.password_from_doppler(token, transport)
+        stage = "worker_doppler"
+        password = policy_module.password_from_doppler(token, checked_transport)
+        stage = "worker_session"
         session = session_factory()
-        # Any failure after this call can include dispatch. Never retry.
+        stage = "worker_operation"
         committed = True
         result = session.execute(password, req)
-    except Exception:  # noqa: BLE001 - external errors may contain secrets.
-        result = {
-            "status": "blocked",
-            "code": "authentication_or_operation_unverified",
-            "operation_may_have_completed": committed,
-            "automatic_retry": False,
-        }
+    except Exception as error:  # noqa: BLE001 - only safe projection is emitted.
+        selected_error = Denied(doppler_code) if stage == "worker_doppler" else error
+        result = diagnostic(stage, selected_error, req=req, committed=committed)
     finally:
         wipe(token)
         wipe(password)
         if session is not None:
             try:
                 session.close()
-            except Exception:  # noqa: BLE001 - external errors may contain secrets.
-                result = {
-                    "status": "blocked",
-                    "code": "worker_cleanup_unverified",
-                    "operation_may_have_completed": True,
-                    "automatic_retry": False,
-                }
+            except Exception:  # noqa: BLE001
+                primary = result if result.get("status") == "blocked" else None
+                result = diagnostic(
+                    "worker_cleanup", Denied("worker_cleanup_unverified"), req=req, committed=True
+                )
+                # Keep the primary rejection without any raw cleanup exception.
+                if primary is not None:
+                    result = dict(primary)
+                    result["cleanup_unverified"] = True
+
     return result
 
 
 def worker_connection(conn, *, prepare, run):
+    req = None
+    stage = "worker_peer"
     try:
         require(conn.family == socket.AF_UNIX and conn.type == socket.SOCK_STREAM, "socket_type")
         _, uid, _ = struct.unpack("3i", conn.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
         require(uid == 1000, "peer_denied")
+        stage = "worker_request"
         conn.settimeout(5)
         raw = bytearray()
         while len(raw) <= 192:
@@ -536,26 +825,32 @@ def worker_connection(conn, *, prepare, run):
             if not part:
                 break
             raw.extend(part)
-            # Require client SHUT_WR; reject concatenated/replayed requests.
         req = request(bytes(raw))
+        stage = "worker_prepare"
         prepare()
+        stage = "worker_operation"
         result = run(req)
-    except Exception:  # noqa: BLE001 - external errors may contain secrets.
-        result = {
-            "status": "blocked",
-            "code": "request_or_worker_unverified",
-            "automatic_retry": False,
-        }
+    except Exception as error:  # noqa: BLE001
+        result = diagnostic(stage, error, req=req)
     conn.sendall(json.dumps(result, separators=(",", ":")).encode() + b"\n")
 
 
 def worker():
-    policy = package()
+    policy = None
 
     def prepare():
-        d = runtime_policy()
-        require(os.getuid() == d["ops_uid"] and os.geteuid() == os.getuid(), "worker_identity")
-        memory_guard()
+        nonlocal policy
+        stage = "worker_package"
+        try:
+            policy = package()
+            stage = "worker_policy"
+            d = runtime_policy()
+            stage = "worker_identity"
+            require(os.getuid() == d["ops_uid"] and os.geteuid() == os.getuid(), "worker_identity")
+            stage = "worker_guard"
+            memory_guard()
+        except Exception as error:  # noqa: BLE001
+            deny_diagnostic(diagnostic(stage, error))
 
     with socket.socket(fileno=os.dup(0)) as conn:
         worker_connection(
@@ -645,85 +940,128 @@ def helper_operation(req, *, state=STATE, pins, inspect, restart, package_check=
 
 
 def helper():
-    require(
-        len(sys.argv) == 2
-        and os.geteuid() == 0
-        and os.uname().nodename == "asus-ubuntu2604-server",
-        "helper_identity",
-    )
-    package()
-    d = runtime_policy()
-    require(os.environ.get("SUDO_UID") == str(d["ops_uid"]), "sudo_identity")
-    # Native wrong-password/bypass validation runs only inside the root-owned
-    # bounded bootstrap unit; normal operations run in the socket instance.
-    bootstrap = Path("/proc/self/cgroup").read_text().strip() == "0::/system.slice/" + BOOT_UNIT
-    memory_guard(bootstrap=bootstrap)
-    # Verify pins before READY or input. EOF is an effect-free auth probe.
-    broker_pins(d["config_sha256"])
-    os.write(1, READY)
-    raw = pipe_line(0, limit=192)
-    if raw == b"":
-        return
-    req = request(raw)
-    require(req["operation"] != "restart" or d["enabled"], "restart_not_enabled")
-    result = helper_operation(
-        req,
-        pins=lambda: broker_pins(d["config_sha256"]),
-        inspect=service_state,
-        restart=lambda: native(("/usr/bin/systemctl", "restart", SERVICE), timeout=20),
-        package_check=package,
-    )
-    os.write(1, json.dumps(result, sort_keys=True).encode() + b"\n")
+    req = None
+    stage = "helper_identity"
+    try:
+        require(
+            len(sys.argv) == 2
+            and os.geteuid() == 0
+            and os.uname().nodename == "asus-ubuntu2604-server",
+            "helper_identity",
+        )
+        # Do this before package/policy parsing and before READY/stdin input.
+        stage = "helper_guard"
+        prevent_process_dumps()
+        stage = "helper_package"
+        package()
+        stage = "helper_policy"
+        d = runtime_policy()
+        stage = "helper_sudo_identity"
+        require(os.environ.get("SUDO_UID") == str(d["ops_uid"]), "sudo_identity")
+        stage = "helper_guard"
+        bootstrap = Path("/proc/self/cgroup").read_text().strip() == "0::/system.slice/" + BOOT_UNIT
+        memory_guard(bootstrap=bootstrap)
+        stage = "helper_pins"
+        broker_pins(d["config_sha256"])
+        os.write(1, READY)
+        stage = "helper_request"
+        raw = pipe_line(0, limit=192)
+        if raw == b"":
+            return 0
+        req = request(raw)
+        require(req["operation"] != "restart" or d["enabled"], "restart_not_enabled")
+        stage = "helper_operation"
+        result = helper_operation(
+            req,
+            pins=lambda: broker_pins(d["config_sha256"]),
+            inspect=service_state,
+            restart=lambda: native(("/usr/bin/systemctl", "restart", SERVICE), timeout=20),
+            package_check=package,
+        )
+        os.write(1, json.dumps(result, sort_keys=True).encode() + b"\n")
+        return 0
+    except BaseException as error:  # noqa: BLE001 - includes interruption.
+        result = diagnostic(
+            stage,
+            error,
+            req=req,
+            committed=stage == "helper_operation" and req["operation"] == "restart",
+        )
+        if result["rc"] is None:
+            result["rc"] = 1
+        os.write(1, json.dumps(result, sort_keys=True).encode() + b"\n")
+        return 1
 
 
 def client(operation):
-    require(operation in ("inspect", "restart") and os.getuid() == 1000, "client_denied")
-    root_dir(Path(SOCKET).parent)
-    s = Path(SOCKET).lstat()
-    require(
-        stat.S_ISSOCK(s.st_mode)
-        and s.st_uid == 0
-        and s.st_gid == 1000
-        and stat.S_IMODE(s.st_mode) == 0o660,
-        "socket_untrusted",
+    req = (
+        {"operation": operation, "request_id": uuid.uuid4().hex}
+        if operation in ("inspect", "restart")
+        else None
     )
-    req = {"operation": operation, "request_id": uuid.uuid4().hex}
-    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as conn:
-        conn.settimeout(40)
-        conn.connect(SOCKET)
-        conn.sendall(json.dumps(req, separators=(",", ":")).encode())
-        conn.shutdown(socket.SHUT_WR)
-        raw = bytearray()
-        while len(raw) <= 4096:
-            part = conn.recv(4097 - len(raw))
-            if not part:
-                break
-            raw.extend(part)
-        require(len(raw) <= 4096, "response_bound")
-        result = strict_json(raw)
+    stage = "client_identity"
+    try:
+        require(operation in ("inspect", "restart") and os.getuid() == 1000, "client_denied")
+        stage = "client_socket"
+        root_dir(Path(SOCKET).parent)
+        s = Path(SOCKET).lstat()
         require(
-            type(result) is dict and result.get("status") in ("passed", "blocked"),
-            "response_unverified",
+            stat.S_ISSOCK(s.st_mode)
+            and s.st_uid == 0
+            and s.st_gid == 1000
+            and stat.S_IMODE(s.st_mode) == 0o660,
+            "socket_untrusted",
         )
-        if result["status"] == "passed":
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as conn:
+            conn.settimeout(40)
+            stage = "client_connect"
+            conn.connect(SOCKET)
+            conn.sendall(json.dumps(req, separators=(",", ":")).encode())
+            conn.shutdown(socket.SHUT_WR)
+            stage = "client_response"
+            raw = bytearray()
+            while len(raw) <= 4096:
+                part = conn.recv(4097 - len(raw))
+                if not part:
+                    break
+                raw.extend(part)
+            require(len(raw) <= 4096, "response_bound")
+            result = strict_json(raw)
             require(
-                set(result)
-                == {"status", "operation", "request_id", "service", "state", "automatic_retry"}
-                and result["operation"] == operation
-                and result["request_id"] == req["request_id"]
-                and result["service"] == SERVICE
-                and result["automatic_retry"] is False,
+                type(result) is dict and result.get("status") in ("passed", "blocked"),
                 "response_unverified",
             )
-        else:
-            result = {
-                "status": "blocked",
-                "code": "operation_unverified",
-                "request_id": req["request_id"],
-                "automatic_retry": False,
-            }
-        print(json.dumps(result, sort_keys=True))
-        return 0 if result["status"] == "passed" else 1
+            if result["status"] == "passed":
+                require(
+                    set(result)
+                    == {"status", "operation", "request_id", "service", "state", "automatic_retry"}
+                    and result["operation"] == operation
+                    and result["request_id"] == req["request_id"]
+                    and result["service"] == SERVICE
+                    and result["automatic_retry"] is False,
+                    "response_unverified",
+                )
+            else:
+                result = validate_diagnostic(result, req=req, allow_unbound=True)
+            if result["status"] == "passed":
+                state = result["state"]
+                require(
+                    type(state) is dict
+                    and set(state) == set(PROPS.split(","))
+                    and state["ActiveState"] == "active"
+                    and state["SubState"] == "running"
+                    and all(
+                        type(state[n]) is str and len(state[n]) <= 20 and state[n].isdigit()
+                        for n in ("MainPID", "NRestarts", "ExecMainStartTimestampMonotonic")
+                    )
+                    and int(state["MainPID"]) > 0,
+                    "state_unverified",
+                )
+            print(json.dumps(result, sort_keys=True))
+            return 0 if result["status"] == "passed" else 1
+    except BaseException as error:  # noqa: BLE001 - includes interruption without raw output.
+        print(json.dumps(diagnostic(stage, error, req=req), sort_keys=True))
+        return 1
 
 
 def plan():
@@ -750,15 +1088,15 @@ def main():
         if sys.argv[1:] == ["worker"]:
             worker()
         elif sys.argv[1:] == ["helper"]:
-            helper()
+            return helper()
         elif len(sys.argv) == 3 and sys.argv[1] == "client":
             return client(sys.argv[2])
         else:
             raise Denied("arguments_denied")
         return 0
-    except BaseException:  # noqa: BLE001 - rollback/redaction includes interruption.
-        # No raw native/HTTP/password exception messages, including CLI args.
-        os.write(1, b'{"status":"blocked","code":"entry_unverified","automatic_retry":false}\n')
+    except BaseException as error:  # noqa: BLE001 - includes interruption.
+        result = diagnostic("entry", error)
+        os.write(1, json.dumps(result, sort_keys=True).encode() + b"\n")
         return 1
 
 

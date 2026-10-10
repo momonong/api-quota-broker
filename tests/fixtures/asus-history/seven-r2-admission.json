@@ -1,0 +1,88 @@
+{
+  "admission": {
+    "cloudflare": {
+      "account_basis": "existing_human_free_declaration_same_key_slot",
+      "account_reviewed_at": "2026-10-08T03:53:20.337024+00:00",
+      "account_scope": "asus-dev-cloudflare-key",
+      "account_valid_until": "2026-10-22T03:53:20.337024+00:00",
+      "human_free_no_payment_details": true,
+      "key_ref": "CLOUDFLARE_API_TOKEN",
+      "model": "@cf/meta/llama-3.2-1b-instruct",
+      "official_reviewed_at": "2026-10-08T03:53:20.337024+00:00",
+      "official_url": "https://developers.cloudflare.com/workers-ai/platform/pricing/",
+      "official_valid_until": "2026-10-22T03:53:20.337024+00:00"
+    },
+    "google": {
+      "account_basis": "existing_human_free_declaration_same_key_slot",
+      "account_reviewed_at": "2026-10-08T03:53:20.337024+00:00",
+      "account_scope": "asus-dev-google-key",
+      "account_valid_until": "2026-10-22T03:53:20.337024+00:00",
+      "human_free_no_payment_details": true,
+      "key_ref": "GEMINI_API_KEY",
+      "model": "gemini-3.5-flash-lite",
+      "official_reviewed_at": "2026-10-08T03:53:20.337024+00:00",
+      "official_url": "https://ai.google.dev/gemini-api/docs/pricing",
+      "official_valid_until": "2026-10-22T03:53:20.337024+00:00"
+    },
+    "groq": {
+      "account_basis": "existing_human_free_declaration_same_key_slot",
+      "account_reviewed_at": "2026-10-08T03:53:20.337024+00:00",
+      "account_scope": "asus-dev-groq-key",
+      "account_valid_until": "2026-10-22T03:53:20.337024+00:00",
+      "human_free_no_payment_details": true,
+      "key_ref": "GROQ_API_KEY",
+      "model": "openai/gpt-oss-20b",
+      "official_reviewed_at": "2026-10-08T03:53:20.337024+00:00",
+      "official_url": "https://console.groq.com/docs/rate-limits",
+      "official_valid_until": "2026-10-22T03:53:20.337024+00:00"
+    },
+    "mistral": {
+      "account_basis": "existing_human_free_declaration_same_key_slot",
+      "account_reviewed_at": "2026-10-08T03:53:20.337024+00:00",
+      "account_scope": "asus-dev-mistral-key",
+      "account_valid_until": "2026-10-22T03:53:20.337024+00:00",
+      "human_free_no_payment_details": true,
+      "key_ref": "MISTRAL_API_KEY",
+      "model": "ministral-3b-latest",
+      "official_reviewed_at": "2026-10-08T03:53:20.337024+00:00",
+      "official_url": "https://docs.mistral.ai/admin/billing-usage/usage-limits",
+      "official_valid_until": "2026-10-22T03:53:20.337024+00:00"
+    },
+    "nvidia": {
+      "account_basis": "existing_human_free_declaration_same_key_slot",
+      "account_reviewed_at": "2026-10-08T03:53:20.337024+00:00",
+      "account_scope": "asus-dev-nvidia-key",
+      "account_valid_until": "2026-10-22T03:53:20.337024+00:00",
+      "human_free_no_payment_details": true,
+      "key_ref": "NVIDIA_API_KEY",
+      "model": "nvidia/nemotron-3.5-lightning-30b-a3b",
+      "official_reviewed_at": "2026-10-08T03:53:20.337024+00:00",
+      "official_url": "https://build.nvidia.com/nvidia/nemotron-3.5-lightning-30b-a3b/build",
+      "official_valid_until": "2026-10-22T03:53:20.337024+00:00"
+    },
+    "ocrspace": {
+      "account_basis": "existing_human_free_declaration_same_key_slot",
+      "account_reviewed_at": "2026-10-08T03:53:20.337024+00:00",
+      "account_scope": "asus-dev-ocrspace-key",
+      "account_valid_until": "2026-10-22T03:53:20.337024+00:00",
+      "human_free_no_payment_details": true,
+      "key_ref": "OCRSPACE_API_KEY",
+      "model": "ocr.space/engine2",
+      "official_reviewed_at": "2026-10-08T03:53:20.337024+00:00",
+      "official_url": "https://ocr.space/ocrapi",
+      "official_valid_until": "2026-10-22T03:53:20.337024+00:00"
+    },
+    "openrouter": {
+      "account_basis": "existing_human_free_declaration_same_key_slot",
+      "account_reviewed_at": "2026-10-08T03:53:20.337024+00:00",
+      "account_scope": "asus-dev-openrouter-key",
+      "account_valid_until": "2026-10-22T03:53:20.337024+00:00",
+      "human_free_no_payment_details": true,
+      "key_ref": "OPENROUTER_API_KEY",
+      "model": "liquid/lfm-2.5-2.6b:free",
+      "official_reviewed_at": "2026-10-08T03:53:20.337024+00:00",
+      "official_url": "https://openrouter.ai/liquid/lfm-2.5-2.6b:free",
+      "official_valid_until": "2026-10-22T03:53:20.337024+00:00"
+    }
+  }
+}

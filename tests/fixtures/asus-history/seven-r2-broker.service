@@ -1,0 +1,73 @@
+# Deployment candidate: install and activation require separate operator review.
+# Encrypted credential policy and target-host resource acceptance remain required.
+[Unit]
+Description=Local API quota broker
+After=network.target
+
+[Service]
+Type=simple
+User=api-quota-broker
+Group=api-quota-broker
+Slice=system.slice
+WorkingDirectory=/opt/api-quota-broker/current
+StateDirectory=api-quota-broker
+StateDirectoryMode=0700
+RuntimeDirectory=api-quota-broker
+RuntimeDirectoryMode=0700
+UMask=0077
+LoadCredentialEncrypted=digest_key:/etc/api-quota-broker/credentials/digest_key.cred
+LoadCredentialEncrypted=client_token:/etc/api-quota-broker/credentials/client_token.cred
+LoadCredentialEncrypted=admin_token:/etc/api-quota-broker/credentials/admin_token.cred
+LoadCredentialEncrypted=queue_key:/etc/api-quota-broker/credentials/queue_key.cred
+LoadCredentialEncrypted=doppler_service_token:/etc/api-quota-broker/credentials/doppler_service_token.cred
+# Queue storage intentionally retains its existing service-owned 0700/0600 contract.
+# This is an ephemeral memory copy, not a persistent plaintext credential fallback.
+ExecStartPre=/opt/api-quota-broker/current/runtime/bin/python -I -B /opt/api-quota-broker/current/deploy/asus/swap_guard.py
+ExecStartPre=/usr/bin/install -m 0600 %d/queue_key /run/api-quota-broker/queue.key
+ExecStart=/opt/api-quota-broker/current/runtime/bin/python -I -m quota_broker.cli gateway-serve \
+    --config /etc/api-quota-broker/gateway.json \
+    --db /var/lib/api-quota-broker/ledger.sqlite3 \
+    --port 18084 \
+    --digest-key-file %d/digest_key \
+    --client-token-file %d/client_token \
+    --admin-token-file %d/admin_token \
+    --doppler-token-file %d/doppler_service_token \
+    --doppler-project api-quota-broker --doppler-config dev \
+    --queue-key-file /run/api-quota-broker/queue.key \
+    --no-queue-worker \
+    --max-media-input-bytes 1048576 \
+    --max-request-bytes 2097152 \
+    --max-result-bytes 4194304
+Restart=on-failure
+RestartSec=10s
+TimeoutStopSec=30s
+KillMode=control-group
+CPUQuota=50%
+MemoryHigh=256M
+MemoryMax=384M
+MemorySwapMax=0
+TasksMax=32
+LimitCORE=0
+LimitNOFILE=128
+Nice=10
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+ReadWritePaths=/var/lib/api-quota-broker /run/api-quota-broker
+
+[Install]
+WantedBy=multi-user.target

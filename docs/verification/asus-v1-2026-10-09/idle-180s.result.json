@@ -1,0 +1,40 @@
+{
+  "rc": 0,
+  "result": {
+    "samples": [
+      {
+        "elapsed_seconds": 2.19,
+        "worker_last_tick_at": "2026-10-09T11:19:19.788177+00:00",
+        "worker_running": true,
+        "catalog_targets": 7
+      },
+      {
+        "elapsed_seconds": 47.19,
+        "worker_last_tick_at": "2026-10-09T11:20:05.094033+00:00",
+        "worker_running": true,
+        "catalog_targets": 7
+      },
+      {
+        "elapsed_seconds": 92.19,
+        "worker_last_tick_at": "2026-10-09T11:20:49.896716+00:00",
+        "worker_running": true,
+        "catalog_targets": 7
+      },
+      {
+        "elapsed_seconds": 137.19,
+        "worker_last_tick_at": "2026-10-09T11:21:34.694967+00:00",
+        "worker_running": true,
+        "catalog_targets": 7
+      },
+      {
+        "elapsed_seconds": 182.19,
+        "worker_last_tick_at": "2026-10-09T11:22:20.049077+00:00",
+        "worker_running": true,
+        "catalog_targets": 7
+      }
+    ],
+    "provider_posts": 0,
+    "passed": true
+  },
+  "stderr_bytes": 0
+}

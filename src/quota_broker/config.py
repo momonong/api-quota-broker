@@ -11,7 +11,23 @@ from zoneinfo import ZoneInfo
 from .catalog import MODELS, Model, endpoint
 
 if TYPE_CHECKING:
-    from .registry import Registry
+    from .registry import ModelSpec, Registry
+
+
+RESOURCE_METRICS = frozenset(
+    {
+        "requests",
+        "input_tokens",
+        "output_tokens",
+        "total_tokens",
+        "audio_seconds",
+        "images",
+        "pages",
+        "conversions",
+        "neurons",
+    }
+)
+QUOTA_WINDOWS = frozenset({"rolling_minute", "rolling_hour", "day", "month"})
 
 
 class ConfigError(ValueError):
@@ -151,6 +167,28 @@ class NeuronEstimate:
 
 
 @dataclass(frozen=True)
+class ResourceEstimate:
+    metric: str
+    amount: int
+    max_input_bytes: int
+    max_output_tokens: int
+    source: str
+    verified_at: datetime
+    expires_at: datetime
+
+    def view(self) -> dict:
+        return {
+            "metric": self.metric,
+            "amount": self.amount,
+            "max_input_bytes": self.max_input_bytes,
+            "max_output_tokens": self.max_output_tokens,
+            "source": self.source,
+            "verified_at": self.verified_at.isoformat(),
+            "expires_at": self.expires_at.isoformat(),
+        }
+
+
+@dataclass(frozen=True)
 class Target:
     id: str
     provider: str
@@ -171,6 +209,7 @@ class Target:
     quota_basis: str = "legacy_v1"
     provider_quota_facts: tuple[QuotaFact, ...] = ()
     neuron_estimate: NeuronEstimate | None = None
+    resource_estimates: tuple[ResourceEstimate, ...] = ()
     capacity: Capacity = Capacity()
     secret_ref: str | None = None
     account_id_ref: str | None = None
@@ -188,6 +227,29 @@ class Target:
         ):
             return max(estimate.amount, explicit or 0)
         return explicit
+
+    def resource_costs(
+        self, bounds: dict[str, int], input_bytes: int, output: int, now: datetime
+    ) -> dict[str, int]:
+        if (
+            not isinstance(bounds, dict)
+            or set(bounds) - RESOURCE_METRICS
+            or any(type(value) is not int or not 0 <= value <= 10**12 for value in bounds.values())
+            or type(input_bytes) is not int
+            or input_bytes < 0
+            or type(output) is not int
+            or output < 0
+        ):
+            raise ConfigError("invalid trusted resource bounds")
+        result = dict(bounds)
+        for estimate in self.resource_estimates:
+            if (
+                estimate.verified_at <= now < estimate.expires_at
+                and input_bytes <= estimate.max_input_bytes
+                and output <= estimate.max_output_tokens
+            ):
+                result[estimate.metric] = max(result.get(estimate.metric, 0), estimate.amount)
+        return result
 
     def available(self, now: datetime) -> bool:
         return bool(
@@ -272,8 +334,9 @@ def parse_quota_facts(raw: list) -> tuple[QuotaFact, ...]:
         if not isinstance(item, dict) or set(item) != {"metric", "window", "limit", "remaining"}:
             raise ConfigError("invalid provider quota fact")
         metric, window = item["metric"], item["window"]
-        if metric not in {"requests", "input_tokens", "neurons", "conversions"} or window not in {
+        if metric not in RESOURCE_METRICS or window not in {
             "rolling_minute",
+            "rolling_hour",
             "day",
             "month",
             "one_time",
@@ -331,6 +394,19 @@ def parse_capacity(raw: dict) -> Capacity:
     return Capacity(kind, seconds, as_of, source, scope, expires)
 
 
+CF_NEURON_FORMULA = "cloudflare_llama_3_2_1b_formula"
+
+
+def cloudflare_neuron_upper_bound(input_tokens: int, output_tokens: int) -> int:
+    """Ceil the published per-million coefficients; never label this actual usage."""
+    if any(
+        type(value) is not int or not 0 <= value <= 10**12
+        for value in (input_tokens, output_tokens)
+    ):
+        raise ConfigError("invalid Neurons formula bounds")
+    return max(1, (input_tokens * 2457 + output_tokens * 18252 + 999999) // 1000000)
+
+
 def parse_neuron_estimate(raw: object) -> NeuronEstimate | None:
     if raw is None:
         return None
@@ -344,13 +420,10 @@ def parse_neuron_estimate(raw: object) -> NeuronEstimate | None:
     }
     if not isinstance(raw, dict) or set(raw) != fields:
         raise ConfigError("invalid Neurons estimate fields")
-    if (
-        any(
-            type(raw[name]) is not int or not 1 <= raw[name] <= 10**12
-            for name in ("amount", "max_input_tokens", "max_output_tokens")
-        )
-        or raw["source"] != "trusted_operator"
-    ):
+    if any(
+        type(raw[name]) is not int or not 1 <= raw[name] <= 10**12
+        for name in ("amount", "max_input_tokens", "max_output_tokens")
+    ) or raw["source"] not in {"trusted_operator", CF_NEURON_FORMULA}:
         raise ConfigError("invalid Neurons estimate bounds or source")
     verified, expires = _instant(raw["verified_at"]), _instant(raw["expires_at"])
     if verified is None or expires is None or expires <= verified:
@@ -363,6 +436,67 @@ def parse_neuron_estimate(raw: object) -> NeuronEstimate | None:
         verified,
         expires,
     )
+
+
+def parse_resource_estimates(raw: object) -> tuple[ResourceEstimate, ...]:
+    if not isinstance(raw, list) or len(raw) > len(RESOURCE_METRICS):
+        raise ConfigError("resource estimates must be a bounded array")
+    result = []
+    seen = set()
+    for item in raw:
+        if not isinstance(item, dict) or set(item) != {
+            "metric",
+            "amount",
+            "max_input_bytes",
+            "max_output_tokens",
+            "source",
+            "verified_at",
+            "expires_at",
+        }:
+            raise ConfigError("invalid resource estimate fields")
+        metric = item["metric"]
+        if not isinstance(metric, str) or metric not in RESOURCE_METRICS or metric in seen:
+            raise ConfigError("invalid or duplicate resource estimate metric")
+        if (
+            any(
+                type(item[name]) is not int or not 1 <= item[name] <= 10**12
+                for name in ("amount", "max_input_bytes")
+            )
+            or type(item["max_output_tokens"]) is not int
+            or not 0 <= item["max_output_tokens"] <= 10**12
+            or item["source"] != "trusted_operator"
+        ):
+            raise ConfigError("invalid resource estimate bounds or source")
+        verified, expires = _instant(item["verified_at"]), _instant(item["expires_at"])
+        if verified is None or expires is None or expires <= verified:
+            raise ConfigError("resource estimate requires a validity interval")
+        seen.add(metric)
+        result.append(
+            ResourceEstimate(
+                metric,
+                item["amount"],
+                item["max_input_bytes"],
+                item["max_output_tokens"],
+                item["source"],
+                verified,
+                expires,
+            )
+        )
+    return tuple(result)
+
+
+def model_has_no_output_tokens(registry: "Registry", model: "ModelSpec") -> bool:
+    from .families import FamilyError, FamilyRegistry
+
+    families = FamilyRegistry.builtin()
+    try:
+        return all(
+            registry.supports_family(model, capability)
+            and not families.uses_output_tokens(capability)
+            for capability in (model.capabilities or (model.capability,))
+        )
+    except FamilyError:
+        return False
 
 
 def load_config(
@@ -413,6 +547,7 @@ def load_config(
                 account_id_ref=item.get("account_id_ref"),
                 model_info=model,
                 neuron_estimate=parse_neuron_estimate(item.get("neuron_estimate")),
+                resource_estimates=parse_resource_estimates(item.get("resource_estimates", [])),
             )
         except (KeyError, TypeError, RegistryError) as exc:
             raise ConfigError(f"invalid target: {exc}") from exc
@@ -420,6 +555,20 @@ def load_config(
             q.metric == "neurons" for q in target.quotas
         ):
             raise ConfigError("Neurons estimate requires a Neurons cap")
+        estimate = target.neuron_estimate
+        if (
+            estimate is not None
+            and estimate.source == CF_NEURON_FORMULA
+            and (
+                target.provider != "cloudflare"
+                or target.model != "@cf/meta/llama-3.2-1b-instruct"
+                or estimate.amount
+                < cloudflare_neuron_upper_bound(
+                    estimate.max_input_tokens, estimate.max_output_tokens
+                )
+            )
+        ):
+            raise ConfigError("Neurons formula requires the exact model and a conservative bound")
         if not target.id or target.id in ids:
             raise ConfigError("duplicate or empty target id")
         ids.add(target.id)
@@ -449,7 +598,13 @@ def load_config(
             or target.shared_concurrency_limit < 1
         ):
             raise ConfigError("invalid shared concurrency scope or limit")
-        if not 1 <= target.max_output_tokens <= model.max_output_tokens:
+        output_minimum = (
+            0 if model.max_output_tokens == 0 and model_has_no_output_tokens(registry, model) else 1
+        )
+        if (
+            type(target.max_output_tokens) is not int
+            or not output_minimum <= target.max_output_tokens <= model.max_output_tokens
+        ):
             raise ConfigError("invalid max output")
         if target.expires_at and target.verified_at and target.expires_at <= target.verified_at:
             raise ConfigError("expiration must follow verification")
@@ -457,9 +612,9 @@ def load_config(
         if not quotas or len({q.bucket for q in quotas}) != len(quotas):
             raise ConfigError("quotas required; bucket ids must be unique per target")
         for q in quotas:
-            if not q.bucket or q.metric not in {"requests", "input_tokens", "neurons"}:
+            if not q.bucket or q.metric not in RESOURCE_METRICS:
                 raise ConfigError("unsupported quota")
-            if q.limit < 1 or q.window not in {"rolling_minute", "day"}:
+            if type(q.limit) is not int or q.limit < 1 or q.window not in QUOTA_WINDOWS:
                 raise ConfigError("invalid quota limit/window")
             try:
                 ZoneInfo(q.timezone)

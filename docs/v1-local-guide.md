@@ -2,7 +2,7 @@
 
 ## 現況
 
-同一個 Gateway、SQLite 與 CLI/API 處理七家既有代表能力，並支援可信 manifest 的同協定擴充、持久健康／quota observation與加密等待佇列。完整契約與離線驗證見 [v1-core-contract.md](v1-core-contract.md)；過去真API成功與未知問題仍見 [readiness](v1-seven-provider-readiness.md)。目前是本地工程候選，未部署，無付費 fallback。本階段沒有新增真API／Doppler／key操作。
+同一個 Gateway、SQLite 與 CLI/API 處理七家既有代表能力，並支援可信 manifest 的同協定擴充、持久健康／quota observation與加密等待佇列。完整契約與離線驗證見 [v1-core-contract.md](v1-core-contract.md)；過去真API成功與未知問題仍見 [readiness](v1-seven-provider-readiness.md)。正常 1.0 已於2026-10-09部署至ASUS loopback；三筆固定live與服務重啟持久性驗證已通過，Cloudflare neurons仍未知並保留估計hold。最新部署／CLI入口與證據見[ASUS維運](asus-broker-ops.md)。無付費fallback。
 
 ## Registry 與帳戶設定
 
@@ -34,13 +34,13 @@ Adapter可提供admit及quota hooks；相容request schema不代表相同quota/e
 
 ## 啟動與隱私設定
 
-`gateway-serve`必要欄位仍為`--config --db --digest-key-file --client-token-file --doppler-token-file --doppler-project --doppler-config`，port預設18084、只bind loopback。HMAC key至少32bytes、client token至少32字元；重啟沿用HMAC key。runtime Doppler credential須另行妥善準備，五分鐘測試token不適合常駐。本階段沒有建立這些真檔案。
+`gateway-serve`必要欄位仍為`--config --db --digest-key-file --client-token-file --doppler-token-file --doppler-project --doppler-config`，port預設18084、只bind loopback。HMAC key至少32bytes、client token至少32字元；重啟沿用HMAC key。runtime Doppler credential須另行妥善準備，五分鐘測試token不適合常駐。ASUS已由受控安裝準備；其他環境仍須自行準備，不複製實機憑證。
 
 - `--secret-names-file`可載入已核對有期限的名稱清單，只接受project/config/names/verified_at/expires_at。current missing名稱在讀key前排除；unknown或過期不宣稱缺key；present不代表key有效。查詢不自動讀Doppler。
 - 預設queue停用；`--queue-key-file /protected/queue.key`明確啟用。獨立持久Fernet key或32bytes raw key；不能與HMAC key共用。key/DB檔0600、兩者父目錄0700、owner必須是當前使用者、symlink/unsafe SQLite sidecar拒絕。preflight先檢查，現存unsafe DB不先遷移或chmod；新DB才建立0600空檔。
 - 啟用queue會啟動一個背景worker；`--no-queue-worker`可改由CLI worker處理。`--queue-ttl-seconds`預設86400；terminal刪payload、到期刪result ciphertext，metadata tombstone保留防重播。
 - wrong/lost key fail closed，不會重送。備份／復原應保護並保留獨立key。SQLite內容與結果用Fernet authenticated encryption；沒有自製cipher。同步run仍不持久化input/answer。
-- `--admin-token-file`可選且必須與client token不同，只有此token可提交quota observations或reset health。未設定時管理端拒絕。沒有遠端入口或部署。
+- `--admin-token-file`可選且必須與client token不同，只有此token可提交quota observations或reset health。未設定時管理端拒絕。ASUS仍只bind loopback，沒有對外網路入口。
 
 ## CLI／HTTP
 
@@ -62,13 +62,13 @@ Adapter可提供admit及quota hooks；相容request schema不代表相同quota/e
 uv run --locked quota-broker gateway --token-file /protected/client-token diagnostics
 uv run --locked quota-broker gateway --token-file /protected/client-token --json recent --state unknown
 uv run --locked quota-broker gateway --token-file /protected/client-token --json usage --provider mistral
-printf 'Hello.' | uv run --locked quota-broker gateway --token-file /protected/client-token --json explain --request-key dry-run-1 --capability text_generation --max-output-tokens 64
+printf 'Hello.' | uv run --locked quota-broker gateway --token-file /protected/client-token --json explain --request-key dry-run-1 --capability text_generation --max-output-tokens 1024
 ```
 
-以下動作會由worker／run派送真請求；帳戶與操作授權核對後才執行，本階段只以fixture測試：
+以下動作會由worker／run派送真請求；帳戶與操作授權核對後才執行，這些是用法範例，不代表可重跑已使用的驗收key：
 
 ```sh
-printf 'Hello.' | uv run --locked quota-broker gateway --token-file /protected/client-token --json submit --request-key opaque-job-1 --capability text_generation --max-output-tokens 64 --priority 10 --wait-policy wait --max-attempts 4
+printf 'Hello.' | uv run --locked quota-broker gateway --token-file /protected/client-token --json submit --request-key opaque-job-1 --capability text_generation --max-output-tokens 1024 --priority 10 --wait-policy wait --max-attempts 4
 uv run --locked quota-broker gateway --token-file /protected/client-token --json wait opaque-job-1 --timeout 60
 uv run --locked quota-broker gateway --token-file /protected/client-token --json result opaque-job-1
 uv run --locked quota-broker gateway --token-file /protected/client-token worker --once
@@ -78,12 +78,14 @@ uv run --locked quota-broker gateway --token-file /protected/client-token worker
 
 ### Task
 
+除以下legacy文字／小圖格式，也支援buffered typed input與discovery；完整family、媒體上界及尚未live驗證的範圍見[能力擴充契約](provider-capability-expansion.md)。
+
 相同opaque request_key／payload不重播；不同payload回409。
 
-- `capability=text_generation`：input非空、最多32768 UTF-8 bytes；max_output_tokens 1..4096且符合target界限。
+- `capability=text_generation`：input非空、最多32768 UTF-8 bytes；max_output_tokens預設1024，顯式值1..65536，實際仍受model／target較小界限限制。
 - `translation`：不同source_language/target_language；Riva adapter保留支援且含英文的pair／1952字限制。新翻譯adapter採自己的admission；通用Task仍有32768bytes上限。
 - `ocr`：單圖PNG/JPEG base64，解碼最多36000bytes，max_output_tokens省略或1；不解析多頁PDF或檔案路徑。
-- 可選provider/model、requirements.features（CLI重複`--require-feature`）、priority(-100..100)、帶時區deadline、wait_policy(wait/reject)、max_attempts(1..32)。同步run預設不等待；queue預設wait。max_attempts是整job所有Gateway attempts總量，送出前失敗也耗用額度。
+- 可選provider/model、requirements.features（CLI重複`--require-feature`）、priority(-1000..1000)、帶時區deadline、wait_policy(wait/reject)、max_attempts(1..32)。同步run預設不等待；queue預設wait。max_attempts是整job所有Gateway attempts總量，送出前失敗通常也耗用額度。唯一可接續原slot的是租約已失效、同payload HMAC且完全沒有reservation／attempt／dispatch證據的preparing execution；沿原execution接續，不退款或建立新attempt。
 
 `diagnostics`是最低input/output admission，不是完整輸入、key validity、持續配額或品質承諾。catalog的configured_available與當前available/admission_state分開。worker故障顯示enabled/running/stopped、固定error_code、last_tick_at，沒有原始例外內容；HTTP仍可查詢。修復後正常重啟worker，不以靜默fallback掩蓋故障。
 
@@ -116,4 +118,4 @@ first synchronous run才返回answer，status／同key只metadata。async只有�
 
 ## 驗證
 
-目前證據與工具結果集中在[v1-core-contract.md](v1-core-contract.md)。使用標準`uv run --locked pytest -q`、Ruff／format／mypy與diff check。全部新增fixtures離線，不提升七家歷史證據為當前全模型或持續免費配額保證。十一份live DB hash保持，沒有新診斷腳本、真秘密檔案或常駐服務。
+目前部署與限定驗收摘要見[ASUS 維運指南](asus-broker-ops.md)；[核心契約](v1-core-contract.md)保留較早階段的驗證紀錄。使用標準`uv run --locked pytest -q`、Ruff／format／mypy與diff check。fixtures 離線，不提升七家歷史證據為當前全模型或持續免費配額保證。原始 live DB／操作封包留在本機，不納入 Git。

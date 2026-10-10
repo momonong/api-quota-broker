@@ -1,5 +1,7 @@
 # 七家 API v1 本地驗證邊界（2026-10-02）
 
+**歷史驗收紀錄（2026-10-02）。** 2026-10-09正常1.0部署、三筆新live呼叫與重啟驗收見[ASUS維運](asus-broker-ops.md)；下列64-token smoke及未部署描述保留當時範圍，不是現行正常池上限。
+
 本地可擴充資源池、加密queue及工程驗收另見[v1-core-contract.md](v1-core-contract.md)；本輪零新live呼叫，以下收據與unknown未改。
 
 ## 目前結果

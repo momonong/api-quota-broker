@@ -15,7 +15,7 @@ import sqlite3
 import stat
 import uuid
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -230,7 +230,7 @@ class DurableQueue:
     @contextmanager
     def _tx(self) -> Iterator[sqlite3.Connection]:
         self._check_files()
-        with sqlite3.connect(self.db, timeout=15, isolation_level=None) as con:
+        with closing(sqlite3.connect(self.db, timeout=15, isolation_level=None)) as con:
             con.row_factory = sqlite3.Row
             con.execute("PRAGMA secure_delete=ON")
             con.execute("BEGIN IMMEDIATE")
@@ -368,6 +368,22 @@ class DurableQueue:
                 in {"dispatched", "unknown", "completed", "failed", "quota_rejected"}
             ):
                 return "unknown"
+        # Reserve/dispatch can be durable before Gateway links the reservation.
+        # Match the exact internal prefix, not LIKE (request keys may contain %).
+        if "reservations" in tables:
+            columns = {r[1] for r in con.execute("PRAGMA table_info(reservations)")}
+            if "request_key" in columns:
+                prefix = "gw:" + key + ":"
+                orphan_rows = con.execute(
+                    "SELECT state,dispatched_at FROM reservations WHERE substr(request_key,1,?)=?",
+                    (len(prefix), prefix),
+                )
+                if any(
+                    item["dispatched_at"]
+                    or item["state"] not in {"reserved", "cancelled", "expired"}
+                    for item in orphan_rows
+                ):
+                    return "unknown"
         # A ledger dispatch can precede insertion/update of Gateway attempts.
         if task["reservation_id"] and not any(
             item["reservation_id"] == task["reservation_id"] for item in attempts
@@ -615,15 +631,30 @@ class DurableQueue:
                     self._finish(con, current, "failed", error="no_compatible_route")
                 return self._view(con, self._row(con, row["request_key"]))
             budget_used = self._budget_used(con, row["request_key"])
+            can_resume = getattr(self.gateway, "can_resume_preparing", None)
+            resume_preparing = bool(
+                current["execution_key"]
+                and callable(can_resume)
+                and con.execute(
+                    "SELECT 1 FROM queue_attempts WHERE request_key=? AND attempt_no=? AND execution_key=?",
+                    (row["request_key"], current["attempt_count"], current["execution_key"]),
+                ).fetchone()
+                and can_resume(con, current["execution_key"])
+            )
+            # Reuse this preparation's already charged slot, without refunding or
+            # rewriting any attempt history. Other executions retain their costs.
+            if resume_preparing:
+                budget_used -= 1
             if budget_used >= current["max_attempts"]:
                 self._finish(con, current, "failed", error="attempt_limit")
                 return self._view(con, self._row(con, row["request_key"]))
-            execution = "q-" + uuid.uuid4().hex
-            attempt = current["attempt_count"] + 1
-            con.execute(
-                "INSERT INTO queue_attempts VALUES(?,?,?,?)",
-                (row["request_key"], attempt, execution, stamp(self.clock())),
-            )
+            execution = current["execution_key"] if resume_preparing else "q-" + uuid.uuid4().hex
+            attempt = current["attempt_count"] + (0 if resume_preparing else 1)
+            if not resume_preparing:
+                con.execute(
+                    "INSERT INTO queue_attempts VALUES(?,?,?,?)",
+                    (row["request_key"], attempt, execution, stamp(self.clock())),
+                )
             con.execute(
                 "UPDATE queue_jobs SET attempt_count=?,execution_key=?,run_started=1,execution_until=? WHERE request_key=?",
                 (
@@ -653,7 +684,8 @@ class DurableQueue:
                     (current["execution_until"], row["request_key"], row["lease_token"]),
                 )
 
-            outcome = self.gateway.run(data, dispatch_guard=dispatch_guard)
+            resume_options = {"resume_preparing": True} if resume_preparing else {}
+            outcome = self.gateway.run(data, dispatch_guard=dispatch_guard, **resume_options)
         except GatewayError as exc:
             with self._tx() as con:
                 current = self._owned(con, row)

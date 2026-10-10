@@ -6,12 +6,14 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import UTC, datetime
+from typing import Any
 
 from .catalog import MODELS, endpoint
 from .client import _NoRedirect
+from .provider_policy import catalog_model_id_reason
 from .retry import parse_retry_after
 
-MAX_RESPONSE_BYTES = 65_536
+MAX_RESPONSE_BYTES = 262_144
 RIVA = "nvidia/riva-translate-4b-instruct-v2"
 
 
@@ -515,6 +517,75 @@ def _mistral_error_fields(
     return result
 
 
+def _reported_model_metadata(
+    provider: str,
+    status: int,
+    data: dict,
+    requested_model: str | None,
+    sensitive_values: tuple[str, ...],
+    *,
+    duplicate_fields: bool = False,
+) -> dict[str, str | None]:
+    """Persist only recognized public identities from documented response fields.
+
+    A requested identity never fills in a missing response field. Unknown aliases
+    remain unknown rather than allowing arbitrary prose or identifiers into the DB.
+    This is the provider's claim, not independent verification of model execution.
+    """
+    result: dict[str, str | None] = {
+        "provider_reported_model": None,
+        "provider_model_basis": "unknown",
+        "provider_model_field": None,
+        "provider_model_status": "unknown",
+    }
+    field = "modelVersion" if provider == "google" else "model"
+    if provider not in {"nvidia", "groq", "mistral", "openrouter", "google"}:
+        result["provider_model_status"] = "not_reported_by_contract"
+        return result
+    if status != 200:
+        result["provider_model_status"] = "not_success"
+        return result
+    if duplicate_fields:
+        result["provider_model_status"] = "ambiguous_json"
+        return result
+    if field not in data:
+        result["provider_model_status"] = "missing"
+        return result
+    value = data[field]
+    if catalog_model_id_reason(value) is not None:
+        result["provider_model_status"] = "invalid"
+        return result
+    assert isinstance(value, str)
+    if any(private and private.casefold() in value.casefold() for private in sensitive_values):
+        result["provider_model_status"] = "redacted"
+        return result
+    known = {model.model for model in MODELS.values() if model.provider == provider}
+    if provider == "groq":
+        # Both GPT OSS identities are published in Groq's official model list.
+        known.add("openai/gpt-oss-120b")
+    if requested_model is not None and catalog_model_id_reason(requested_model) is None:
+        known.add(requested_model)
+        if provider == "openrouter" and requested_model.endswith(":free"):
+            known.add(requested_model.removesuffix(":free"))
+    recognized = value in known
+    if not recognized and requested_model and provider in {"google", "mistral"}:
+        stem = requested_model.removesuffix("-latest")
+        # Dated aliases may add numeric version tags, never arbitrary words.
+        recognized = bool(re.fullmatch(re.escape(stem) + r"(?:-\d{1,8}){1,4}", value))
+        if provider == "mistral" and requested_model == "ministral-3b-latest":
+            recognized |= bool(re.fullmatch(r"ministral-3-3b-\d{4}(?:-\d{2})?", value))
+    if not recognized:
+        result["provider_model_status"] = "unrecognized"
+        return result
+    result.update(
+        provider_reported_model=value,
+        provider_model_basis="provider_response",
+        provider_model_field=field,
+        provider_model_status="reported",
+    )
+    return result
+
+
 def safe_response_diagnostics(
     provider: str,
     status: int,
@@ -522,6 +593,7 @@ def safe_response_diagnostics(
     raw: bytes,
     *,
     sensitive_values: tuple[str, ...] = (),
+    requested_model: str | None = None,
 ) -> dict[str, str | int | bool | None]:
     """Bounded allowlisted diagnostics; Mistral error text uses a fixed vocabulary."""
     normalized = {name.lower(): value for name, value in headers.items()}
@@ -545,9 +617,20 @@ def safe_response_diagnostics(
         if status >= 500
         else "other_response",
     }
+    diagnostics.update(_reported_model_metadata(provider, status, {}, None, ()))
+    duplicate_fields = False
+
+    def pairs(items: list[tuple[str, Any]]) -> dict[str, Any]:
+        nonlocal duplicate_fields
+        result = {}
+        for key, value in items:
+            duplicate_fields |= key in result
+            result[key] = value
+        return result
+
     try:
-        data = json.loads(raw)
-    except (ValueError, TypeError):
+        data = json.loads(raw, object_pairs_hook=pairs)
+    except (ValueError, TypeError, RecursionError):
         diagnostics["body_shape"] = "non_json"
         if provider == "mistral" and status >= 400:
             diagnostics.update(_mistral_error_fields({}, normalized, sensitive_values))
@@ -559,6 +642,25 @@ def safe_response_diagnostics(
     if not isinstance(data, dict):
         diagnostics["body_shape"] = "non_object"
         return diagnostics
+    diagnostics.update(
+        _reported_model_metadata(
+            provider,
+            status,
+            data,
+            requested_model,
+            sensitive_values,
+            duplicate_fields=duplicate_fields,
+        )
+    )
+    if provider == "google" and status == 200:
+        candidates = data.get("candidates")
+        candidate = candidates[0] if isinstance(candidates, list) and len(candidates) == 1 else None
+        finish = candidate.get("finishReason") if isinstance(candidate, dict) else None
+        diagnostics["provider_finish_reason"] = (
+            (finish if finish in {"STOP", "MAX_TOKENS", "SAFETY", "RECITATION", "OTHER"} else None)
+            if isinstance(finish, str) and not duplicate_fields
+            else None
+        )
     if provider == "mistral" and status >= 400:
         diagnostics.update(_mistral_error_fields(data, normalized, sensitive_values))
     if provider == "nvidia" and status == 200:

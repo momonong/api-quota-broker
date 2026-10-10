@@ -1,6 +1,9 @@
 """Local server and an entirely offline direct-call demonstration."""
 
 import argparse
+import base64
+import binascii
+import importlib
 import json
 import os
 import stat
@@ -11,12 +14,16 @@ import time
 import uuid
 from datetime import timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from urllib.parse import urlencode, urlsplit
 
-from .client import DirectClient, _json_http
+from . import __version__
+from .client import ClientError, DirectClient, _json_http
+from .client_credentials import ClientCredentialError, read_runtime_client
 from .config import Quota, Target, load_config, load_gateway_config, load_secret_inventory
 from .core import Broker, utcnow
+from .discovery import DiscoveryError, DiscoveryStore
+from .families import FamilyError, FamilyRegistry, MediaLimits
 from .gateway import Gateway
 from .gateway_server import make_gateway_server
 from .key_admin import DopplerCLIWriter, MetadataStore, make_key_admin_server
@@ -101,22 +108,295 @@ def demo() -> None:
             thread.join(timeout=2)
 
 
+DISCOVERY_ACTIONS = {
+    "coverage",
+    "discovery-refresh",
+    "discovery-attest",
+    "discovery-candidates",
+    "discovery-public",
+}
+
+
+def _discovery_stdin(limit: int = 5 * 1024 * 1024) -> dict[str, Any]:
+    content = sys.stdin.read(limit + 1)
+    if len(content.encode("utf-8")) > limit:
+        raise DiscoveryError("invalid_request", "discovery metadata exceeds input bound")
+    try:
+        raw = json.loads(content)
+    except ValueError as exc:
+        raise DiscoveryError("invalid_request", "invalid discovery metadata") from exc
+    if not isinstance(raw, dict):
+        raise DiscoveryError("invalid_request", "invalid discovery metadata")
+    return raw
+
+
+def _local_discovery(args: argparse.Namespace) -> None:
+    if args.action not in DISCOVERY_ACTIONS or not args.config or not args.db:
+        raise DiscoveryError("invalid_request", "local discovery requires config and database")
+    if args.token_file or args.token_stdin:
+        raise DiscoveryError("invalid_request", "local discovery does not use HTTP credentials")
+    registry = Registry.load(args.registry_file) if args.registry_file else Registry.builtin()
+    targets = load_gateway_config(args.config, registry=registry)
+    store = DiscoveryStore(args.db, registry, targets=targets, clock=utcnow)
+    result: Any
+    if args.action == "coverage":
+        result = store.coverage(
+            provider=args.provider,
+            model=args.model,
+            capability=args.capability,
+            limit=args.limit,
+            before=args.before,
+        )
+    elif args.action == "discovery-refresh":
+        result = store.refresh(_discovery_stdin())
+    elif args.action == "discovery-attest":
+        result = store.attest(_discovery_stdin(65_536))
+    else:
+        policy = importlib.import_module("quota_broker.discovery_sources")
+        if args.action == "discovery-public":
+            snapshot = policy.fetch_public_snapshot(
+                args.provider, output_modalities=args.output_modalities, clock=utcnow
+            )
+            result = store.refresh(snapshot)
+        else:
+            records = []
+            before = None
+            while True:
+                page = store.coverage(provider=args.provider, limit=1000, before=before)
+                records.extend(page["records"])
+                before = page["next_before"]
+                if before is None:
+                    break
+            result = policy.candidate_bundle(records, registry, targets)
+    print(json.dumps(result, ensure_ascii=False, indent=None if args.json else 2))
+
+
+def _media_limits(args: argparse.Namespace) -> MediaLimits:
+    defaults = MediaLimits()
+    return MediaLimits(
+        decoded_input_bytes=getattr(args, "max_media_input_bytes", defaults.decoded_input_bytes),
+        request_bytes=getattr(args, "max_request_bytes", defaults.request_bytes),
+        result_bytes=getattr(args, "max_result_bytes", defaults.result_bytes),
+    )
+
+
+def _media_flags(parser: argparse.ArgumentParser) -> None:
+    defaults = MediaLimits()
+    parser.add_argument("--max-media-input-bytes", type=int, default=defaults.decoded_input_bytes)
+    parser.add_argument("--max-request-bytes", type=int, default=defaults.request_bytes)
+    parser.add_argument("--max-result-bytes", type=int, default=defaults.result_bytes)
+
+
+def _input_part(path: str, mime: str | None, maximum: int) -> dict[str, str]:
+    if not isinstance(mime, str):
+        raise TypeError("media file requires an explicit MIME type")
+    if mime in {"image/png", "image/jpeg", "image/gif", "image/webp"}:
+        kind = "image"
+    elif mime in {
+        "audio/wav",
+        "audio/x-wav",
+        "audio/mpeg",
+        "audio/ogg",
+        "audio/flac",
+        "audio/mp4",
+        "audio/webm",
+        "audio/aac",
+    }:
+        kind = "audio"
+    elif mime == "application/pdf":
+        kind = "document"
+    else:
+        raise ValueError("unsupported media MIME type")
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(descriptor, "rb") as stream:
+            info = os.fstat(stream.fileno())
+            if not stat.S_ISREG(info.st_mode) or not 0 < info.st_size <= maximum:
+                raise ValueError("media file exceeds limit or is not regular")
+            content = stream.read(maximum + 1)
+        if not 0 < len(content) <= maximum:
+            raise ValueError("media file exceeds limit")
+    except OSError:
+        raise ValueError("media file cannot be read") from None
+    return {"type": kind, "mime_type": mime, "data": base64.b64encode(content).decode("ascii")}
+
+
+def _attach_media(body: dict[str, Any], part: dict[str, str]) -> dict[str, Any]:
+    body = dict(body)
+    capability = body.get("capability")
+    existing = body.get("input")
+    if existing is not None and not isinstance(existing, dict):
+        raise ValueError("media file conflicts with existing input")
+    value = dict(existing or {})
+    if capability in {"audio_transcription", "audio_translation", "ocr"}:
+        key = "document" if capability == "ocr" else "audio"
+        allowed = {"document", "image"} if capability == "ocr" else {"audio"}
+        if part["type"] not in allowed or value:
+            raise ValueError("media file conflicts with input or capability")
+        value[key] = part
+    elif capability in {"text_generation", "vision"}:
+        if set(value) - {"messages"}:
+            raise ValueError("media file conflicts with existing input")
+        messages = value.get("messages", [])
+        if not isinstance(messages, list):
+            raise ValueError("invalid media messages")
+        messages = [dict(message) if isinstance(message, dict) else message for message in messages]
+        user = next(
+            (
+                message
+                for message in reversed(messages)
+                if isinstance(message, dict) and message.get("role") == "user"
+            ),
+            None,
+        )
+        if user is None:
+            messages.append({"role": "user", "content": [part]})
+        else:
+            content = user.get("content")
+            if isinstance(content, str):
+                user["content"] = [{"type": "text", "text": content}, part]
+            elif isinstance(content, list):
+                user["content"] = [*content, part]
+            else:
+                raise ValueError("invalid media messages")
+        value["messages"] = messages
+    else:
+        raise ValueError("media file is unsupported for capability")
+    body["input"] = value
+    return body
+
+
+def _typed_task(args: argparse.Namespace, limits: MediaLimits) -> dict[str, Any]:
+    content = sys.stdin.read(limits.request_bytes + 1)
+    if len(content.encode("utf-8")) > limits.request_bytes:
+        raise ValueError("task exceeds request limit")
+    try:
+        body = json.loads(content) if content.strip() else {}
+    except (ValueError, RecursionError):
+        raise ValueError("invalid typed task JSON") from None
+    if not isinstance(body, dict):
+        raise TypeError("invalid typed task JSON")
+    for name in (
+        "request_key",
+        "capability",
+        "provider",
+        "model",
+        "max_output_tokens",
+        "source_language",
+        "target_language",
+        "neuron_bound",
+        "priority",
+        "deadline",
+        "wait_policy",
+        "max_attempts",
+    ):
+        value = getattr(args, name, None)
+        if value is not None:
+            if name in body and body[name] != value:
+                raise ValueError("task JSON conflicts with CLI fields")
+            body[name] = value
+    if getattr(args, "require_feature", None):
+        if "requirements" in body:
+            raise ValueError("task JSON conflicts with CLI requirements")
+        body["requirements"] = {"features": args.require_feature}
+    path, mime = getattr(args, "input_file", None), getattr(args, "mime_type", None)
+    if path:
+        body = _attach_media(body, _input_part(path, mime, limits.decoded_input_bytes))
+    elif mime is not None:
+        raise ValueError("MIME type requires a media file")
+    try:
+        encoded_size = len(json.dumps(body).encode("utf-8"))
+    except (ValueError, TypeError, RecursionError, UnicodeError):
+        raise ValueError("invalid typed task JSON") from None
+    if encoded_size > limits.request_bytes:
+        raise ValueError("task exceeds request limit")
+    return body
+
+
+def _write_media_result(response: Any, path: str, limits: MediaLimits) -> dict[str, Any]:
+    if not isinstance(response, dict) or not isinstance(response.get("result"), dict):
+        raise TypeError("output file requires one typed media result")
+    result = response["result"]
+    nested = (
+        "audio" not in result and "images" not in result and isinstance(result.get("result"), dict)
+    )
+    media = result["result"] if nested else result
+    if "audio" in media and "images" not in media:
+        family, part = "tts", media["audio"]
+    elif (
+        "images" in media
+        and "audio" not in media
+        and isinstance(media["images"], list)
+        and len(media["images"]) == 1
+    ):
+        family, part = "image_generation", media["images"][0]
+    else:
+        raise ValueError("output file requires one typed media result")
+    if not isinstance(part, dict) or not isinstance(part.get("data"), str):
+        raise TypeError("invalid media result")
+    data = part["data"]
+    if len(data) > 4 * ((limits.result_bytes + 2) // 3):
+        raise ValueError("media result exceeds limit")
+    try:
+        normalized = cast(
+            dict[str, Any], FamilyRegistry.builtin().validate_result(family, media, limits)
+        )
+        normalized_part = normalized["audio"] if family == "tts" else normalized["images"][0]
+        raw = base64.b64decode(normalized_part["data"], validate=True)
+    except (FamilyError, ValueError, TypeError, binascii.Error):
+        raise ValueError("invalid media result") from None
+    try:
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(raw)
+    except OSError:
+        raise ValueError("media output cannot be written exclusively") from None
+    safe_part = {key: value for key, value in normalized_part.items() if key != "data"}
+    safe_part["bytes"] = len(raw)
+    safe_media = {"audio": safe_part} if family == "tts" else {"images": [safe_part]}
+    safe_result = {**result, "result": safe_media} if nested else safe_media
+    return {**response, "result": safe_result, "output_written": True}
+
+
 def gateway_cli(args: argparse.Namespace) -> None:
+    if (
+        getattr(args, "config", None)
+        or getattr(args, "db", None)
+        or getattr(args, "registry_file", None)
+    ):
+        _local_discovery(args)
+        return
+    if args.action == "discovery-public":
+        raise DiscoveryError(
+            "invalid_request", "public discovery requires local config and database"
+        )
     parsed = urlsplit(args.url)
     if parsed.scheme != "http" or parsed.hostname not in {"127.0.0.1", "localhost", "::1"}:
         raise ValueError("gateway CLI requires loopback HTTP")
+    if not args.token_stdin and not args.token_file and args.url != "http://127.0.0.1:18084":
+        raise ClientCredentialError("client_runtime_endpoint_not_allowed")
     if args.token_stdin:
-        if args.action in {"run", "explain", "submit", "observe-quota"}:
+        if args.action in {
+            "run",
+            "explain",
+            "submit",
+            "observe-quota",
+            "discovery-refresh",
+            "discovery-attest",
+        }:
             raise ValueError("task input and client token cannot share standard input")
         token = sys.stdin.readline().strip()
-    else:
+    elif args.token_file:
         token = Path(args.token_file).read_text(encoding="utf-8").strip()
+    else:
+        token = read_runtime_client()
     if len(token) < 32:
         raise ValueError("invalid gateway client token")
     if args.action in {"wait", "worker"} and (args.interval <= 0 or args.interval > 60):
         raise ValueError("poll interval must be within 0 to 60 seconds")
     if args.action == "wait" and not 0 <= args.timeout <= 86400:
         raise ValueError("wait timeout must be within 0 to 86400 seconds")
+    media_limits = _media_limits(args)
     base = args.url.rstrip("/")
     headers = {"Authorization": "Bearer " + token}
     http_timeout = getattr(args, "http_timeout", 185.0)
@@ -132,6 +412,32 @@ def gateway_cli(args: argparse.Namespace) -> None:
         body = json.load(sys.stdin) if args.action == "observe-quota" else {}
         result = request(
             path + ("/quota" if args.action == "observe-quota" else "/health/reset"), body, headers
+        )
+    elif args.action in {"discovery-refresh", "discovery-attest"}:
+        body = _discovery_stdin(5 * 1024 * 1024 if args.action == "discovery-refresh" else 65_536)
+        path = "/v1/admin/discovery/" + (
+            "refresh" if args.action == "discovery-refresh" else "attest"
+        )
+        result = request(base + path, body, headers)
+    elif args.action == "coverage":
+        query = urlencode(
+            {
+                key: value
+                for key, value in {
+                    "provider": args.provider,
+                    "model": args.model,
+                    "capability": args.capability,
+                    "limit": args.limit,
+                    "before": args.before,
+                }.items()
+                if value is not None
+            }
+        )
+        result = request(base + "/v1/coverage?" + query, None, headers)
+    elif args.action == "discovery-candidates":
+        query = urlencode({"provider": args.provider}) if args.provider is not None else ""
+        result = request(
+            base + "/v1/coverage/candidates" + ("?" + query if query else ""), None, headers
         )
     elif args.action == "catalog":
         result = request(base + "/v1/catalog", None, headers)
@@ -193,35 +499,44 @@ def gateway_cli(args: argparse.Namespace) -> None:
         except KeyboardInterrupt:
             return
     else:
-        limit = 48_000 if args.capability == "ocr" else 32_768
-        content = sys.stdin.read(limit + 1)
-        if len(content.encode("utf-8")) > limit:
-            raise ValueError("input exceeds gateway limit")
-        body = {
-            "request_key": args.request_key,
-            "capability": args.capability,
-            "input": content,
-            "max_output_tokens": args.max_output_tokens
-            if args.max_output_tokens is not None
-            else (1 if args.capability == "ocr" else 128),
-            "provider": args.provider,
-            "model": args.model,
-            "source_language": args.source_language,
-            "target_language": args.target_language,
-            "neuron_bound": args.neuron_bound,
-        }
-        for name in ("priority", "deadline", "wait_policy", "max_attempts"):
-            value = getattr(args, name, None)
-            if value is not None:
-                body[name] = value
-        if getattr(args, "require_feature", None):
-            body["requirements"] = {"features": args.require_feature}
+        if getattr(args, "task_stdin", False) or getattr(args, "input_file", None):
+            body = _typed_task(args, media_limits)
+        else:
+            if getattr(args, "mime_type", None):
+                raise ValueError("MIME type requires a media file")
+            limit = 48_000 if args.capability == "ocr" else 32_768
+            content = sys.stdin.read(limit + 1)
+            if len(content.encode("utf-8")) > limit:
+                raise ValueError("input exceeds gateway limit")
+            body = {
+                "request_key": args.request_key,
+                "capability": args.capability,
+                "input": content,
+                # The server resolves omitted bounds against matching limits.
+                # An explicit caller bound is never clamped.
+                "max_output_tokens": args.max_output_tokens,
+                "provider": args.provider,
+                "model": args.model,
+                "source_language": args.source_language,
+                "target_language": args.target_language,
+                "neuron_bound": args.neuron_bound,
+            }
+            for name in ("priority", "deadline", "wait_policy", "max_attempts"):
+                value = getattr(args, name, None)
+                if value is not None:
+                    body[name] = value
+            if getattr(args, "require_feature", None):
+                body["requirements"] = {"features": args.require_feature}
         path = {"run": "/v1/tasks", "submit": "/v1/queue", "explain": "/v1/routes/explain"}[
             args.action
         ]
         result = request(base + path, body, headers)
-    if args.json:
+    if getattr(args, "output_file", None):
+        result = _write_media_result(result, args.output_file, media_limits)
+    if args.json or (isinstance(result, dict) and isinstance(result.get("result"), dict)):
         print(json.dumps(result, ensure_ascii=False))
+    elif args.action in DISCOVERY_ACTIONS:
+        print(json.dumps(result, ensure_ascii=False, indent=2))
     elif args.action == "catalog":
         for item in result:
             print(
@@ -229,6 +544,15 @@ def gateway_cli(args: argparse.Namespace) -> None:
                 item["provider"],
                 item["model"],
                 "available" if item["available"] else "unavailable",
+                "default_output="
+                + str(item.get("request_limits", {}).get("default_output_tokens")),
+                "max_output=" + str(item.get("request_limits", {}).get("max_output_tokens")),
+                "max_input_bytes="
+                + str(
+                    item.get("request_limits", {}).get(
+                        "max_legacy_input_bytes_for_requested_output"
+                    )
+                ),
             )
     elif args.action == "usage":
         for item in result:
@@ -289,6 +613,9 @@ def gateway_cli(args: argparse.Namespace) -> None:
             result.get("model"),
             "input=" + str(result.get("reported_input_tokens")),
             "output=" + str(result.get("reported_output_tokens")),
+            "finish=" + str(result.get("finish_reason")),
+            "truncated=" + str(result.get("response_truncated")),
+            "ledger=" + str(result.get("ledger_basis")),
         )
         for attempt in result.get("attempts", []):
             print(
@@ -306,6 +633,7 @@ def gateway_cli(args: argparse.Namespace) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Official API free-quota control plane")
+    parser.add_argument("--version", action="version", version=__version__)
     sub = parser.add_subparsers(dest="command", required=True)
     serve = sub.add_parser("serve")
     serve.add_argument("--config", required=True)
@@ -325,6 +653,7 @@ def main() -> None:
     key_admin.add_argument("--admin-token-file", required=True)
     key_admin.add_argument("--metadata-file", required=True)
     gateway_serve = sub.add_parser("gateway-serve")
+    _media_flags(gateway_serve)
     gateway_serve.add_argument("--config", required=True)
     gateway_serve.add_argument("--db", required=True)
     gateway_serve.add_argument("--port", type=int, default=18084)
@@ -344,17 +673,35 @@ def main() -> None:
     gateway_serve.add_argument("--no-queue-worker", action="store_true")
     gateway_serve.add_argument("--secret-names-file", help="optional expiring names-only inventory")
     gateway = sub.add_parser("gateway")
+    gateway.add_argument("--version", action="version", version=__version__)
+    _media_flags(gateway)
     gateway.add_argument("--url", default="http://127.0.0.1:18084")
-    credential = gateway.add_mutually_exclusive_group(required=True)
+    credential = gateway.add_mutually_exclusive_group()
     credential.add_argument("--token-file")
     credential.add_argument("--token-stdin", action="store_true")
     gateway.add_argument("--json", action="store_true")
+    gateway.add_argument("--config", help="local discovery configuration; no provider execution")
+    gateway.add_argument("--db", help="local discovery database")
+    gateway.add_argument("--registry-file", help="trusted local discovery registry")
     gateway.add_argument(
         "--http-timeout", type=float, default=185, help="bounded client wait; timeout never replays"
     )
     actions = gateway.add_subparsers(dest="action", required=True)
     actions.add_parser("catalog")
     actions.add_parser("diagnostics")
+    coverage = actions.add_parser("coverage")
+    coverage.add_argument("--provider")
+    coverage.add_argument("--model")
+    coverage.add_argument("--capability")
+    coverage.add_argument("--limit", type=int, default=100)
+    coverage.add_argument("--before")
+    actions.add_parser("discovery-refresh")
+    actions.add_parser("discovery-attest")
+    candidates = actions.add_parser("discovery-candidates")
+    candidates.add_argument("--provider")
+    public = actions.add_parser("discovery-public")
+    public.add_argument("--provider", required=True, choices=("nvidia", "openrouter"))
+    public.add_argument("--output-modalities", required=True, choices=("all", "text"))
     recent = actions.add_parser("recent")
     recent.add_argument("--limit", type=int, default=20)
     recent.add_argument("--before")
@@ -374,6 +721,8 @@ def main() -> None:
     for name in ("queue-status", "result", "cancel", "wait"):
         item = actions.add_parser(name)
         item.add_argument("request_key")
+        if name == "result":
+            item.add_argument("--output-file")
         if name == "wait":
             item.add_argument("--timeout", type=float, default=60)
             item.add_argument("--interval", type=float, default=1)
@@ -383,9 +732,12 @@ def main() -> None:
     for name in ("run", "explain", "submit"):
         task = actions.add_parser(name)
         task.add_argument("--request-key", required=True)
-        task.add_argument(
-            "--capability", required=True, choices=("text_generation", "translation", "ocr")
-        )
+        task.add_argument("--capability", required=True)
+        task.add_argument("--task-stdin", action="store_true")
+        task.add_argument("--input-file")
+        task.add_argument("--mime-type")
+        if name == "run":
+            task.add_argument("--output-file")
         task.add_argument("--max-output-tokens", type=int)
         task.add_argument("--provider")
         task.add_argument("--model")
@@ -426,7 +778,22 @@ def main() -> None:
             server.server_close()
         return
     if args.command == "gateway":
-        gateway_cli(args)
+        try:
+            gateway_cli(args)
+        except ClientCredentialError as error:
+            print(
+                json.dumps(
+                    {
+                        "error": str(error),
+                        "action": "check api-quota-broker-client unit; no automatic sudo or anonymous fallback",
+                    }
+                ),
+                file=sys.stderr,
+            )
+            raise SystemExit(1) from None
+        except ClientError as error:
+            print(json.dumps(error.detail or {"error": "broker_request_failed"}), file=sys.stderr)
+            raise SystemExit(1) from None
         return
     if args.command == "gateway-serve":
         registry = Registry.load(args.registry_file) if args.registry_file else Registry.builtin()
@@ -447,6 +814,7 @@ def main() -> None:
             resolver,
             secret_inventory=inventory,
             registry=registry,
+            media_limits=_media_limits(args),
         )
         client_token = Path(args.client_token_file).read_text(encoding="utf-8").strip()
         queue = (

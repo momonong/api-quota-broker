@@ -5,13 +5,13 @@ import json
 import sqlite3
 import uuid
 from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
 
-from .config import Quota, Target
+from .config import RESOURCE_METRICS, Quota, Target, model_has_no_output_tokens
 
 if TYPE_CHECKING:
     from .registry import Registry
@@ -47,6 +47,25 @@ def day_bounds(now: datetime, zone: str) -> tuple[datetime, datetime]:
     return start_local.astimezone(UTC), next_local.astimezone(UTC)
 
 
+def month_bounds(now: datetime, zone: str) -> tuple[datetime, datetime]:
+    local = now.astimezone(ZoneInfo(zone))
+    start = local.replace(day=1, hour=0, minute=0, second=0, microsecond=0, fold=0)
+    reset = (
+        start.replace(year=start.year + 1, month=1)
+        if start.month == 12
+        else start.replace(month=start.month + 1)
+    )
+    return start.astimezone(UTC), reset.astimezone(UTC)
+
+
+def calendar_bounds(now: datetime, quota: Quota) -> tuple[datetime, datetime]:
+    return (
+        month_bounds(now, quota.timezone)
+        if quota.window == "month"
+        else day_bounds(now, quota.timezone)
+    )
+
+
 class Broker:
     def __init__(
         self,
@@ -69,7 +88,7 @@ class Broker:
             Callable[[sqlite3.Connection, Target, str, dict[str, Any]], None] | None
         ) = None
         self._validate_shared()
-        with sqlite3.connect(self.db) as con:
+        with closing(sqlite3.connect(self.db)) as con, con:
             con.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS reservations (
@@ -108,7 +127,7 @@ class Broker:
             # Legacy unsent rows cannot dispatch; legacy active rows block admission
             # until reconciled because their original route is unknowable.
             columns = {row[1] for row in con.execute("PRAGMA table_info(reservations)")}
-            for name in ("target_snapshot", "shared_scope"):
+            for name in ("target_snapshot", "shared_scope", "reserve_request"):
                 if name not in columns:
                     con.execute(f"ALTER TABLE reservations ADD COLUMN {name} TEXT")
             cooldown_columns = {row[1] for row in con.execute("PRAGMA table_info(cooldowns)")}
@@ -157,6 +176,13 @@ class Broker:
             "shared_concurrency_limit": target.shared_concurrency_limit,
             "max_output_tokens": target.max_output_tokens,
         }
+        family_adapters = getattr(target.model_info, "family_adapters", ())
+        if family_adapters:
+            value["family_adapters"] = sorted(family_adapters)
+        if target.resource_estimates:
+            value["resource_estimates"] = [
+                estimate.view() for estimate in target.resource_estimates
+            ]
         if target.neuron_estimate is not None:
             value["neuron_estimate"] = target.neuron_estimate.view()
         # Preserve v0.1 snapshots when older direct-client targets have no secret ref.
@@ -262,22 +288,43 @@ class Broker:
                 (reservation_id, stamp(self.clock())),
             )
 
-    def _cost(self, q: Quota, input_bound: int, neuron_bound: int | None) -> int:
+    def _cost(
+        self,
+        q: Quota,
+        input_bound: int,
+        neuron_bound: int | None,
+        resource_bounds: dict[str, int] | None = None,
+    ) -> int:
         if q.metric == "requests":
             return 1
+        resources = resource_bounds or {}
         if q.metric == "input_tokens":
-            return input_bound
-        if neuron_bound is None:
+            if resource_bounds is not None and input_bound == 0 and q.metric not in resources:
+                raise BrokerError(
+                    "invalid_request", "quota requires an explicit trusted resource bound"
+                )
+            return max(input_bound, resources.get("input_tokens", 0))
+        if q.metric == "neurons":
+            values = [
+                value for value in (neuron_bound, resources.get("neurons")) if value is not None
+            ]
+            if values:
+                return max(values)
             raise BrokerError("invalid_request", "Cloudflare requires a conservative Neurons bound")
-        return neuron_bound
+        if q.metric not in RESOURCE_METRICS or q.metric not in resources:
+            raise BrokerError(
+                "invalid_request", "quota requires an explicit trusted resource bound"
+            )
+        return resources[q.metric]
 
     def _used(
         self, con: sqlite3.Connection, q: Quota, now: datetime, cost: int
     ) -> tuple[int, str | None]:
         if cost > q.limit:
             return q.limit, None
-        if q.window == "rolling_minute":
-            since = stamp(now - timedelta(seconds=60))
+        if q.window in {"rolling_minute", "rolling_hour"}:
+            duration = 60 if q.window == "rolling_minute" else 3600
+            since = stamp(now - timedelta(seconds=duration))
             rows = con.execute(
                 "SELECT amount, at FROM charges WHERE bucket=? AND at>? AND amount>0",
                 (q.bucket, since),
@@ -286,7 +333,7 @@ class Broker:
             remaining = used
             wait = None
             events = [
-                (row["amount"], datetime.fromisoformat(row["at"]) + timedelta(seconds=60))
+                (row["amount"], datetime.fromisoformat(row["at"]) + timedelta(seconds=duration))
                 for row in rows
             ]
             for amount, expires in sorted(events, key=lambda item: item[1]):
@@ -295,7 +342,7 @@ class Broker:
                     wait = expires
                     break
         else:
-            start, reset = day_bounds(now, q.timezone)
+            start, reset = calendar_bounds(now, q)
             rows = con.execute(
                 "SELECT amount FROM charges WHERE bucket=? AND day_start=? AND amount>0",
                 (q.bucket, stamp(start)),
@@ -366,21 +413,41 @@ class Broker:
             "max_output_tokens",
             "neuron_bound",
             "requirements",
+            "resource_bounds",
+            "input_bytes",
         }
         if set(data) - allowed or not isinstance(data.get("request_key"), str):
             raise BrokerError("invalid_request", "invalid reservation fields")
         if not data["request_key"] or len(data["request_key"]) > 160:
             raise BrokerError("invalid_request", "invalid request key")
-        if data.get("capability") not in {"text_generation", "translation", "ocr"}:
+        if not isinstance(data.get("capability"), str):
             raise BrokerError("unavailable", "unsupported capability")
         input_bound = data.get("input_token_bound")
         output_max = data.get("max_output_tokens")
         neuron_bound = data.get("neuron_bound")
+        resource_bounds = data.get("resource_bounds")
+        input_bytes = data.get("input_bytes")
+        if input_bytes is not None and (
+            type(input_bytes) is not int
+            or not 0 <= input_bytes <= 10**12
+            or resource_bounds is None
+        ):
+            raise BrokerError("invalid_request", "invalid trusted input size")
+        if resource_bounds is not None and (
+            not isinstance(resource_bounds, dict)
+            or set(resource_bounds) - RESOURCE_METRICS
+            or any(
+                type(value) is not int or not 0 <= value <= 10**12
+                for value in resource_bounds.values()
+            )
+        ):
+            raise BrokerError("invalid_request", "invalid trusted resource bounds")
         if (
             type(input_bound) is not int
-            or input_bound < 1
+            or input_bound < (0 if resource_bounds is not None else 1)
             or type(output_max) is not int
-            or output_max < 1
+            or output_max
+            < (0 if resource_bounds is not None and "output_tokens" not in resource_bounds else 1)
             or (neuron_bound is not None and (type(neuron_bound) is not int or neuron_bound < 1))
         ):
             raise BrokerError("invalid_request", "positive integer bounds required")
@@ -408,6 +475,12 @@ class Broker:
                     "unavailable", "legacy active reservation requires reconciliation"
                 )
             waits = []
+            scoped_resources = {
+                target.id: target.resource_costs(resource_bounds, input_bytes, output_max, now)
+                if input_bytes is not None and resource_bounds is not None
+                else resource_bounds
+                for target in self.targets
+            }
             candidates = [
                 target
                 for target in self.targets
@@ -416,13 +489,29 @@ class Broker:
                 and target.id not in excluded
                 and (
                     target.neurons(input_bound, output_max, now, neuron_bound) is not None
+                    or "neurons" in (scoped_resources[target.id] or {})
                     or all(q.metric != "neurons" for q in target.quotas)
                 )
                 and target.available(now)
-                and self.registry.resolve(target.model, target.provider).capability
-                == data["capability"]
-                and input_bound + output_max
-                <= self.registry.resolve(target.model, target.provider).context_tokens
+                and self.registry.supports_family(
+                    self.registry.resolve(target.model, target.provider), data["capability"]
+                )
+                and (
+                    (
+                        self.registry.resolve(target.model, target.provider).context_tokens > 0
+                        and input_bound + output_max
+                        <= self.registry.resolve(target.model, target.provider).context_tokens
+                    )
+                    or (
+                        self.registry.resolve(target.model, target.provider).context_tokens == 0
+                        and resource_bounds is not None
+                        and "output_tokens" not in resource_bounds
+                        and output_max == 0
+                        and model_has_no_output_tokens(
+                            self.registry, self.registry.resolve(target.model, target.provider)
+                        )
+                    )
+                )
                 and output_max <= target.max_output_tokens
             ]
             if (
@@ -463,6 +552,10 @@ class Broker:
                     "neuron_bound": neuron_bound,
                     "requirements": data.get("requirements", {}),
                 }
+                if resource_bounds is not None:
+                    policy_data["resource_bounds"] = resource_bounds
+                if input_bytes is not None:
+                    policy_data["input_bytes"] = input_bytes
                 decision = self.routing_policy(con, policy_data, input_bound)
                 permitted = {
                     item["target_id"]: i
@@ -517,7 +610,10 @@ class Broker:
                 indefinite = False
                 for q in target.quotas:
                     cost = self._cost(
-                        q, input_bound, target.neurons(input_bound, output_max, now, neuron_bound)
+                        q,
+                        input_bound,
+                        target.neurons(input_bound, output_max, now, neuron_bound),
+                        scoped_resources[target.id],
                     )
                     used, wait = self._used(con, q, now, cost)
                     if used + cost > q.limit:
@@ -549,10 +645,42 @@ class Broker:
                         ),
                     )
                     for q, cost in costs:
-                        start = stamp(day_bounds(now, q.timezone)[0]) if q.window == "day" else None
+                        start = (
+                            stamp(calendar_bounds(now, q)[0])
+                            if q.window in {"day", "month"}
+                            else None
+                        )
                         con.execute(
                             "INSERT INTO charges VALUES(?,?,?,?,?,?)",
                             (reservation_id, q.bucket, q.metric, cost, stamp(now), start),
+                        )
+                    if resource_bounds is not None:
+                        prepared: dict[str, Any] = {
+                            "input_token_bound": input_bound,
+                            "max_output_tokens": output_max,
+                            "neuron_bound": neuron_bound,
+                            "resource_bounds": {
+                                **(scoped_resources[target.id] or {}),
+                                **{q.metric: cost for q, cost in costs},
+                            },
+                        }
+                        if input_bytes is not None:
+                            prepared["input_bytes"] = input_bytes
+                            contributing = [
+                                estimate
+                                for estimate in target.resource_estimates
+                                if estimate.verified_at <= now < estimate.expires_at
+                                and input_bytes <= estimate.max_input_bytes
+                                and output_max <= estimate.max_output_tokens
+                                and estimate.amount > resource_bounds.get(estimate.metric, -1)
+                            ]
+                            if contributing:
+                                prepared["resource_estimates_valid_until"] = stamp(
+                                    min(estimate.expires_at for estimate in contributing)
+                                )
+                        con.execute(
+                            "UPDATE reservations SET reserve_request=? WHERE id=?",
+                            (canonical(prepared), reservation_id),
                         )
                     if self.reservation_policy is not None:
                         self.reservation_policy(con, target, reservation_id, data)
@@ -608,13 +736,42 @@ class Broker:
             charges = con.execute(
                 "SELECT bucket,amount FROM charges WHERE reservation_id=?", (reservation_id,)
             ).fetchall()
+            prepared_json = con.execute(
+                "SELECT reserve_request FROM reservations WHERE id=?", (reservation_id,)
+            ).fetchone()[0]
+            prepared = json.loads(prepared_json) if prepared_json else None
+            if (
+                prepared is not None
+                and prepared.get("resource_estimates_valid_until") is not None
+                and stamp(now) >= prepared["resource_estimates_valid_until"]
+            ):
+                raise BrokerError(
+                    "unavailable", "trusted resource estimate expired before dispatch"
+                )
             con.execute("UPDATE charges SET amount=0 WHERE reservation_id=?", (reservation_id,))
             for q in target.quotas:
                 amount = next(row["amount"] for row in charges if row["bucket"] == q.bucket)
+                if prepared is not None:
+                    amount = max(
+                        amount,
+                        self._cost(
+                            q,
+                            prepared["input_token_bound"],
+                            target.neurons(
+                                prepared["input_token_bound"],
+                                prepared["max_output_tokens"],
+                                now,
+                                prepared["neuron_bound"],
+                            ),
+                            prepared["resource_bounds"],
+                        ),
+                    )
                 used, wait = self._used(con, q, now, amount)
                 if used + amount > q.limit:
                     raise BrokerError("unavailable", "quota changed before dispatch", wait)
-                day_start = stamp(day_bounds(now, q.timezone)[0]) if q.window == "day" else None
+                day_start = (
+                    stamp(calendar_bounds(now, q)[0]) if q.window in {"day", "month"} else None
+                )
                 con.execute(
                     "UPDATE charges SET amount=?,at=?,day_start=? "
                     "WHERE reservation_id=? AND bucket=?",
@@ -699,7 +856,7 @@ class Broker:
                     raise BrokerError(
                         "invalid_request", "usage must include every actual quota metric"
                     )
-                if usage.get("requests") != 1:
+                if "requests" in required and usage.get("requests") != 1:
                     raise BrokerError("invalid_request", "dispatched request counts as one request")
                 for row in charges:
                     con.execute(
@@ -755,7 +912,7 @@ class Broker:
 
     def status(self, reservation_id: str, *, expire_unsent: bool = True) -> dict:
         if not expire_unsent:
-            with sqlite3.connect(self.db, timeout=15) as con:
+            with closing(sqlite3.connect(self.db, timeout=15)) as con, con:
                 con.row_factory = sqlite3.Row
                 return self._view(con, reservation_id)
         with self._tx() as con:

@@ -157,7 +157,9 @@ def metrics_template() -> str:
     return template.replace('"http_code":%{http_code}', '"http_code":"%{http_code}"')
 
 
-def run_curl(config: bytes, timeout: float) -> tuple[int, bytes]:
+def run_curl(
+    config: bytes, timeout: float, *, output_bound: int = OUTPUT_BOUND, deadline_grace: float = 3
+) -> tuple[int, bytes]:
     """Bound output while draining, and kill on deadline. stderr is discarded."""
     with subprocess.Popen(
         ["/usr/bin/curl", "--disable", "--silent", "--config", "-"],
@@ -170,7 +172,7 @@ def run_curl(config: bytes, timeout: float) -> tuple[int, bytes]:
             process.stdin.write(config)
             process.stdin.close()
             buffer = bytearray()
-            deadline = time.monotonic() + timeout + 3
+            deadline = time.monotonic() + timeout + deadline_grace
             with selectors.DefaultSelector() as selector:
                 selector.register(process.stdout, selectors.EVENT_READ)
                 while selector.get_map():
@@ -183,7 +185,7 @@ def run_curl(config: bytes, timeout: float) -> tuple[int, bytes]:
                             selector.unregister(key.fileobj)
                             continue
                         buffer.extend(chunk)
-                        if len(buffer) > OUTPUT_BOUND:
+                        if len(buffer) > output_bound:
                             raise ProviderError("curl_output_bound")
             try:
                 return process.wait(timeout=max(0.01, deadline - time.monotonic())), bytes(buffer)
@@ -196,7 +198,7 @@ def run_curl(config: bytes, timeout: float) -> tuple[int, bytes]:
 
 
 def parse_curl_result(
-    code: int, output: bytes, max_time: float
+    code: int, output: bytes, max_time: float, *, response_bound: int = MAX_RESPONSE_BYTES
 ) -> tuple[int | None, dict[str, str], bytes, dict[str, int | str | None]]:
     head_body, sep, metrics_raw = output.rpartition(MARKER)
     if not sep or len(metrics_raw) > 2048:
@@ -269,7 +271,7 @@ def parse_curl_result(
                 raise ProviderError("curl_status_mismatch")
             break
         response_headers.clear()
-    if len(body) > MAX_RESPONSE_BYTES:
+    if len(body) > response_bound:
         raise ProviderError("curl_body_bound")
     # A partial body after curl timeout is diagnostic only, never a completed answer.
     return status or None, response_headers, body if code == 0 else b"", diagnostics

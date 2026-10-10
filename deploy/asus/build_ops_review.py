@@ -15,19 +15,24 @@ NAMES = (
     "api-quota-broker-ops-client",
     "broker_ops.sudoers.proposal",
     "api-quota-broker-ops.tmpfiles",
+    "broker_ops.ssh-deny.proposal",
 )
-REMOTE = "/var/tmp/api-quota-broker-ops-socket-review-2026-10-05"
+REMOTE = "/var/tmp/api-quota-broker-ops-socket-review-2026-10-07-r13-preflight"
+AGENT_REMOTE = "/var/tmp/api-quota-broker-ops-socket-review-2026-10-07-r14-agent-inspect"
 
 
-def wrapper(seal):
+def wrapper(seal, *, mode):
     """Inline Python is parsed in full, then restores TTY before --pty exec."""
     expected = dict(seal["files"])
+    if mode not in ("--diagnose-retained-inspect", "--restore-agent-inspect"):
+        raise ValueError("review_mode_unverified")
+    remote = AGENT_REMOTE if mode == "--restore-agent-inspect" else REMOTE
     seal_data = (json.dumps(seal, sort_keys=True, indent=2) + "\n").encode()
     expected["seal.json"] = hashlib.sha256(seal_data).hexdigest()
     code = f"""import hashlib,json,os,pwd,stat,subprocess,uuid
 from pathlib import Path
 expected={expected!r}
-source=Path({REMOTE!r})
+source=Path({remote!r})
 env={{"PATH":"/usr/bin:/bin","LANG":"C","LC_ALL":"C"}}
 def need(ok):
     if not ok: raise ValueError("bootstrap_gate")
@@ -64,7 +69,8 @@ try:
     argv=("/usr/bin/systemd-run","--pty","--wait","--collect","--service-type=exec","--unit=api-quota-broker-ops-bootstrap",
           "--property=Slice=system.slice","--property=MemoryMax=128M","--property=MemorySwapMax=0","--property=LimitCORE=0",
           "--property=NoNewPrivileges=no","--property=UMask=0077","--property=CPUQuota=25%","--property=TasksMax=32","--property=RuntimeMaxSec=300",
-          "/usr/bin/python3.14","-I","-B","-S",str(target/"install_ops.py"),"--apply")
+          "--property=TimeoutStopSec=60",
+          "/usr/bin/python3.14","-I","-B","-S",str(target/"install_ops.py"),{mode!r})
     os.execve(argv[0],argv,env)
 except BaseException:
     os.write(1,b'{{"status":"blocked","code":"root_copy_or_tty_unverified","automatic_retry":false}}\\n')
@@ -78,13 +84,13 @@ except BaseException:
     ).encode()
 
 
-def build(destination):
+def build(destination, *, mode):
     """Fresh directory only, preserve existing artifacts and all dirty work."""
     source = Path(__file__).parent
     data = {n: (source / n).read_bytes() for n in NAMES}
     seal = {"schema": 1, "files": {n: hashlib.sha256(raw).hexdigest() for n, raw in data.items()}}
     data["seal.json"] = (json.dumps(seal, sort_keys=True, indent=2) + "\n").encode()
-    data["ops-bootstrap-once.sh"] = wrapper(seal)
+    data["ops-bootstrap-once.sh"] = wrapper(seal, mode=mode)
     destination = Path(destination)
     destination.mkdir(mode=0o700)
     destination.chmod(0o700)
@@ -95,7 +101,7 @@ def build(destination):
     return {
         "status": "sealed",
         "review_directory": str(destination),
-        "remote_directory": REMOTE,
+        "remote_directory": AGENT_REMOTE if mode == "--restore-agent-inspect" else REMOTE,
         "files": {n: hashlib.sha256(raw).hexdigest() for n, raw in data.items()},
         "uploaded": False,
         "native_initialized": False,
@@ -103,6 +109,7 @@ def build(destination):
         "native_restart": False,
         "token_created": False,
         "provider_calls": 0,
+        "entry_mode": mode,
     }
 
 

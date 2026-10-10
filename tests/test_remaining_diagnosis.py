@@ -210,7 +210,11 @@ def test_invalid_headers_control_values_and_overlarge_body_are_rejected(monkeypa
     monkeypatch.setattr(curl, "run_curl", lambda *_: (0, curl_output(header=b"HTTP/2 500\r\n")))
     with pytest.raises(ProviderError, match="status_mismatch"):
         curl.nvidia_http(headers, payload)
-    monkeypatch.setattr(curl, "run_curl", lambda *_: (0, curl_output(body=b"x" * 65_537)))
+    monkeypatch.setattr(
+        curl,
+        "run_curl",
+        lambda *_: (0, curl_output(body=b"x" * (packaged_curl.MAX_RESPONSE_BYTES + 1))),
+    )
     with pytest.raises(ProviderError, match="body_bound"):
         curl.nvidia_http(headers, payload)
 

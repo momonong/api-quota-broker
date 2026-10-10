@@ -1,0 +1,39 @@
+[Unit]
+Description=Fixed Broker maintenance operation
+CollectMode=inactive-or-failed
+
+[Service]
+Type=exec
+Slice=system.slice
+User=root
+Group=root
+ExecStart=/usr/bin/python3.14 -I -B -S /usr/local/lib/api-quota-broker-ops/maintenance_ops.py %i
+WorkingDirectory=/
+StandardInput=null
+StandardOutput=null
+StandardError=null
+UMask=0077
+LimitCORE=0
+MemoryMax=384M
+MemorySwapMax=0
+TasksMax=16
+CPUQuota=50%
+RuntimeMaxSec=600
+TimeoutStopSec=10
+KillMode=control-group
+Restart=no
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+TemporaryFileSystem=/tmp:rw,mode=0700,size=32M
+ReadWritePaths=/tmp
+PrivateNetwork=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictAddressFamilies=AF_UNIX
+ReadOnlyPaths=/var/lib/api-quota-broker /var/backups/api-quota-broker /etc/api-quota-broker/credentials
+ReadWritePaths=/opt/api-quota-broker /etc/api-quota-broker /etc/api-quota-broker-ops /etc/systemd/system /usr/local/bin /var/lib/api-quota-broker-ops
+InaccessiblePaths=/etc/api-quota-broker-ops/ops_doppler.cred

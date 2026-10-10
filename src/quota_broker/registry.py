@@ -10,16 +10,18 @@ import re
 import urllib.error
 import urllib.request
 from collections.abc import Mapping
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime
 from pathlib import Path
 from types import MappingProxyType
-from typing import Protocol
+from typing import Any, Protocol
 from urllib.parse import urlsplit
 
 from .catalog import MODELS, Model, endpoint
+from .family_transport import FamilyRequest, FamilyResponse, validate_family_request
+from .provider_policy import catalog_model_id_reason
 
-MAX_RESPONSE_BYTES = 65_536
+MAX_RESPONSE_BYTES = 262_144
 RIVA_MODEL = "nvidia/riva-translate-4b-instruct-v2"
 RIVA_LANGUAGES = frozenset(
     {
@@ -76,6 +78,8 @@ class ModelSpec(Model):
     features: tuple[str, ...] = ()
     input_parameters: tuple[str, ...] = ("input",)
     output_parameters: tuple[str, ...] = ("max_output_tokens",)
+    capabilities: tuple[str, ...] = ()
+    family_adapters: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -232,21 +236,19 @@ def _response_reflects(
     strings = [*headers.keys(), *headers.values()]
     try:
         document = json.loads(raw)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, RecursionError):
         document = None
-
-    def collect(value: object) -> None:
+    pending = [(document, 0)]
+    while pending:
+        value, depth = pending.pop()
+        if depth > 32:
+            return True
         if isinstance(value, str):
             strings.append(value)
         elif isinstance(value, list):
-            for item in value:
-                collect(item)
+            pending.extend((item, depth + 1) for item in value)
         elif isinstance(value, dict):
-            for key, item in value.items():
-                collect(key)
-                collect(item)
-
-    collect(document)
+            pending.extend((item, depth + 1) for item in (*value.keys(), *value.values()))
     return any(secret and secret in value for secret in sensitive for value in strings)
 
 
@@ -391,6 +393,33 @@ def _unique_json(pairs: list[tuple[str, object]]) -> dict[str, object]:
     return result
 
 
+class _FamilyAdapterBridge:
+    """Keep legacy adapters intact while registering the typed protocol contract."""
+
+    def __init__(self, implementation: Any):
+        self.implementation = implementation
+        self.supported_capabilities = implementation.supported_capabilities
+        self.supported_features = implementation.supported_features
+
+    def request(self, *args: Any, **kwargs: Any) -> Any:
+        raise RegistryError("structured input is required for this adapter")
+
+    def transport(self, *args: Any, **kwargs: Any) -> Any:
+        raise RegistryError("structured transport is required for this adapter")
+
+    def interpret(self, *args: Any, **kwargs: Any) -> Any:
+        raise RegistryError("structured result is required for this adapter")
+
+    def admit(self, spec: ModelSpec, task: Mapping[str, object]) -> None:
+        self.implementation.admit_task(spec, dict(task))
+
+    def candidate_endpoint(self, value: str, model: str) -> str:
+        for template in self.implementation.endpoints.values():
+            if value == template.replace("{model}", model):
+                return template
+        raise RegistryError("candidate endpoint differs from its protocol contract")
+
+
 class Registry:
     def __init__(
         self,
@@ -404,6 +433,11 @@ class Registry:
         implementations["openai_chat"] = OpenAIChatAdapter()
         implementations["gemini_generate_content"] = GeminiGenerateContentAdapter()
         implementations["cloudflare_workers_ai"] = CloudflareWorkersAIAdapter()
+        from .family_adapters import PACKAGED_FAMILY_ADAPTERS
+
+        implementations.update(
+            {name: _FamilyAdapterBridge(value) for name, value in PACKAGED_FAMILY_ADAPTERS.items()}
+        )
         for name, adapter in (adapters or {}).items():
             _identifier(name, "adapter name")
             if name in implementations:
@@ -423,6 +457,85 @@ class Registry:
             raise RegistryError("unregistered adapter")
         self.models: Mapping[tuple[str, str], ModelSpec] = MappingProxyType(dict(models))
         self.providers = frozenset(provider for provider, _ in self.models)
+
+    def adapter_support(self, adapter_id: str, capability: str) -> bool | None:
+        """Declared protocol contract, distinct from a model's enabled families."""
+        adapter = self.adapters.get(adapter_id)
+        if adapter is None:
+            return False
+        supported = getattr(adapter, "supported_capabilities", None)
+        if supported is not None:
+            return capability in supported
+        if adapter_id.startswith("builtin:"):
+            return any(
+                spec.capability == capability and spec.adapter == adapter_id
+                for spec in self.models.values()
+            )
+        return None
+
+    def adapter_features(self, adapter_id: str) -> frozenset[str] | None:
+        supported = getattr(self.adapters.get(adapter_id), "supported_features", None)
+        return frozenset(supported) if supported is not None else None
+
+    def fixed_family_adapter(self, adapter_id: str) -> bool:
+        return isinstance(self.adapters.get(adapter_id), _FamilyAdapterBridge)
+
+    @staticmethod
+    def response_reflects(raw: bytes, headers: dict[str, str], private: tuple[str, ...]) -> bool:
+        return _response_reflects(raw, headers, private)
+
+    def supports_family(self, spec: ModelSpec, capability: str) -> bool:
+        self._check(spec)
+        return (
+            capability in (spec.capabilities or (spec.capability,))
+            and self.adapter_support(
+                dict(spec.family_adapters).get(capability, spec.adapter), capability
+            )
+            is not False
+        )
+
+    def candidate_definition(self, row: dict) -> tuple[dict, dict]:
+        """Use the selected adapter's declared contract to validate disabled catalog candidates."""
+        adapter_id, capability = row["protocol"], row["capability"]
+        if self.adapter_support(adapter_id, capability) is not True:
+            raise RegistryError("candidate family has no declared protocol contract")
+        from .families import FamilyRegistry
+
+        token_output = FamilyRegistry.builtin().uses_output_tokens(capability)
+        if row["endpoint"] is None or (
+            token_output and (row["context_tokens"] is None or row["max_output_tokens"] is None)
+        ):
+            raise RegistryError("candidate model limits or endpoint are unknown")
+        adapter = self.adapters[adapter_id]
+        endpoint_hook = getattr(adapter, "candidate_endpoint", None)
+        endpoint_value = (
+            endpoint_hook(row["endpoint"], row["model"])
+            if endpoint_hook is not None
+            else row["endpoint"]
+        )
+        origin = "https://" + urlsplit(endpoint_value).netloc
+        declaration = {
+            "id": row["provider"],
+            "adapter": adapter_id,
+            "origin": origin,
+            "endpoint": endpoint_value,
+        }
+        allowed_features = self.adapter_features(adapter_id)
+        features = set(row["features"]) & set(allowed_features or ())
+        features.add(capability)
+        proposal = {
+            "provider": row["provider"],
+            "model": row["model"],
+            "capability": capability,
+            "context_tokens": row["context_tokens"] if row["context_tokens"] is not None else 0,
+            "max_output_tokens": row["max_output_tokens"]
+            if row["max_output_tokens"] is not None
+            else 0,
+            "features": sorted(features),
+            "adapter": adapter_id,
+        }
+        self.from_manifest({"schema_version": 1, "providers": [declaration], "models": [proposal]})
+        return declaration, proposal
 
     @classmethod
     def builtin(cls, *, adapters: Mapping[str, Adapter] | None = None) -> "Registry":
@@ -456,6 +569,16 @@ class Registry:
             document = json.loads(Path(path).read_text(), object_pairs_hook=_unique_json)
         except (OSError, ValueError) as exc:
             raise RegistryError("invalid registry manifest") from exc
+        return cls.from_manifest(document, adapters=adapters)
+
+    @classmethod
+    def from_manifest(
+        cls,
+        document: object,
+        *,
+        adapters: Mapping[str, Adapter] | None = None,
+    ) -> "Registry":
+        """Validate an in-memory candidate with the same policy as a saved manifest."""
         document = _object(document, {"schema_version", "providers", "models"}, set(), "manifest")
         if type(document["schema_version"]) is not int or document["schema_version"] != 1:
             raise RegistryError("unsupported registry schema version")
@@ -472,13 +595,22 @@ class Registry:
             if adapter_name not in registry.adapters:
                 raise RegistryError("unregistered adapter")
             origin = _url(value["origin"], origin=True)
-            url = _protocol_endpoint(adapter_name, origin, value["endpoint"])
+            adapter = registry.adapters[adapter_name]
+            if isinstance(adapter, _FamilyAdapterBridge):
+                implementation = adapter.implementation
+                if origin not in implementation.allowed_origins(provider_id):
+                    raise RegistryError("unapproved family provider origin")
+                url = value["endpoint"]
+                if url != implementation.endpoints.get(provider_id):
+                    raise RegistryError("unapproved family endpoint schema")
+            else:
+                url = _protocol_endpoint(adapter_name, origin, value["endpoint"])
             if (urlsplit(url).scheme, urlsplit(url).netloc) != (
                 urlsplit(origin).scheme,
                 urlsplit(origin).netloc,
             ):
                 raise RegistryError("endpoint outside provider origin")
-            if provider_id in registry.providers:
+            if provider_id in registry.providers and not isinstance(adapter, _FamilyAdapterBridge):
                 builtin = [s for (p, _), s in registry.models.items() if p == provider_id]
                 incompatible = (
                     adapter_name != "openai_chat"
@@ -497,6 +629,7 @@ class Registry:
                     raise RegistryError("builtin provider endpoint cannot be overridden")
             providers[provider_id] = ProviderSpec(provider_id, adapter_name, origin, url)
         models = dict(registry.models)
+        supplied: set[tuple[str, str]] = set()
         required = {"provider", "model", "capability", "context_tokens", "max_output_tokens"}
         optional = {
             "features",
@@ -508,6 +641,10 @@ class Registry:
             "use_restrictions",
             "source",
             "verified_at",
+            "capabilities",
+            "adapter",
+            "family_adapters",
+            "replace_builtin",
         }
         for value in document["models"]:
             value = _object(value, required, optional, "model")
@@ -515,43 +652,91 @@ class Registry:
             if provider_id not in providers:
                 raise RegistryError("model has unregistered provider")
             provider = providers[provider_id]
-            model_id = value["model"]
-            if (
-                not isinstance(model_id, str)
-                or not model_id
-                or len(model_id) > 256
-                or any(ord(c) <= 32 for c in model_id)
+            adapter_name = _identifier(value.get("adapter", provider.adapter), "model adapter")
+            if adapter_name not in registry.adapters:
+                raise RegistryError("unregistered model adapter")
+            model_adapter = registry.adapters[adapter_name]
+            if adapter_name != provider.adapter and not isinstance(
+                model_adapter, _FamilyAdapterBridge
             ):
+                raise RegistryError("model adapter override requires a fixed family contract")
+            model_id = value["model"]
+            if catalog_model_id_reason(model_id) is not None:
                 raise RegistryError("invalid model id")
-            if (provider_id, model_id) in models:
+            assert isinstance(model_id, str)
+            model_key = (provider_id, model_id)
+            replacing = value.get("replace_builtin", False)
+            if type(replacing) is not bool:
+                raise RegistryError("invalid builtin replacement flag")
+            if model_key in supplied or (
+                model_key in models
+                and not (
+                    replacing
+                    and models[model_key].adapter.startswith("builtin:")
+                    and isinstance(model_adapter, _FamilyAdapterBridge)
+                )
+            ):
                 raise RegistryError("duplicate provider/model")
+            if replacing and model_key not in registry.models:
+                raise RegistryError("replacement requires an existing builtin model")
+            supplied.add(model_key)
             capability = _identifier(value["capability"], "capability")
+            capabilities = _strings(value.get("capabilities", [capability]), "capabilities")
+            bindings = value.get("family_adapters", {})
+            if not isinstance(bindings, dict) or bindings.keys() - set(capabilities):
+                raise RegistryError("invalid family adapter bindings")
+            for binding in bindings.values():
+                if not isinstance(binding, str) or not isinstance(
+                    registry.adapters.get(binding), _FamilyAdapterBridge
+                ):
+                    raise RegistryError("family binding requires a fixed protocol contract")
+            if capability not in capabilities or any(
+                registry.adapter_support(bindings.get(family, adapter_name), family) is False
+                for family in capabilities
+            ):
+                raise RegistryError("unsupported adapter family")
             if (
-                provider.adapter
-                in {"openai_chat", "gemini_generate_content", "cloudflare_workers_ai"}
+                adapter_name in {"openai_chat", "gemini_generate_content", "cloudflare_workers_ai"}
                 and capability != "text_generation"
             ):
                 raise RegistryError("unsupported adapter capability")
+            from .families import FamilyRegistry
+
+            token_model = (
+                any(FamilyRegistry.builtin().uses_output_tokens(family) for family in capabilities)
+                if isinstance(model_adapter, _FamilyAdapterBridge)
+                else True
+            )
             for name in ("context_tokens", "max_output_tokens"):
-                if type(value[name]) is not int or value[name] < 1:
+                if (
+                    type(value[name]) is not int
+                    or not (1 if token_model else 0) <= value[name] <= 100_000_000
+                ):
                     raise RegistryError("invalid model token limits")
             if value["max_output_tokens"] > value["context_tokens"]:
                 raise RegistryError("output limit exceeds context")
             features = _strings(value.get("features", [capability, "text"]), "features")
             supported_features = {"text_generation", "text"}
-            if provider.adapter == "openai_chat":
+            if adapter_name == "openai_chat":
                 supported_features.add("json_output")
             if (
-                provider.adapter
-                in {"openai_chat", "gemini_generate_content", "cloudflare_workers_ai"}
+                adapter_name in {"openai_chat", "gemini_generate_content", "cloudflare_workers_ai"}
                 and not set(features) <= supported_features
+            ):
+                raise RegistryError("unsupported adapter features")
+            if isinstance(model_adapter, _FamilyAdapterBridge) and not set(features) <= set().union(
+                model_adapter.supported_features,
+                *(
+                    registry.adapter_features(binding) or frozenset()
+                    for binding in bindings.values()
+                ),
             ):
                 raise RegistryError("unsupported adapter features")
             inputs = _strings(value.get("input_parameters", ["input"]), "input parameters")
             outputs = _strings(
                 value.get("output_parameters", ["max_output_tokens"]), "output parameters"
             )
-            if provider.adapter in {
+            if adapter_name in {
                 "openai_chat",
                 "gemini_generate_content",
                 "cloudflare_workers_ai",
@@ -564,21 +749,57 @@ class Registry:
             metadata["free_kind"] = value.get("free_kind", "administrator_declared_unknown")
             if any(not isinstance(item, str) for item in metadata.values()):
                 raise RegistryError("invalid model metadata")
+            model_origin = provider.origin
+            model_endpoint = _model_endpoint(provider, model_id)
+            if isinstance(model_adapter, _FamilyAdapterBridge):
+                implementation = model_adapter.implementation
+                template = implementation.endpoints.get(provider_id)
+                if template is None:
+                    raise RegistryError("family adapter does not support provider")
+                model_origin = "https://" + urlsplit(template).netloc
+                prototype = ModelSpec(
+                    provider=provider_id,
+                    model=model_id,
+                    context_tokens=value["context_tokens"],
+                    max_output_tokens=value["max_output_tokens"],
+                    capability=capability,
+                    origin=model_origin,
+                    endpoint_template=template,
+                    adapter=adapter_name,
+                    capabilities=capabilities,
+                    **metadata,
+                )
+                model_endpoint = implementation.endpoint_for(prototype, capability, "{account_id}")
             models[(provider_id, model_id)] = ModelSpec(
                 provider=provider_id,
                 model=model_id,
                 context_tokens=value["context_tokens"],
                 max_output_tokens=value["max_output_tokens"],
                 capability=value["capability"],
-                origin=provider.origin,
-                endpoint_template=_model_endpoint(provider, model_id),
-                adapter=provider.adapter,
+                origin=model_origin,
+                endpoint_template=model_endpoint,
+                adapter=adapter_name,
                 features=features,
                 input_parameters=inputs,
                 output_parameters=outputs,
+                capabilities=capabilities,
+                family_adapters=tuple(sorted(bindings.items())),
                 **metadata,
             )
-        if set(providers) - {p for p, m in models if (p, m) not in registry.models}:
+            for family, binding in bindings.items():
+                bound_adapter = registry.adapters[binding]
+                assert isinstance(bound_adapter, _FamilyAdapterBridge)
+                implementation = bound_adapter.implementation
+                template = implementation.endpoints.get(provider_id)
+                if template is None:
+                    raise RegistryError("family binding does not support provider")
+                bound_spec = replace(
+                    models[model_key],
+                    adapter=binding,
+                    origin="https://" + urlsplit(template).netloc,
+                )
+                implementation.endpoint_for(bound_spec, family, "{account_id}")
+        if set(providers) - {p for p, _ in supplied}:
             raise RegistryError("provider has no registered models")
         return cls(models, adapters=adapters)
 
@@ -633,11 +854,74 @@ class Registry:
     def admit(self, spec: ModelSpec, task: Mapping[str, object]) -> None:
         """Run only the selected adapter's input policy; no credentials or I/O."""
         self._check(spec)
-        if task.get("capability") != spec.capability:
+        if not isinstance(task.get("capability"), str) or not self.supports_family(
+            spec, str(task["capability"])
+        ):
             raise RegistryError("model/capability mismatch")
+        if isinstance(task.get("input"), dict):
+            implementation, bound_spec = self._typed_binding(spec, str(task["capability"]))
+            implementation.admit_task(bound_spec, dict(task))
+            return
         hook = getattr(self.adapters[spec.adapter], "admit", None)
         if hook is not None:
             hook(spec, task)
+
+    def _typed_binding(self, spec: ModelSpec, capability: str) -> tuple[Any, ModelSpec]:
+        self._check(spec)
+        adapter_id = dict(spec.family_adapters).get(capability, spec.adapter)
+        adapter = self.adapters[adapter_id]
+        if isinstance(adapter, _FamilyAdapterBridge):
+            implementation = adapter.implementation
+            template = implementation.endpoints.get(spec.provider)
+            if template is None:
+                raise RegistryError("family adapter does not support provider")
+            bound_spec = replace(
+                spec, adapter=adapter_id, origin="https://" + urlsplit(template).netloc
+            )
+            return implementation, bound_spec
+        # These are protocol aliases, never model-name or price guesses.
+        aliases = {
+            "builtin:nvidia": "openai_inference",
+            "builtin:groq": "openai_inference",
+            "builtin:mistral": "openai_inference",
+            "builtin:openrouter": "openai_inference",
+            "openai_chat": "openai_inference",
+            "builtin:google": "gemini_inference",
+            "gemini_generate_content": "gemini_inference",
+            "builtin:cloudflare": "cloudflare_text",
+            "cloudflare_workers_ai": "cloudflare_text",
+            "builtin:ocrspace": "ocrspace_inference",
+        }
+        name = aliases.get(adapter_id)
+        selected = self.adapters.get(name or "")
+        if not isinstance(selected, _FamilyAdapterBridge):
+            raise RegistryError("adapter has no structured protocol contract")
+        return selected.implementation, spec
+
+    def request_task(
+        self, spec: ModelSpec, account_id: str, secret: str, data: dict[str, Any]
+    ) -> FamilyRequest:
+        if not _valid_secret(secret):
+            raise RegistryError("invalid provider credential")
+        self.admit(spec, data)
+        implementation, bound_spec = self._typed_binding(spec, data["capability"])
+        request = implementation.request_task(bound_spec, account_id, secret, data)
+        if not isinstance(request, FamilyRequest) or request.url != implementation.endpoint_for(
+            bound_spec, data["capability"], account_id
+        ):
+            raise RegistryError("unapproved family request endpoint")
+        _url(request.url)
+        validate_family_request(request)
+        return request
+
+    def interpret_task(
+        self, spec: ModelSpec, capability: str, status: int, headers: dict[str, str], raw: bytes
+    ) -> FamilyResponse:
+        implementation, bound_spec = self._typed_binding(spec, capability)
+        response = implementation.interpret_task(bound_spec, capability, status, headers, raw)
+        if not isinstance(response, FamilyResponse):
+            raise RegistryError("invalid family adapter result")
+        return response
 
     def transport(
         self,
@@ -702,6 +986,9 @@ class Registry:
 
 class OpenAIChatAdapter:
     """Packaged standard chat adapter; extensions cannot replace this implementation."""
+
+    supported_capabilities = frozenset({"text_generation"})
+    supported_features = frozenset({"text_generation", "text", "json_output"})
 
     def request(
         self,
@@ -829,6 +1116,15 @@ class OpenAIChatAdapter:
 class GeminiGenerateContentAdapter:
     """Existing generateContent text schema at a model-specific fixed endpoint."""
 
+    supported_capabilities = frozenset({"text_generation"})
+    supported_features = frozenset({"text_generation", "text"})
+
+    def candidate_endpoint(self, value: str, model: str) -> str:
+        expected = "https://generativelanguage.googleapis.com" + GEMINI_PATH
+        if value != expected.replace("{model}", model):
+            raise RegistryError("candidate endpoint differs from its protocol contract")
+        return expected
+
     def request(
         self,
         spec: ModelSpec,
@@ -898,6 +1194,15 @@ class GeminiGenerateContentAdapter:
 
 class CloudflareWorkersAIAdapter:
     """Existing Workers AI prompt schema, with only its validated account slot."""
+
+    supported_capabilities = frozenset({"text_generation"})
+    supported_features = frozenset({"text_generation", "text"})
+
+    def candidate_endpoint(self, value: str, model: str) -> str:
+        expected = "https://api.cloudflare.com" + CLOUDFLARE_PATH
+        if value != expected.replace("{model}", model):
+            raise RegistryError("candidate endpoint differs from its protocol contract")
+        return expected
 
     def request(
         self,

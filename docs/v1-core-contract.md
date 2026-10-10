@@ -1,5 +1,7 @@
 # v1 核心資源池契約與驗收
 
+本文件保存核心架構與原始驗收契約；後續正常1.0部署、輸出上限、FD修正與live證據以[ASUS維運](asus-broker-ops.md)及[使用指南](v1-local-guide.md)為準。
+
 起點 `54f21d4`，沿用 `feat/seven-provider-v1`。本階段補全可擴充資源池、共同路由、持久健康狀態與加密等待佇列。人類來源：main `01a0de5f-8306-71a3-9738-7ac6eb4d7746`，UTC 2026-10-02 07:50:25.365；既定 main → orchestrate →原 task。七家為首批 adapter；同協定新供應商及模型可透過管理者設定加入。
 
 ## 驗收矩陣

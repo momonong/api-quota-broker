@@ -1,0 +1,809 @@
+{
+  "targets": [
+    {
+      "account_id": "asus-dev-nvidia-key",
+      "billing_enabled": false,
+      "capacity": {
+        "as_of": null,
+        "expires_at": null,
+        "kind": "unknown",
+        "refresh_seconds": null,
+        "scope": null,
+        "source": null
+      },
+      "concurrency_limit": 1,
+      "enabled": false,
+      "expires_at": null,
+      "free_eligible": false,
+      "id": "asus-nvidia-pool",
+      "local_safety_caps": [
+        {
+          "bucket": "nvidia:asus-dev-key:requests:rolling_minute",
+          "limit": 10,
+          "metric": "requests",
+          "timezone": "UTC",
+          "window": "rolling_minute"
+        },
+        {
+          "bucket": "nvidia:asus-dev-key:requests:day",
+          "limit": 500,
+          "metric": "requests",
+          "timezone": "UTC",
+          "window": "day"
+        },
+        {
+          "bucket": "nvidia:asus-dev-key:input_tokens:rolling_minute",
+          "limit": 8192,
+          "metric": "input_tokens",
+          "timezone": "UTC",
+          "window": "rolling_minute"
+        }
+      ],
+      "max_output_tokens": 512,
+      "model": "nvidia/nemotron-3.5-lightning-30b-a3b",
+      "priority": 0,
+      "provider": "nvidia",
+      "provider_quota_facts": [
+        {
+          "limit": {
+            "as_of": null,
+            "provenance": "unknown",
+            "scope": null,
+            "source": null,
+            "valid_until": null,
+            "value": null
+          },
+          "metric": "requests",
+          "remaining": {
+            "as_of": null,
+            "provenance": "unknown",
+            "scope": null,
+            "source": null,
+            "valid_until": null,
+            "value": null
+          },
+          "window": "rolling_minute"
+        },
+        {
+          "limit": {
+            "as_of": null,
+            "provenance": "unknown",
+            "scope": null,
+            "source": null,
+            "valid_until": null,
+            "value": null
+          },
+          "metric": "requests",
+          "remaining": {
+            "as_of": null,
+            "provenance": "unknown",
+            "scope": null,
+            "source": null,
+            "valid_until": null,
+            "value": null
+          },
+          "window": "day"
+        },
+        {
+          "limit": {
+            "as_of": null,
+            "provenance": "unknown",
+            "scope": null,
+            "source": null,
+            "valid_until": null,
+            "value": null
+          },
+          "metric": "input_tokens",
+          "remaining": {
+            "as_of": null,
+            "provenance": "unknown",
+            "scope": null,
+            "source": null,
+            "valid_until": null,
+            "value": null
+          },
+          "window": "rolling_minute"
+        }
+      ],
+      "secret_ref": "NVIDIA_API_KEY",
+      "shared_concurrency_limit": 1,
+      "shared_concurrency_scope": "nvidia:asus-dev-key:shared",
+      "source": "pending scoped account evidence and ASUS provider acceptance",
+      "verified_at": null
+    },
+    {
+      "account_id": "asus-dev-google-key",
+      "billing_enabled": false,
+      "capacity": {
+        "as_of": null,
+        "expires_at": null,
+        "kind": "unknown",
+        "refresh_seconds": null,
+        "scope": null,
+        "source": null
+      },
+      "concurrency_limit": 1,
+      "enabled": false,
+      "expires_at": null,
+      "free_eligible": false,
+      "id": "asus-google-pool",
+      "local_safety_caps": [
+        {
+          "bucket": "google:asus-dev-key:requests:rolling_minute",
+          "limit": 3,
+          "metric": "requests",
+          "timezone": "UTC",
+          "window": "rolling_minute"
+        },
+        {
+          "bucket": "google:asus-dev-key:requests:day",
+          "limit": 100,
+          "metric": "requests",
+          "timezone": "America/Los_Angeles",
+          "window": "day"
+        },
+        {
+          "bucket": "google:asus-dev-key:input_tokens:rolling_minute",
+          "limit": 4096,
+          "metric": "input_tokens",
+          "timezone": "UTC",
+          "window": "rolling_minute"
+        }
+      ],
+      "max_output_tokens": 512,
+      "model": "gemini-3.5-flash-lite",
+      "priority": 1,
+      "provider": "google",
+      "provider_quota_facts": [
+        {
+          "limit": {
+            "as_of": null,
+            "provenance": "unknown",
+            "scope": null,
+            "source": null,
+            "valid_until": null,
+            "value": null
+          },
+          "metric": "requests",
+          "remaining": {
+            "as_of": null,
+            "provenance": "unknown",
+            "scope": null,
+            "source": null,
+            "valid_until": null,
+            "value": null
+          },
+          "window": "rolling_minute"
+        },
+        {
+          "limit": {
+            "as_of": null,
+            "provenance": "unknown",
+            "scope": null,
+            "source": null,
+            "valid_until": null,
+            "value": null
+          },
+          "metric": "requests",
+          "remaining": {
+            "as_of": null,
+            "provenance": "unknown",
+            "scope": null,
+            "source": null,
+            "valid_until": null,
+            "value": null
+          },
+          "window": "day"
+        },
+        {
+          "limit": {
+            "as_of": null,
+            "provenance": "unknown",
+            "scope": null,
+            "source": null,
+            "valid_until": null,
+            "value": null
+          },
+          "metric": "input_tokens",
+          "remaining": {
+            "as_of": null,
+            "provenance": "unknown",
+            "scope": null,
+            "source": null,
+            "valid_until": null,
+            "value": null
+          },
+          "window": "rolling_minute"
+        }
+      ],
+      "secret_ref": "GEMINI_API_KEY",
+      "shared_concurrency_limit": 1,
+      "shared_concurrency_scope": "google:asus-dev-key:shared",
+      "source": "pending scoped account evidence and ASUS provider acceptance",
+      "verified_at": null
+    },
+    {
+      "account_id": "asus-dev-mistral-key",
+      "billing_enabled": false,
+      "capacity": {
+        "as_of": null,
+        "expires_at": null,
+        "kind": "unknown",
+        "refresh_seconds": null,
+        "scope": null,
+        "source": null
+      },
+      "concurrency_limit": 1,
+      "enabled": false,
+      "expires_at": null,
+      "free_eligible": false,
+      "id": "asus-mistral-pool",
+      "local_safety_caps": [
+        {
+          "bucket": "mistral:asus-dev-key:requests:rolling_minute",
+          "limit": 3,
+          "metric": "requests",
+          "timezone": "UTC",
+          "window": "rolling_minute"
+        },
+        {
+          "bucket": "mistral:asus-dev-key:requests:day",
+          "limit": 100,
+          "metric": "requests",
+          "timezone": "UTC",
+          "window": "day"
+        },
+        {
+          "bucket": "mistral:asus-dev-key:input_tokens:rolling_minute",
+          "limit": 4096,
+          "metric": "input_tokens",
+          "timezone": "UTC",
+          "window": "rolling_minute"
+        }
+      ],
+      "max_output_tokens": 512,
+      "model": "ministral-3b-latest",
+      "priority": 2,
+      "provider": "mistral",
+      "provider_quota_facts": [
+        {
+          "limit": {
+            "as_of": null,
+            "provenance": "unknown",
+            "scope": null,
+            "source": null,
+            "valid_until": null,
+            "value": null
+          },
+          "metric": "requests",
+          "remaining": {
+            "as_of": null,
+            "provenance": "unknown",
+            "scope": null,
+            "source": null,
+            "valid_until": null,
+            "value": null
+          },
+          "window": "rolling_minute"
+        },
+        {
+          "limit": {
+            "as_of": null,
+            "provenance": "unknown",
+            "scope": null,
+            "source": null,
+            "valid_until": null,
+            "value": null
+          },
+          "metric": "requests",
+          "remaining": {
+            "as_of": null,
+            "provenance": "unknown",
+            "scope": null,
+            "source": null,
+            "valid_until": null,
+            "value": null
+          },
+          "window": "day"
+        },
+        {
+          "limit": {
+            "as_of": null,
+            "provenance": "unknown",
+            "scope": null,
+            "source": null,
+            "valid_until": null,
+            "value": null
+          },
+          "metric": "input_tokens",
+          "remaining": {
+            "as_of": null,
+            "provenance": "unknown",
+            "scope": null,
+            "source": null,
+            "valid_until": null,
+            "value": null
+          },
+          "window": "rolling_minute"
+        }
+      ],
+      "secret_ref": "MISTRAL_API_KEY",
+      "shared_concurrency_limit": 1,
+      "shared_concurrency_scope": "mistral:asus-dev-key:shared",
+      "source": "pending scoped account evidence and ASUS provider acceptance",
+      "verified_at": null
+    },
+    {
+      "account_id": "asus-dev-cloudflare-key",
+      "account_id_ref": "CLOUDFLARE_ACCOUNT_ID",
+      "billing_enabled": false,
+      "capacity": {
+        "as_of": null,
+        "expires_at": null,
+        "kind": "unknown",
+        "refresh_seconds": null,
+        "scope": null,
+        "source": null
+      },
+      "concurrency_limit": 1,
+      "enabled": false,
+      "expires_at": null,
+      "free_eligible": false,
+      "id": "asus-cloudflare-pool",
+      "local_safety_caps": [
+        {
+          "bucket": "cloudflare:asus-dev-key:requests:rolling_minute",
+          "limit": 20,
+          "metric": "requests",
+          "timezone": "UTC",
+          "window": "rolling_minute"
+        },
+        {
+          "bucket": "cloudflare:asus-dev-key:requests:day",
+          "limit": 1000,
+          "metric": "requests",
+          "timezone": "UTC",
+          "window": "day"
+        },
+        {
+          "bucket": "cloudflare:asus-dev-key:input_tokens:rolling_minute",
+          "limit": 4096,
+          "metric": "input_tokens",
+          "timezone": "UTC",
+          "window": "rolling_minute"
+        },
+        {
+          "bucket": "cloudflare:asus-dev-key:neurons:day",
+          "limit": 8000,
+          "metric": "neurons",
+          "timezone": "UTC",
+          "window": "day"
+        }
+      ],
+      "max_output_tokens": 256,
+      "model": "@cf/meta/llama-3.2-1b-instruct",
+      "priority": 3,
+      "provider": "cloudflare",
+      "provider_quota_facts": [
+        {
+          "limit": {
+            "as_of": null,
+            "provenance": "unknown",
+            "scope": null,
+            "source": null,
+            "valid_until": null,
+            "value": null
+          },
+          "metric": "requests",
+          "remaining": {
+            "as_of": null,
+            "provenance": "unknown",
+            "scope": null,
+            "source": null,
+            "valid_until": null,
+            "value": null
+          },
+          "window": "rolling_minute"
+        },
+        {
+          "limit": {
+            "as_of": null,
+            "provenance": "unknown",
+            "scope": null,
+            "source": null,
+            "valid_until": null,
+            "value": null
+          },
+          "metric": "requests",
+          "remaining": {
+            "as_of": null,
+            "provenance": "unknown",
+            "scope": null,
+            "source": null,
+            "valid_until": null,
+            "value": null
+          },
+          "window": "day"
+        },
+        {
+          "limit": {
+            "as_of": null,
+            "provenance": "unknown",
+            "scope": null,
+            "source": null,
+            "valid_until": null,
+            "value": null
+          },
+          "metric": "input_tokens",
+          "remaining": {
+            "as_of": null,
+            "provenance": "unknown",
+            "scope": null,
+            "source": null,
+            "valid_until": null,
+            "value": null
+          },
+          "window": "rolling_minute"
+        },
+        {
+          "limit": {
+            "as_of": null,
+            "provenance": "unknown",
+            "scope": null,
+            "source": null,
+            "valid_until": null,
+            "value": null
+          },
+          "metric": "neurons",
+          "remaining": {
+            "as_of": null,
+            "provenance": "unknown",
+            "scope": null,
+            "source": null,
+            "valid_until": null,
+            "value": null
+          },
+          "window": "day"
+        }
+      ],
+      "secret_ref": "CLOUDFLARE_API_TOKEN",
+      "shared_concurrency_limit": 1,
+      "shared_concurrency_scope": "cloudflare:asus-dev-key:shared",
+      "source": "pending scoped account evidence and ASUS provider acceptance",
+      "verified_at": null
+    },
+    {
+      "account_id": "asus-dev-openrouter-key",
+      "billing_enabled": false,
+      "capacity": {
+        "as_of": null,
+        "expires_at": null,
+        "kind": "unknown",
+        "refresh_seconds": null,
+        "scope": null,
+        "source": null
+      },
+      "concurrency_limit": 1,
+      "enabled": false,
+      "expires_at": null,
+      "free_eligible": false,
+      "id": "asus-openrouter-pool",
+      "local_safety_caps": [
+        {
+          "bucket": "openrouter:asus-dev-key:requests:rolling_minute",
+          "limit": 10,
+          "metric": "requests",
+          "timezone": "UTC",
+          "window": "rolling_minute"
+        },
+        {
+          "bucket": "openrouter:asus-dev-key:requests:day",
+          "limit": 40,
+          "metric": "requests",
+          "timezone": "UTC",
+          "window": "day"
+        },
+        {
+          "bucket": "openrouter:asus-dev-key:input_tokens:rolling_minute",
+          "limit": 8192,
+          "metric": "input_tokens",
+          "timezone": "UTC",
+          "window": "rolling_minute"
+        }
+      ],
+      "max_output_tokens": 512,
+      "model": "liquid/lfm-2.5-2.6b:free",
+      "priority": 4,
+      "provider": "openrouter",
+      "provider_quota_facts": [
+        {
+          "limit": {
+            "as_of": null,
+            "provenance": "unknown",
+            "scope": null,
+            "source": null,
+            "valid_until": null,
+            "value": null
+          },
+          "metric": "requests",
+          "remaining": {
+            "as_of": null,
+            "provenance": "unknown",
+            "scope": null,
+            "source": null,
+            "valid_until": null,
+            "value": null
+          },
+          "window": "rolling_minute"
+        },
+        {
+          "limit": {
+            "as_of": null,
+            "provenance": "unknown",
+            "scope": null,
+            "source": null,
+            "valid_until": null,
+            "value": null
+          },
+          "metric": "requests",
+          "remaining": {
+            "as_of": null,
+            "provenance": "unknown",
+            "scope": null,
+            "source": null,
+            "valid_until": null,
+            "value": null
+          },
+          "window": "day"
+        },
+        {
+          "limit": {
+            "as_of": null,
+            "provenance": "unknown",
+            "scope": null,
+            "source": null,
+            "valid_until": null,
+            "value": null
+          },
+          "metric": "input_tokens",
+          "remaining": {
+            "as_of": null,
+            "provenance": "unknown",
+            "scope": null,
+            "source": null,
+            "valid_until": null,
+            "value": null
+          },
+          "window": "rolling_minute"
+        }
+      ],
+      "secret_ref": "OPENROUTER_API_KEY",
+      "shared_concurrency_limit": 1,
+      "shared_concurrency_scope": "openrouter:asus-dev-key:shared",
+      "source": "pending scoped account evidence and ASUS provider acceptance",
+      "verified_at": null
+    },
+    {
+      "account_id": "asus-dev-ocrspace-key",
+      "billing_enabled": false,
+      "capacity": {
+        "as_of": null,
+        "expires_at": null,
+        "kind": "unknown",
+        "refresh_seconds": null,
+        "scope": null,
+        "source": null
+      },
+      "concurrency_limit": 1,
+      "enabled": false,
+      "expires_at": null,
+      "free_eligible": false,
+      "id": "asus-ocrspace-pool",
+      "local_safety_caps": [
+        {
+          "bucket": "ocrspace:asus-dev-key:requests:rolling_minute",
+          "limit": 10,
+          "metric": "requests",
+          "timezone": "UTC",
+          "window": "rolling_minute"
+        },
+        {
+          "bucket": "ocrspace:asus-dev-key:requests:day",
+          "limit": 300,
+          "metric": "requests",
+          "timezone": "UTC",
+          "window": "day"
+        },
+        {
+          "bucket": "ocrspace:asus-dev-key:requests:month",
+          "limit": 20000,
+          "metric": "requests",
+          "timezone": "UTC",
+          "window": "month"
+        }
+      ],
+      "max_output_tokens": 1,
+      "model": "ocr.space/engine2",
+      "priority": 5,
+      "provider": "ocrspace",
+      "provider_quota_facts": [
+        {
+          "limit": {
+            "as_of": null,
+            "provenance": "unknown",
+            "scope": null,
+            "source": null,
+            "valid_until": null,
+            "value": null
+          },
+          "metric": "requests",
+          "remaining": {
+            "as_of": null,
+            "provenance": "unknown",
+            "scope": null,
+            "source": null,
+            "valid_until": null,
+            "value": null
+          },
+          "window": "rolling_minute"
+        },
+        {
+          "limit": {
+            "as_of": null,
+            "provenance": "unknown",
+            "scope": null,
+            "source": null,
+            "valid_until": null,
+            "value": null
+          },
+          "metric": "requests",
+          "remaining": {
+            "as_of": null,
+            "provenance": "unknown",
+            "scope": null,
+            "source": null,
+            "valid_until": null,
+            "value": null
+          },
+          "window": "day"
+        },
+        {
+          "limit": {
+            "as_of": null,
+            "provenance": "unknown",
+            "scope": null,
+            "source": null,
+            "valid_until": null,
+            "value": null
+          },
+          "metric": "requests",
+          "remaining": {
+            "as_of": null,
+            "provenance": "unknown",
+            "scope": null,
+            "source": null,
+            "valid_until": null,
+            "value": null
+          },
+          "window": "month"
+        }
+      ],
+      "secret_ref": "OCRSPACE_API_KEY",
+      "shared_concurrency_limit": 1,
+      "shared_concurrency_scope": "ocrspace:asus-dev-key:shared",
+      "source": "pending scoped account evidence and ASUS provider acceptance",
+      "verified_at": null
+    },
+    {
+      "account_id": "asus-dev-groq-key",
+      "billing_enabled": false,
+      "capacity": {
+        "as_of": null,
+        "expires_at": null,
+        "kind": "unknown",
+        "refresh_seconds": null,
+        "scope": null,
+        "source": null
+      },
+      "concurrency_limit": 1,
+      "enabled": false,
+      "expires_at": null,
+      "free_eligible": false,
+      "id": "asus-groq-pool",
+      "local_safety_caps": [
+        {
+          "bucket": "groq:asus-dev-key:requests:rolling_minute",
+          "limit": 10,
+          "metric": "requests",
+          "timezone": "UTC",
+          "window": "rolling_minute"
+        },
+        {
+          "bucket": "groq:asus-dev-key:requests:day",
+          "limit": 500,
+          "metric": "requests",
+          "timezone": "UTC",
+          "window": "day"
+        },
+        {
+          "bucket": "groq:asus-dev-key:input_tokens:rolling_minute",
+          "limit": 4096,
+          "metric": "input_tokens",
+          "timezone": "UTC",
+          "window": "rolling_minute"
+        }
+      ],
+      "max_output_tokens": 512,
+      "model": "openai/gpt-oss-20b",
+      "priority": 6,
+      "provider": "groq",
+      "provider_quota_facts": [
+        {
+          "limit": {
+            "as_of": null,
+            "provenance": "unknown",
+            "scope": null,
+            "source": null,
+            "valid_until": null,
+            "value": null
+          },
+          "metric": "requests",
+          "remaining": {
+            "as_of": null,
+            "provenance": "unknown",
+            "scope": null,
+            "source": null,
+            "valid_until": null,
+            "value": null
+          },
+          "window": "rolling_minute"
+        },
+        {
+          "limit": {
+            "as_of": null,
+            "provenance": "unknown",
+            "scope": null,
+            "source": null,
+            "valid_until": null,
+            "value": null
+          },
+          "metric": "requests",
+          "remaining": {
+            "as_of": null,
+            "provenance": "unknown",
+            "scope": null,
+            "source": null,
+            "valid_until": null,
+            "value": null
+          },
+          "window": "day"
+        },
+        {
+          "limit": {
+            "as_of": null,
+            "provenance": "unknown",
+            "scope": null,
+            "source": null,
+            "valid_until": null,
+            "value": null
+          },
+          "metric": "input_tokens",
+          "remaining": {
+            "as_of": null,
+            "provenance": "unknown",
+            "scope": null,
+            "source": null,
+            "valid_until": null,
+            "value": null
+          },
+          "window": "rolling_minute"
+        }
+      ],
+      "secret_ref": "GROQ_API_KEY",
+      "shared_concurrency_limit": 1,
+      "shared_concurrency_scope": "groq:asus-dev-key:shared",
+      "source": "pending scoped account evidence and ASUS provider acceptance",
+      "verified_at": null
+    }
+  ]
+}

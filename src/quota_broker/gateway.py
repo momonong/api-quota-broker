@@ -10,12 +10,17 @@ import sqlite3
 import time
 import uuid
 from collections.abc import Callable
+from contextlib import closing
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 from .config import SecretInventory, Target
 from .core import Broker, BrokerError, canonical, stamp, utcnow
+from .discovery import DiscoveryStore
+from .discovery_sources import candidate_bundle
+from .families import FamilyError, FamilyRegistry, MediaLimits
+from .family_transport import FamilyRequest, send_family_request
 from .gateway_providers import (
     ProviderError,
     ProviderHeaders,
@@ -35,6 +40,9 @@ ProviderTransport = Callable[
 ]
 SecretResolver = Callable[[str], str]
 CAPACITY_ORDER = {"short_renewable": 0, "unknown": 1, "one_time_gift": 2}
+DEFAULT_TEXT_OUTPUT_TOKENS = 1024
+MAX_TEXT_OUTPUT_TOKENS = 65536
+MAX_LEGACY_INPUT_BYTES = 32768
 COLUMNS = (
     "request_key",
     "state",
@@ -58,6 +66,7 @@ COLUMNS = (
     "finish_reason",
     "response_truncated",
     "diagnostics_json",
+    "reported_resources_json",
 )
 ATTEMPT_COLUMNS = (
     "attempt_no",
@@ -82,18 +91,30 @@ ATTEMPT_COLUMNS = (
     "finish_reason",
     "response_truncated",
     "diagnostics_json",
+    "reported_resources_json",
 )
 
 
 class GatewayError(ValueError):
-    def __init__(self, code: str, message: str, wait_until: str | None = None):
+    def __init__(
+        self, code: str, message: str, wait_until: str | None = None, *, details: dict | None = None
+    ):
         super().__init__(message)
         self.code = code
         self.wait_until = wait_until
+        self.details = details
 
 
-def validate_task(raw: dict[str, Any], registry: Registry | None = None) -> dict[str, Any]:
+def validate_task(
+    raw: dict[str, Any],
+    registry: Registry | None = None,
+    *,
+    family_registry: FamilyRegistry | None = None,
+    media_limits: MediaLimits | None = None,
+) -> dict[str, Any]:
     registry = registry or Registry.builtin()
+    families = family_registry or FamilyRegistry.builtin()
+    limits = media_limits or MediaLimits()
     allowed = {
         "request_key",
         "capability",
@@ -109,24 +130,41 @@ def validate_task(raw: dict[str, Any], registry: Registry | None = None) -> dict
         "deadline",
         "wait_policy",
         "max_attempts",
+        "options",
     }
     if not isinstance(raw, dict) or set(raw) - allowed:
         raise GatewayError("invalid_request", "invalid task fields")
     key = raw.get("request_key")
-    content = raw.get("input")
+    content: Any = raw.get("input")
     capability = raw.get("capability")
     output = raw.get("max_output_tokens")
+    typed = isinstance(content, dict)
     if not isinstance(key, str) or not re.fullmatch(r"[A-Za-z0-9._~-]{1,120}", key):
         raise GatewayError("invalid_request", "request_key must be an opaque URI-safe id")
-    if not isinstance(capability, str) or capability not in {
-        "text_generation",
-        "translation",
-        "ocr",
-    }:
+    if not isinstance(capability, str) or (
+        capability not in families.contracts
+        if typed
+        else capability not in {"text_generation", "translation", "ocr"}
+    ):
         raise GatewayError("invalid_request", "unsupported capability")
-    if not isinstance(content, str) or not content:
+    if not typed and (not isinstance(content, str) or not content):
         raise GatewayError("invalid_request", "input must be nonempty")
-    if capability == "ocr":
+    prepared = None
+    if typed:
+        if output is None:
+            output = DEFAULT_TEXT_OUTPUT_TOKENS if families.uses_output_tokens(capability) else 0
+        if type(output) is not int or (
+            not 1 <= output <= 65536 if families.uses_output_tokens(capability) else output != 0
+        ):
+            raise GatewayError("invalid_request", "output bound differs from family contract")
+        try:
+            prepared = families.prepare(capability, content, raw.get("options", {}), limits, output)
+            content = prepared.input
+        except FamilyError as exc:
+            raise GatewayError("invalid_request", str(exc)) from None
+    elif "options" in raw:
+        raise GatewayError("invalid_request", "typed options require a structured input")
+    elif capability == "ocr":
         if len(content) > 48_000 or not content.isascii():
             raise GatewayError("invalid_request", "OCR image exceeds local size limit")
         try:
@@ -141,10 +179,12 @@ def validate_task(raw: dict[str, Any], registry: Registry | None = None) -> dict
             output = 1
         if output != 1:
             raise GatewayError("invalid_request", "OCR max_output_tokens must be 1")
-    elif len(content.encode("utf-8")) > 32_768:
-        raise GatewayError("invalid_request", "input must be at most 32768 bytes")
-    if type(output) is not int or not 1 <= output <= 4096:
-        raise GatewayError("invalid_request", "max_output_tokens must be 1..4096")
+    elif len(content.encode("utf-8")) > MAX_LEGACY_INPUT_BYTES:
+        raise GatewayError("invalid_request", "input must be at most 32768 UTF-8 bytes")
+    if output is None:
+        output = DEFAULT_TEXT_OUTPUT_TOKENS
+    if not typed and (type(output) is not int or not 1 <= output <= MAX_TEXT_OUTPUT_TOKENS):
+        raise GatewayError("invalid_request", "max_output_tokens must be 1..65536")
     provider, model = raw.get("provider"), raw.get("model")
     if provider is not None and (
         not isinstance(provider, str) or provider not in registry.providers
@@ -155,10 +195,10 @@ def validate_task(raw: dict[str, Any], registry: Registry | None = None) -> dict
             spec = registry.resolve(model, provider)
         except (ValueError, TypeError) as exc:
             raise GatewayError("invalid_request", "unknown or ambiguous provider/model") from exc
-        if spec.capability != capability:
+        if not registry.supports_family(spec, capability):
             raise GatewayError("invalid_request", "model/capability mismatch")
     source, target = raw.get("source_language"), raw.get("target_language")
-    if capability == "translation":
+    if capability == "translation" and not typed:
         if (
             any(
                 not isinstance(language, str)
@@ -232,6 +272,35 @@ def validate_task(raw: dict[str, Any], registry: Registry | None = None) -> dict
         if type(raw["max_attempts"]) is not int or not 1 <= raw["max_attempts"] <= 32:
             raise GatewayError("invalid_request", "max_attempts must be 1..32")
         extras["max_attempts"] = raw["max_attempts"]
+    if prepared is not None:
+        extras["options"] = prepared.options
+        features = set(extras.get("requirements", {}).get("features", [])) | set(
+            prepared.required_features
+        )
+        extras["requirements"] = {"features": sorted(features)}
+        pending: list[object] = [content]
+        continuation = "google_continuation" in features
+        while pending:
+            item = pending.pop()
+            if isinstance(item, dict):
+                if {"provider_state", "thought_signature", "provider_call_id"} & item.keys():
+                    continuation = True
+                state = item.get("provider_state")
+                if isinstance(state, dict) and (
+                    state["provider"] != provider or state["model"] != model
+                ):
+                    raise GatewayError(
+                        "invalid_request", "continuation provider/model differs from task"
+                    )
+                pending.extend(item.values())
+            elif isinstance(item, list):
+                pending.extend(item)
+        if continuation:
+            if provider != "google" or not isinstance(model, str):
+                raise GatewayError(
+                    "invalid_request", "Google continuation requires explicit provider and model"
+                )
+            extras["requirements"]["features"] = sorted(features | {"google_continuation"})
     return {
         "request_key": key,
         "capability": capability,
@@ -257,6 +326,11 @@ class Gateway:
         clock: Callable[[], datetime] = utcnow,
         secret_inventory: SecretInventory | None = None,
         registry: Registry | None = None,
+        family_registry: FamilyRegistry | None = None,
+        media_limits: MediaLimits | None = None,
+        family_transport: Callable[
+            [FamilyRequest, float, int], tuple[int, dict[str, str], bytes]
+        ] = send_family_request,
     ) -> None:
         if len(digest_key) < 32:
             raise ValueError("persisted HMAC key must be at least 32 bytes")
@@ -270,12 +344,16 @@ class Gateway:
         self.clock = clock
         self.secret_inventory = secret_inventory
         self.registry = registry or Registry.builtin()
+        self.family_registry = family_registry or FamilyRegistry.builtin()
+        self.media_limits = media_limits or MediaLimits()
+        self.family_transport = family_transport
+        self._discovery: DiscoveryStore | None = None
         self.broker = Broker(db, targets, clock, self.registry)
         self.routing = RoutingState(self.db)
         self.broker.routing_policy = self._route_plan
         self.broker.dispatch_policy = self._permit_dispatch
         self.broker.reservation_policy = self._hold_observations
-        with sqlite3.connect(self.db) as con:
+        with closing(sqlite3.connect(self.db)) as con, con:
             con.execute("BEGIN IMMEDIATE")
             con.execute("""
                 CREATE TABLE IF NOT EXISTS gateway_tasks (
@@ -316,15 +394,152 @@ class Gateway:
                     ("finish_reason", "TEXT"),
                     ("response_truncated", "INTEGER"),
                     ("diagnostics_json", "TEXT"),
+                    ("reported_resources_json", "TEXT"),
                 ):
                     if column not in existing:
                         con.execute(f"ALTER TABLE {table} ADD COLUMN {column} {kind}")
+
+    @property
+    def discovery(self) -> DiscoveryStore:
+        if self._discovery is None:
+            self._discovery = DiscoveryStore(self.db, self.registry, self.targets, self.clock)
+        return self._discovery
+
+    def discovery_candidates(self, provider: str | None = None) -> dict[str, Any]:
+        records = []
+        before = None
+        while True:
+            page = self.discovery.coverage(provider=provider, limit=1000, before=before)
+            records.extend(page["records"])
+            before = page["next_before"]
+            if before is None:
+                break
+        return candidate_bundle(records, self.registry, self.targets)
 
     def _hmac(self, data: dict[str, Any]) -> str:
         return hmac.new(self.digest_key, canonical(data).encode(), hashlib.sha256).hexdigest()
 
     def validate_task(self, raw: dict[str, Any]) -> dict[str, Any]:
-        return validate_task(raw, self.registry)
+        if isinstance(raw, dict) and raw.get("max_output_tokens") is None:
+            capability = raw.get("capability")
+            uses_tokens = isinstance(capability, str) and (
+                capability in {"text_generation", "translation"}
+                or (
+                    capability in self.family_registry.contracts
+                    and self.family_registry.uses_output_tokens(capability)
+                )
+            )
+            if uses_tokens and isinstance(capability, str):
+                features = (
+                    raw.get("requirements", {}).get("features", [])
+                    if isinstance(raw.get("requirements", {}), dict)
+                    else []
+                )
+                matching = [
+                    min(
+                        target.max_output_tokens,
+                        self.registry.resolve(target.model, target.provider).max_output_tokens,
+                    )
+                    for target in self.targets
+                    if raw.get("provider") in (None, target.provider)
+                    and raw.get("model") in (None, target.model)
+                    and self.registry.supports_family(
+                        self.registry.resolve(target.model, target.provider), capability
+                    )
+                    and isinstance(features, list)
+                    and all(isinstance(f, str) for f in features)
+                    and set(features)
+                    <= set(self.registry.resolve(target.model, target.provider).features)
+                ]
+                if matching:
+                    raw = {
+                        **raw,
+                        "max_output_tokens": min(DEFAULT_TEXT_OUTPUT_TOKENS, max(matching)),
+                    }
+        return validate_task(
+            raw, self.registry, family_registry=self.family_registry, media_limits=self.media_limits
+        )
+
+    def _resource_bounds(self, data: dict[str, Any]) -> dict[str, int] | None:
+        if "resource_bounds" in data:
+            return data["resource_bounds"]
+        if not isinstance(data.get("input"), dict):
+            return data.get("resource_bounds")
+        return self.family_registry.prepare(
+            data["capability"],
+            data["input"],
+            data.get("options", {}),
+            self.media_limits,
+            data["max_output_tokens"],
+        ).resources
+
+    def _execution_data(self, data: dict[str, Any]) -> tuple[dict[str, Any], int]:
+        """Private numeric admission metadata, excluded from the public task fingerprint."""
+        if isinstance(data["input"], dict):
+            prepared = self.family_registry.prepare(
+                data["capability"],
+                data["input"],
+                data.get("options", {}),
+                self.media_limits,
+                data["max_output_tokens"],
+            )
+            return {
+                **data,
+                "resource_bounds": prepared.resources,
+                "input_bytes": prepared.input_bytes,
+            }, prepared.resources.get("input_tokens", 0)
+        return data, 1 if data["capability"] == "ocr" else 4 * len(
+            data["input"].encode("utf-8")
+        ) + 256
+
+    @staticmethod
+    def _content_strings(value: object) -> tuple[str, ...]:
+        """Private metadata scrub sources, retained only during the current request."""
+        pending = [value]
+        result = []
+        while pending:
+            item = pending.pop()
+            if isinstance(item, str):
+                result.append(item)
+            elif isinstance(item, dict):
+                pending.extend(item.values())
+            elif isinstance(item, list):
+                pending.extend(item)
+        return tuple(result)
+
+    @classmethod
+    def _result_reflects(cls, value: object, private: tuple[str, ...]) -> bool:
+        if any(
+            secret and secret in text for secret in private for text in cls._content_strings(value)
+        ):
+            return True
+        pending = [value]
+        while pending:
+            item = pending.pop()
+            if isinstance(item, dict):
+                if item.get("type") in {"image", "audio", "document"} and isinstance(
+                    item.get("data"), str
+                ):
+                    try:
+                        raw = base64.b64decode(item["data"], validate=True)
+                    except (ValueError, binascii.Error):
+                        return True
+                    if any(secret and secret.encode() in raw for secret in private):
+                        return True
+                pending.extend(item.values())
+            elif isinstance(item, list):
+                pending.extend(item)
+        return False
+
+    def _target_resources(
+        self, target: Target, data: dict[str, Any], bound: int
+    ) -> dict[str, int] | None:
+        resources = self._resource_bounds(data)
+        if resources is None:
+            return None
+        return target.resource_costs(
+            resources, data.get("input_bytes", 0), data["max_output_tokens"], self.clock()
+        )
 
     def _hold_observations(
         self, con: sqlite3.Connection, target: Target, reservation_id: str, data: dict[str, Any]
@@ -345,6 +560,7 @@ class Gateway:
             neurons,
             self.clock(),
             self._quota_observations(con, target, self.clock()),
+            self._target_resources(target, data, data["input_token_bound"]),
         )
 
     def _quota_observations(
@@ -395,7 +611,7 @@ class Gateway:
         self.routing.reset_health(target_id)
 
     def _view(self, request_key: str) -> dict[str, Any]:
-        with sqlite3.connect(self.db) as con:
+        with closing(sqlite3.connect(self.db)) as con, con:
             con.row_factory = sqlite3.Row
             row = con.execute(
                 "SELECT " + ",".join(COLUMNS) + " FROM gateway_tasks WHERE request_key=?",
@@ -411,12 +627,15 @@ class Gateway:
         result = dict(row)
         result["attempts"] = [dict(attempt) for attempt in attempts]
         for item in [result, *result["attempts"]]:
+            resources = item.pop("reported_resources_json")
+            if resources is not None:
+                item["reported_resources"] = json.loads(resources)
             saved = item.pop("diagnostics_json")
             item["diagnostics"] = json.loads(saved) if saved else None
             if item["response_truncated"] is not None:
                 item["response_truncated"] = bool(item["response_truncated"])
         for attempt in result["attempts"]:
-            with sqlite3.connect(self.db) as completion_con:
+            with closing(sqlite3.connect(self.db)) as completion_con, completion_con:
                 finished = completion_con.execute(
                     "SELECT finished_at FROM execution_completion WHERE reservation_id=?",
                     (attempt["reservation_id"],),
@@ -487,8 +706,38 @@ class Gateway:
             item["admission_state"] = current["state"]
             item["health"] = current["health"]
             item["quota_observations"] = current["quota_observations"]
+            item["request_limits"] = current["request_limits"]
             item["features"] = list(self.registry.resolve(item["model"], item["provider"]).features)
         return items
+
+    def _request_limits(self, target: Target, output: int, input_bound: int = 0) -> dict:
+        """Static envelope, separate from current remaining/health/admission."""
+        model = self.registry.resolve(target.model, target.provider)
+        maximum = min(target.max_output_tokens, model.max_output_tokens)
+        maximum_for_input = min(maximum, max(0, model.context_tokens - input_bound))
+        input_limits = [q.limit for q in target.quotas if q.metric == "input_tokens"]
+        bound = min([max(0, model.context_tokens - output), *input_limits])
+        estimate = target.neuron_estimate
+        if estimate:
+            maximum_for_input = min(maximum_for_input, estimate.max_output_tokens)
+            bound = min(bound, estimate.max_input_tokens)
+        legacy_text = model.capability in {"text_generation", "translation"}
+        return {
+            "default_output_tokens": min(DEFAULT_TEXT_OUTPUT_TOKENS, maximum),
+            "max_output_tokens": maximum,
+            "catalog_output_envelope": model.max_output_tokens,
+            "max_output_tokens_for_input_bound": maximum_for_input,
+            "requested_output_tokens": output,
+            "context_tokens": model.context_tokens,
+            "max_input_token_bound_for_requested_output": bound,
+            "legacy_input_bound_formula": "4 * UTF-8 bytes + 256" if legacy_text else None,
+            "max_legacy_input_bytes_for_requested_output": min(
+                MAX_LEGACY_INPUT_BYTES, max(0, (bound - 256) // 4)
+            )
+            if legacy_text
+            else None,
+            "basis": "static model/config envelope; remaining and eligibility checked separately",
+        }
 
     def _credentials(self, target: Target) -> dict[str, Any]:
         required = sorted({name for name in (target.secret_ref, target.account_id_ref) if name})
@@ -506,7 +755,7 @@ class Gateway:
     def diagnostics(self) -> dict[str, Any]:
         """Read-only minimum-admission snapshot; no secret lookup or provider I/O."""
         rows: list[dict[str, Any]] = []
-        with sqlite3.connect(self.db) as con:
+        with closing(sqlite3.connect(self.db)) as con, con:
             con.row_factory = sqlite3.Row
             for target in sorted(self.targets, key=self._sort_key):
                 model = self.registry.resolve(target.model, target.provider)
@@ -544,6 +793,9 @@ class Gateway:
                         "provider": target.provider,
                         "model": target.model,
                         "capability": model.capability,
+                        "request_limits": self._request_limits(
+                            target, min(DEFAULT_TEXT_OUTPUT_TOKENS, target.max_output_tokens)
+                        ),
                         "state": "blocked"
                         if any(reason != "credential_inventory_unknown" for reason in reasons)
                         else "unknown"
@@ -597,7 +849,7 @@ class Gateway:
             raise GatewayError("invalid_request", "invalid state filter")
         conditions = []
         params: list[Any] = []
-        with sqlite3.connect(self.db) as con:
+        with closing(sqlite3.connect(self.db)) as con, con:
             if before is not None:
                 if not re.fullmatch(r"[A-Za-z0-9._~-]{1,120}", before):
                     raise GatewayError("invalid_request", "invalid pagination key")
@@ -648,6 +900,29 @@ class Gateway:
             target.id,
         )
 
+    @staticmethod
+    def _validated_usage(raw: object) -> dict[str, int]:
+        metrics = {
+            "requests",
+            "input_tokens",
+            "output_tokens",
+            "total_tokens",
+            "audio_seconds",
+            "images",
+            "pages",
+            "conversions",
+            "neurons",
+        }
+        if (
+            not isinstance(raw, dict)
+            or raw.keys() - metrics
+            or any(type(value) is not int or not 0 <= value <= 10**12 for value in raw.values())
+        ):
+            raise ProviderError("provider usage invalid")
+        # Relations between counters belong to the protocol parser: audio totals
+        # may include token categories absent from prompt/completion counters.
+        return dict(raw)
+
     def _reasons(
         self, con: sqlite3.Connection, target: Target, data: dict[str, Any], bound: int
     ) -> list[str]:
@@ -664,7 +939,7 @@ class Gateway:
             reasons.append("provider_constraint")
         if data["model"] not in (None, target.model):
             reasons.append("model_constraint")
-        if model.capability != data["capability"]:
+        if not self.registry.supports_family(model, data["capability"]):
             reasons.append("capability_mismatch")
         elif "input" in data:
             try:
@@ -707,9 +982,13 @@ class Gateway:
         if health["probe_busy"]:
             reasons.append("half_open_probe_busy")
         scope = self.broker._quota_scope(json.loads(self.broker._snapshot(target)))
+        resources = self._target_resources(target, data, bound)
         for observation in self._quota_observations(con, target, now):
+            metric = "total_tokens" if observation["metric"] == "tokens" else observation["metric"]
             cost = (
-                1
+                resources.get(metric)
+                if resources is not None
+                else 1
                 if observation["metric"] in {"requests", "conversions"}
                 else data["neuron_bound"]
                 if observation["metric"] == "neurons"
@@ -717,6 +996,8 @@ class Gateway:
                 if observation["metric"] == "tokens"
                 else bound
             )
+            if observation["current"] and observation["remaining"] is not None and cost is None:
+                reasons.append("estimation_unconfigured")
             if (
                 observation["current"]
                 and observation["effective_remaining"] is not None
@@ -729,11 +1010,15 @@ class Gateway:
             "AND state IN ('reserved','dispatched','unknown') AND NOT EXISTS (SELECT 1 FROM execution_completion e WHERE e.reservation_id=reservations.id) LIMIT 1"
         ).fetchone():
             reasons.append("legacy_active_requires_reconciliation")
-        if bound + data["max_output_tokens"] > model.context_tokens:
+        if model.context_tokens > 0 and bound + data["max_output_tokens"] > model.context_tokens:
             reasons.append("context_limit")
         if data["max_output_tokens"] > target.max_output_tokens:
             reasons.append("output_limit")
-        if any(q.metric == "neurons" for q in target.quotas) and data["neuron_bound"] is None:
+        if (
+            any(q.metric == "neurons" for q in target.quotas)
+            and data["neuron_bound"] is None
+            and (resources is None or "neurons" not in resources)
+        ):
             reasons.append("estimation_unconfigured")
         snapshot = self.broker._snapshot(target)
         changed = con.execute(
@@ -772,7 +1057,11 @@ class Gateway:
         for quota in target.quotas:
             if quota.metric == "neurons" and data["neuron_bound"] is None:
                 continue
-            cost = self.broker._cost(quota, bound, data["neuron_bound"])
+            try:
+                cost = self.broker._cost(quota, bound, data["neuron_bound"], resources)
+            except BrokerError:
+                reasons.append("estimation_unconfigured")
+                continue
             used, _ = self.broker._used(con, quota, now, cost)
             if used + cost > quota.limit:
                 reasons.append("local_cap:" + quota.bucket)
@@ -810,6 +1099,7 @@ class Gateway:
                     bound, data["max_output_tokens"], now, data.get("neuron_bound")
                 ),
             }
+            resources = self._target_resources(target, data, bound)
             reasons = self._reasons(con, target, data, bound)
             health = self.routing.health(con, target.id, now)
             scope = self.broker._quota_scope(json.loads(self.broker._snapshot(target)))
@@ -827,11 +1117,13 @@ class Gateway:
             permanent = any(reason in permanent_reasons for reason in reasons)
             pressure = []
             for quota in target.quotas:
-                cost = (
-                    self.broker._cost(quota, bound, target_data.get("neuron_bound"))
-                    if quota.metric != "neurons" or target_data.get("neuron_bound")
-                    else 0
-                )
+                try:
+                    cost = self.broker._cost(
+                        quota, bound, target_data.get("neuron_bound"), resources
+                    )
+                except BrokerError:
+                    permanent = True
+                    continue
                 used, wait = self.broker._used(con, quota, now, cost)
                 pressure.append(used / quota.limit)
                 if used + cost > quota.limit:
@@ -915,6 +1207,9 @@ class Gateway:
                     "provider": target.provider,
                     "model": target.model,
                     "eligible": not reasons,
+                    "request_limits": self._request_limits(
+                        target, data["max_output_tokens"], bound
+                    ),
                     "reasons": reasons,
                     "capacity": target.capacity.view(),
                     "effective_capacity_kind": self._capacity_kind(target),
@@ -938,9 +1233,13 @@ class Gateway:
             row["next_retry_at"] for row in rows if row["temporary"] and row["next_retry_at"]
         ]
         temporary = any(row["temporary"] for row in rows)
+        resources = self._resource_bounds(data)
         return {
             "selected_target_id": selected,
-            "estimated_input_tokens": None if data["capability"] == "ocr" else bound,
+            "estimated_input_tokens": None
+            if data["capability"] == "ocr"
+            or (resources is not None and "input_tokens" not in resources)
+            else bound,
             "candidates": rows,
             "temporary": selected is None and temporary,
             "permanent_rejection": selected is None and not temporary,
@@ -949,7 +1248,7 @@ class Gateway:
 
     def explain(self, raw: dict[str, Any]) -> dict[str, Any]:
         data = self.validate_task(raw)
-        bound = 1 if data["capability"] == "ocr" else 4 * len(data["input"].encode("utf-8")) + 256
+        data, bound = self._execution_data(data)
         with self.broker._tx() as con:
             self.broker._expire_unsent(con, self.clock())
             return self._route_plan(con, data, bound)
@@ -958,7 +1257,7 @@ class Gateway:
         allowed = set(COLUMNS) - {"request_key", "created_at"}
         if not values or set(values) - allowed:
             raise ValueError("invalid gateway update")
-        with sqlite3.connect(self.db, timeout=15) as con:
+        with closing(sqlite3.connect(self.db, timeout=15)) as con, con:
             con.execute(
                 "UPDATE gateway_tasks SET "
                 + ",".join(f"{name}=?" for name in values)
@@ -970,7 +1269,7 @@ class Gateway:
         allowed = set(ATTEMPT_COLUMNS) - {"attempt_no", "reservation_id", "created_at"}
         if not values or set(values) - allowed:
             raise ValueError("invalid attempt update")
-        with sqlite3.connect(self.db, timeout=15) as con:
+        with closing(sqlite3.connect(self.db, timeout=15)) as con, con:
             con.execute(
                 "UPDATE gateway_attempts SET "
                 + ",".join(f"{name}=?" for name in values)
@@ -978,39 +1277,83 @@ class Gateway:
                 (*values.values(), key, number),
             )
 
+    @staticmethod
+    def can_resume_preparing(con: sqlite3.Connection, key: str) -> bool:
+        """Only an untouched durable preparation can resume under a queue lease."""
+        row = con.execute(
+            "SELECT state,reservation_id,target_id,provider,model,dispatched_at,completed_at "
+            "FROM gateway_tasks WHERE request_key=?",
+            (key,),
+        ).fetchone()
+        if row is None or tuple(row) != ("preparing", None, None, None, None, None, None):
+            return False
+        if con.execute("SELECT 1 FROM gateway_attempts WHERE request_key=?", (key,)).fetchone():
+            return False
+        # Covers the crash gap after ledger reserve but before Gateway links it.
+        prefix = "gw:" + key + ":"
+        return (
+            con.execute(
+                "SELECT 1 FROM reservations WHERE substr(request_key,1,?)=? LIMIT 1",
+                (len(prefix), prefix),
+            ).fetchone()
+            is None
+        )
+
     def run(
         self,
         raw: dict[str, Any],
         *,
         dispatch_guard: Callable[[sqlite3.Connection], None] | None = None,
+        resume_preparing: bool = False,
     ) -> dict[str, Any]:
         data = self.validate_task(raw)
         key = data["request_key"]
         fingerprint = self._hmac(data)
         created_at = stamp(self.clock())
-        with sqlite3.connect(self.db, timeout=15, isolation_level=None) as con:
+        with closing(sqlite3.connect(self.db, timeout=15, isolation_level=None)) as con, con:
             con.execute("BEGIN IMMEDIATE")
             row = con.execute(
                 "SELECT payload_hmac FROM gateway_tasks WHERE request_key=?", (key,)
             ).fetchone()
             if row:
-                con.execute("COMMIT")
                 if not hmac.compare_digest(row[0], fingerprint):
                     raise GatewayError("conflict", "request key used for different payload")
-                return self._view(key)
+                if not resume_preparing:
+                    con.execute("COMMIT")
+                    return self._view(key)
+                if dispatch_guard is None or not self.can_resume_preparing(con, key):
+                    raise GatewayError("unavailable", "preparation cannot be resumed")
+                # This fence and the dispatch-time fence reject the previous owner.
+                con.row_factory = sqlite3.Row
+                dispatch_guard(con)
+            elif resume_preparing:
+                raise GatewayError("unavailable", "durable preparation is missing")
             if data.get("deadline") is not None and data["deadline"] <= created_at:
                 con.execute("ROLLBACK")
                 raise GatewayError("deadline_expired", "task deadline elapsed")
-            con.execute(
-                "INSERT INTO gateway_tasks(request_key,payload_hmac,state,created_at) VALUES(?,?,?,?)",
-                (key, fingerprint, "preparing", created_at),
-            )
+            if row is None:
+                con.execute(
+                    "INSERT INTO gateway_tasks(request_key,payload_hmac,state,created_at) VALUES(?,?,?,?)",
+                    (key, fingerprint, "preparing", created_at),
+                )
             con.execute("COMMIT")
         execution_deadline = self.clock() + timedelta(seconds=180)
         if data.get("deadline"):
             execution_deadline = min(execution_deadline, datetime.fromisoformat(data["deadline"]))
-        input_bound = (
-            1 if data["capability"] == "ocr" else 4 * len(data["input"].encode("utf-8")) + 256
+        typed = isinstance(data["input"], dict)
+        data, input_bound = self._execution_data(data)
+        content_strings = (
+            self._content_strings([data["input"], data.get("options", {})])
+            if typed
+            else (data["input"],)
+        )
+        estimated_input = (
+            input_bound
+            if not typed
+            and data["capability"] != "ocr"
+            or typed
+            and "input_tokens" in data["resource_bounds"]
+            else None
         )
         excluded: list[str] = []
         for candidate in self.targets:
@@ -1045,6 +1388,10 @@ class Gateway:
                 "exclude_target_ids": excluded,
                 "requirements": data.get("requirements", {}),
             }
+            if typed:
+                request.update(
+                    resource_bounds=data["resource_bounds"], input_bytes=data["input_bytes"]
+                )
             try:
                 plan = self.broker.reserve(request)
             except BrokerError as exc:
@@ -1061,7 +1408,19 @@ class Gateway:
                 )
                 if had_quota_refusal:
                     return self._view(key)
-                raise GatewayError(exc.code, str(exc), exc.wait_until) from exc
+                with self.broker._tx() as con:
+                    rejection = self._route_plan(con, data, input_bound)
+                raise GatewayError(
+                    exc.code,
+                    str(exc),
+                    exc.wait_until,
+                    details={
+                        "candidates": [
+                            {k: row[k] for k in ("provider", "model", "reasons", "request_limits")}
+                            for row in rejection["candidates"]
+                        ]
+                    },
+                ) from exc
             target = next(t for t in self.targets if t.id == plan["target_id"])
             effective_neurons = target.neurons(
                 input_bound, data["max_output_tokens"], self.clock(), data.get("neuron_bound")
@@ -1077,10 +1436,10 @@ class Gateway:
                     "provider": target.provider,
                     "model": target.model,
                     "route_reason": reason,
-                    "estimated_input_tokens": None if data["capability"] == "ocr" else input_bound,
+                    "estimated_input_tokens": estimated_input,
                 },
             )
-            with sqlite3.connect(self.db, timeout=15) as con:
+            with closing(sqlite3.connect(self.db, timeout=15)) as con, con:
                 con.execute(
                     "INSERT INTO gateway_attempts(request_key,attempt_no,reservation_id,"
                     "target_id,provider,model,state,created_at,estimated_input_tokens,input_bytes) "
@@ -1094,8 +1453,10 @@ class Gateway:
                         target.model,
                         "preparing",
                         stamp(self.clock()),
-                        None if data["capability"] == "ocr" else input_bound,
-                        len(base64.b64decode(data["input"]))
+                        estimated_input,
+                        data["input_bytes"]
+                        if typed
+                        else len(base64.b64decode(data["input"]))
                         if data["capability"] == "ocr"
                         else None,
                     ),
@@ -1114,16 +1475,27 @@ class Gateway:
                 pre_send_phase = "request"
                 spec = self.registry.resolve(target.model, target.provider)
                 self.registry.admit(spec, data)
-                url, headers, payload = self.registry.request(
-                    spec,
-                    account_id,
-                    secret,
-                    data["input"],
-                    data["max_output_tokens"],
-                    data["source_language"],
-                    data["target_language"],
-                )
-                if "json_output" in data.get("requirements", {}).get("features", []):
+                family_request: FamilyRequest | None = None
+                if typed:
+                    family_request = self.registry.request_task(spec, account_id, secret, data)
+                    if len(family_request.body) > self.media_limits.request_bytes:
+                        raise ValueError("provider request exceeds local bound")
+                    url, headers, payload = (
+                        family_request.url,
+                        family_request.headers,
+                        family_request.payload,
+                    )
+                else:
+                    url, headers, payload = self.registry.request(
+                        spec,
+                        account_id,
+                        secret,
+                        data["input"],
+                        data["max_output_tokens"],
+                        data["source_language"],
+                        data["target_language"],
+                    )
+                if not typed and "json_output" in data.get("requirements", {}).get("features", []):
                     payload["response_format"] = {"type": "json_object"}
             except Exception:  # noqa: BLE001 - resolver plugins must fail closed
                 # A resolver must not strand a pre-send row or expose its message.
@@ -1157,8 +1529,16 @@ class Gateway:
                     for observation in self._quota_observations(
                         con, target, self.clock(), reservation_id
                     ):
+                        resources = self._target_resources(target, data, input_bound)
+                        metric = (
+                            "total_tokens"
+                            if observation["metric"] == "tokens"
+                            else observation["metric"]
+                        )
                         cost = (
-                            1
+                            resources.get(metric)
+                            if resources is not None
+                            else 1
                             if observation["metric"] in {"requests", "conversions"}
                             else effective_neurons
                             if observation["metric"] == "neurons"
@@ -1214,12 +1594,15 @@ class Gateway:
             error_code: str | None = None
             finish_reason: str | None = None
             response_truncated: bool | None = None
+            structured_result: dict[str, Any] | None = None
+            actual_resources: dict[str, int] = {}
             diagnostics: dict[str, str | int | bool | None] = {}
-            bounded_chat = (
+            bounded_chat = not typed and (
                 target.provider in {"groq", "mistral"}
                 or target.model == "nvidia/nemotron-3.5-lightning-30b-a3b"
                 or spec.adapter == "openai_chat"
             )
+            response_phase = "transport"
             try:
                 timeout = (
                     120.0
@@ -1232,28 +1615,76 @@ class Gateway:
                     timeout, max(0.001, (execution_deadline - self.clock()).total_seconds())
                 )
                 status, response_headers, response = (
-                    self.registry.transport(spec, url, headers, payload, timeout)
+                    self.family_transport(family_request, timeout, self.media_limits.result_bytes)
+                    if family_request is not None
+                    else self.registry.transport(spec, url, headers, payload, timeout)
                     if self.transport is provider_http
                     else self.transport(url, headers, payload, timeout)
                 )
-                answer, input_tokens, output_tokens, neurons, request_id = self.registry.interpret(
-                    spec,
-                    status,
-                    response,
-                )
+                if typed:
+                    response_phase = "response_privacy"
+                    if self.registry.response_reflects(
+                        response, response_headers, (secret, account_id)
+                    ):
+                        raise ProviderError("provider response invalid")
+                    response_phase = "parse_response"
+                    parsed = self.registry.interpret_task(
+                        spec, data["capability"], status, response_headers, response
+                    )
+                    actual_resources = self._validated_usage(parsed.usage)
+                    input_tokens, output_tokens, neurons = (
+                        actual_resources.get(name)
+                        for name in ("input_tokens", "output_tokens", "neurons")
+                    )
+                    request_id, finish_reason, response_truncated = (
+                        parsed.request_id,
+                        parsed.finish_reason,
+                        parsed.truncated,
+                    )
+                    if parsed.content is not None:
+                        response_phase = "validate_result"
+                        structured_result = self.family_registry.validate_result(
+                            data["capability"], parsed.content, self.media_limits
+                        )
+                        self.family_registry.validate_correspondence(
+                            data["capability"],
+                            data["input"],
+                            data["options"],
+                            structured_result,
+                            data["resource_bounds"],
+                        )
+                        if self._result_reflects(structured_result, (secret, account_id)):
+                            structured_result = None
+                            raise ProviderError("provider response invalid")
+                    if (
+                        output_tokens is not None
+                        and "output_tokens" in data["resource_bounds"]
+                        and output_tokens > data["max_output_tokens"]
+                    ):
+                        actual_resources = {}
+                        input_tokens = output_tokens = neurons = None
+                else:
+                    answer, input_tokens, output_tokens, neurons, request_id = (
+                        self.registry.interpret(
+                            spec,
+                            status,
+                            response,
+                        )
+                    )
                 diagnostics = safe_response_diagnostics(
                     target.provider,
                     status,
                     response_headers,
                     response,
-                    sensitive_values=(secret, account_id, data["input"]),
+                    sensitive_values=(secret, account_id, *content_strings),
+                    requested_model=target.model,
                 )
                 if request_id is not None and any(
                     value and value.casefold() in request_id.casefold()
-                    for value in (secret, account_id, data["input"])
+                    for value in (secret, account_id, *content_strings)
                 ):
                     request_id = None
-                if (
+                if not typed and (
                     target.provider in {"nvidia", "groq", "mistral", "openrouter"}
                     or spec.adapter == "openai_chat"
                 ):
@@ -1282,9 +1713,14 @@ class Gateway:
                     error_code = "pending_provider_result"
                 elif status != 200:
                     error_code = safe_http_error_code(target.provider, status, response)
-                elif answer is None:
+                elif structured_result is None if typed else answer is None:
                     error_code = "provider_response_invalid"
-            except (OSError, TimeoutError, ValueError, ProviderError) as exc:
+            except (OSError, TimeoutError, ValueError, ProviderError, RecursionError) as exc:
+                if typed:
+                    diagnostics["phase"] = response_phase
+                    structured_result = None
+                    actual_resources = {}
+                    input_tokens = output_tokens = neurons = None
                 if isinstance(exc, ProviderPhaseTimeout):
                     diagnostics.update(safe_transport_diagnostics(exc.diagnostics))
                 error_code = (
@@ -1300,13 +1736,15 @@ class Gateway:
                     status,
                     response,
                     response_headers,
-                    sensitive=(secret, account_id, data["input"]),
+                    sensitive=(secret, account_id, *content_strings),
                 )
-            except (ValueError, TypeError):
+            except (ValueError, TypeError, RecursionError):
                 quota_rejected = False
                 diagnostics["adapter_metadata_invalid"] = True
             if quota_rejected and (
                 answer is not None
+                or structured_result is not None
+                or bool(actual_resources)
                 or any(value is not None for value in (input_tokens, output_tokens, neurons))
             ):
                 quota_rejected = False
@@ -1320,7 +1758,19 @@ class Gateway:
                 known_quota_usage = (
                     known_quota_usage and input_tokens is not None and output_tokens is not None
                 )
-            completed = status == 200 and answer is not None
+            if typed:
+                # One observed HTTP execution counts as a request; all other units
+                # require explicit provider counters, never result-size inference.
+                if status is not None:
+                    actual_resources["requests"] = 1
+                known_quota_usage = required_metrics <= actual_resources.keys()
+                if not known_quota_usage:
+                    diagnostics["usage_missing"] = ",".join(
+                        sorted(required_metrics - actual_resources.keys())
+                    )
+            completed = status == 200 and (
+                structured_result is not None if typed else answer is not None
+            )
             self.routing.record(
                 target.id,
                 self.clock(),
@@ -1345,7 +1795,7 @@ class Gateway:
                     encoded = canonical(observation).casefold()
                     if any(
                         value and value.casefold() in encoded
-                        for value in (secret, account_id, data["input"])
+                        for value in (secret, account_id, *content_strings)
                     ):
                         continue
                     if not spec.adapter.startswith("builtin:"):
@@ -1358,7 +1808,8 @@ class Gateway:
                 if completed
                 and known_quota_usage
                 and (
-                    data["capability"] == "ocr"
+                    typed
+                    or data["capability"] == "ocr"
                     or (input_tokens is not None and output_tokens is not None)
                 )
                 else "completed_usage_unknown"
@@ -1377,11 +1828,15 @@ class Gateway:
                 "provider_request_id": request_id,
             }
             if known_quota_usage and completed:
-                usage = {"requests": 1}
-                if any(q.metric == "input_tokens" for q in target.quotas):
+                usage = (
+                    {name: actual_resources[name] for name in required_metrics}
+                    if typed
+                    else {"requests": 1}
+                )
+                if not typed and any(q.metric == "input_tokens" for q in target.quotas):
                     assert input_tokens is not None
                     usage["input_tokens"] = input_tokens
-                if any(q.metric == "neurons" for q in target.quotas):
+                if not typed and any(q.metric == "neurons" for q in target.quotas):
                     assert neurons is not None
                     usage["neurons"] = neurons
                 report["usage"] = usage
@@ -1410,10 +1865,12 @@ class Gateway:
                 "reported_input_tokens": input_tokens,
                 "reported_output_tokens": output_tokens,
                 "reported_neurons": neurons,
+                "reported_resources_json": canonical(actual_resources) if typed else None,
                 "usage_source": "documented_quota_rejection"
                 if quota_rejected and reported
                 else "provider_reported"
-                if any(value is not None for value in (input_tokens, output_tokens, neurons))
+                if (typed and any(name != "requests" for name in actual_resources))
+                or any(value is not None for value in (input_tokens, output_tokens, neurons))
                 else "unknown",
                 "finish_reason": finish_reason,
                 "response_truncated": response_truncated,
@@ -1431,7 +1888,10 @@ class Gateway:
                 continue
             result = self._view(key)
             if completed:
-                result["answer"] = answer
+                if typed:
+                    result["result"] = structured_result
+                else:
+                    result["answer"] = answer
             return result
         self._update(
             key,
@@ -1491,11 +1951,20 @@ class Gateway:
             if value is not None:
                 conditions.append(f"{column}{op}?")
                 params.append(value)
-        with sqlite3.connect(self.db) as con:
+        resource_sums = "".join(
+            "sum(json_extract(g.reported_resources_json,'$."
+            + metric
+            + "')) AS reported_"
+            + metric
+            + ","
+            for metric in ("total_tokens", "audio_seconds", "images", "pages", "conversions")
+        )
+        with closing(sqlite3.connect(self.db)) as con, con:
             con.row_factory = sqlite3.Row
             rows = con.execute(
                 "SELECT g.provider,g.model,count(*) AS requests,"
-                "sum(g.estimated_input_tokens) AS estimated_input_tokens,"
+                + resource_sums
+                + "sum(g.estimated_input_tokens) AS estimated_input_tokens,"
                 "sum(g.reported_input_tokens) AS reported_input_tokens,"
                 "sum(g.reported_output_tokens) AS reported_output_tokens,"
                 "sum(g.reported_neurons) AS reported_neurons,"
@@ -1518,10 +1987,10 @@ class Gateway:
                 "FROM ("
                 "SELECT request_key,reservation_id,provider,model,dispatched_at,"
                 "estimated_input_tokens,reported_input_tokens,reported_output_tokens,"
-                "reported_neurons,state,input_bytes,response_truncated FROM gateway_attempts "
+                "reported_neurons,state,input_bytes,response_truncated,reported_resources_json FROM gateway_attempts "
                 "UNION ALL SELECT request_key,reservation_id,provider,model,dispatched_at,"
                 "estimated_input_tokens,reported_input_tokens,reported_output_tokens,"
-                "reported_neurons,state,NULL AS input_bytes,response_truncated FROM gateway_tasks legacy "
+                "reported_neurons,state,NULL AS input_bytes,response_truncated,reported_resources_json FROM gateway_tasks legacy "
                 "WHERE NOT EXISTS (SELECT 1 FROM gateway_attempts a "
                 "WHERE a.request_key=legacy.request_key)) g "
                 "LEFT JOIN reservations r ON r.id=g.reservation_id "

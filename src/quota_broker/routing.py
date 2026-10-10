@@ -4,16 +4,18 @@ import json
 import math
 import re
 import sqlite3
+from contextlib import closing
 from datetime import datetime, timedelta
 from typing import Any
 
+from .config import QUOTA_WINDOWS, RESOURCE_METRICS
 from .core import canonical, stamp
 
 
 class RoutingState:
     def __init__(self, db: str):
         self.db = db
-        with sqlite3.connect(db) as con:
+        with closing(sqlite3.connect(db)) as con, con:
             con.executescript("""
                 CREATE TABLE IF NOT EXISTS gateway_health (
                     target_id TEXT PRIMARY KEY, state TEXT NOT NULL DEFAULT 'closed',
@@ -82,7 +84,7 @@ class RoutingState:
         *,
         as_of: datetime | None = None,
     ) -> None:
-        with sqlite3.connect(self.db, timeout=15) as con:
+        with closing(sqlite3.connect(self.db, timeout=15)) as con, con:
             con.execute("BEGIN IMMEDIATE")
             prior = self.health(con, target_id, now)
             observation_time = stamp(as_of or now)
@@ -131,7 +133,7 @@ class RoutingState:
 
     def reset_health(self, target_id: str) -> None:
         """Trusted operator entry point. Does not reconcile or release unknown ledger rows."""
-        with sqlite3.connect(self.db) as con:
+        with closing(sqlite3.connect(self.db)) as con, con:
             con.execute("DELETE FROM gateway_health WHERE target_id=?", (target_id,))
 
     def observe(self, scope: str, observation: dict[str, Any], now: datetime) -> None:
@@ -149,12 +151,9 @@ class RoutingState:
         }
         if set(observation) != allowed:
             raise ValueError("invalid quota observation fields")
-        if observation["metric"] not in {
-            "requests",
-            "input_tokens",
-            "tokens",
-            "neurons",
-        } or observation["window"] not in {"rolling_minute", "day", "month", "budget"}:
+        if observation["metric"] not in RESOURCE_METRICS | {"tokens"} or observation[
+            "window"
+        ] not in QUOTA_WINDOWS | {"budget"}:
             raise ValueError("invalid quota observation dimension")
         for field in ("remaining", "limit"):
             if observation[field] is not None and (
@@ -190,7 +189,7 @@ class RoutingState:
             raise ValueError("invalid quota observation interval")
         if observation["reset_at"] is not None and observation["reset_at"] < observation["as_of"]:
             raise ValueError("invalid quota reset")
-        with sqlite3.connect(self.db, timeout=15) as con:
+        with closing(sqlite3.connect(self.db, timeout=15)) as con, con:
             con.execute(
                 "INSERT INTO quota_observations VALUES(?,?,?,?) ON CONFLICT(scope,metric,window) "
                 "DO UPDATE SET observation_json=excluded.observation_json WHERE "
@@ -210,26 +209,38 @@ class RoutingState:
         neurons: int | None,
         now: datetime,
         observations: list[dict[str, Any]] | None = None,
+        resource_bounds: dict[str, int] | None = None,
     ) -> None:
         for item in (
             observations if observations is not None else self.observations(con, scope, now)
         ):
             if not item["current"]:
                 continue
-            cost = (
-                1
-                if item["metric"] in {"requests", "conversions"}
-                else neurons
-                if item["metric"] == "neurons"
-                else bound + output
-                if item["metric"] == "tokens"
-                else bound
+            metric = "total_tokens" if item["metric"] == "tokens" else item["metric"]
+            resources = resource_bounds or {}
+            cost: int | None
+            if metric == "requests":
+                cost = 1
+            elif resource_bounds is not None:
+                cost = resources.get(metric)
+                if metric == "neurons" and neurons is not None:
+                    cost = max(neurons, cost or 0)
+            elif metric == "input_tokens":
+                cost = bound
+            elif metric == "output_tokens":
+                cost = output
+            elif metric == "total_tokens":
+                cost = bound + output
+            elif metric == "neurons":
+                cost = neurons
+            else:
+                cost = None
+            if cost is None:
+                raise ValueError("quota observation requires an explicit resource bound")
+            con.execute(
+                "INSERT OR REPLACE INTO observed_holds VALUES(?,?,?,?,?,?)",
+                (reservation_id, scope, item["metric"], item["window"], cost, stamp(now)),
             )
-            if cost is not None:
-                con.execute(
-                    "INSERT OR REPLACE INTO observed_holds VALUES(?,?,?,?,?,?)",
-                    (reservation_id, scope, item["metric"], item["window"], cost, stamp(now)),
-                )
 
     def observations(
         self,

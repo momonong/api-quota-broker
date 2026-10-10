@@ -1,0 +1,2 @@
+sshdsessionpath /usr/lib/openssh/sshd-session
+sshdauthpath /usr/lib/openssh/sshd-auth

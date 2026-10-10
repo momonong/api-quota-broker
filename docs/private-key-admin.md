@@ -1,6 +1,6 @@
 # 私用 API Key 管理頁
 
-狀態：2026-09-30 本機候選實作；尚未由使用者輸入真實 key 驗收，也沒有部署、推論呼叫、合併或推送。工作分支 `feat/private-key-admin`，起點 `378011624d5a49e556b2b3addb6febdb2573e7d6`。
+狀態：此工具是既有1.0套件內的可選loopback管理子命令。下列2026-09-30候選與fixture紀錄保留歷史；未宣稱真key表單寫入驗收，ASUS Gateway部署沒有啟動此管理服務。當前Gateway部署與驗收另見[ASUS維運](asus-broker-ops.md)。
 
 ## 用途與界線
 
