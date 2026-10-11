@@ -85,7 +85,7 @@ uv run --locked quota-broker gateway --token-file /protected/client-token worker
 - `capability=text_generation`：input非空、最多32768 UTF-8 bytes；max_output_tokens預設1024，顯式值1..65536，實際仍受model／target較小界限限制。
 - `translation`：不同source_language/target_language；Riva adapter保留支援且含英文的pair／1952字限制。新翻譯adapter採自己的admission；通用Task仍有32768bytes上限。
 - `ocr`：單圖PNG/JPEG base64，解碼最多36000bytes，max_output_tokens省略或1；不解析多頁PDF或檔案路徑。
-- 可選provider/model、requirements.features（CLI重複`--require-feature`）、priority(-1000..1000)、帶時區deadline、wait_policy(wait/reject)、max_attempts(1..32)。同步run預設不等待；queue預設wait。max_attempts是整job所有Gateway attempts總量，送出前失敗通常也耗用額度。唯一可接續原slot的是租約已失效、同payload HMAC且完全沒有reservation／attempt／dispatch證據的preparing execution；沿原execution接續，不退款或建立新attempt。
+- 可選provider/model、requirements.features（CLI重複`--require-feature`）、priority(-100..100，Gateway入口驗證的有效範圍)、帶時區deadline、wait_policy(wait/reject)、max_attempts(1..32)。同步run預設不等待；queue預設wait。max_attempts是整job所有Gateway attempts總量，送出前失敗通常也耗用額度。唯一可接續原slot的是租約已失效、同payload HMAC且完全沒有reservation／attempt／dispatch證據的preparing execution；沿原execution接續，不退款或建立新attempt。
 
 `diagnostics`是最低input/output admission，不是完整輸入、key validity、持續配額或品質承諾。catalog的configured_available與當前available/admission_state分開。worker故障顯示enabled/running/stopped、固定error_code、last_tick_at，沒有原始例外內容；HTTP仍可查詢。修復後正常重啟worker，不以靜默fallback掩蓋故障。
 

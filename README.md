@@ -4,7 +4,9 @@ Local control plane for trusted, cooperative clients using an extensible resourc
 
 The instance-local trusted Registry adds compatible providers/models by manifest; registered adapters supply protocol admission, error, usage and quota semantics. Persistent routing health and an explicitly enabled encrypted durable queue support bounded waiting and restart. See the [core acceptance contract](docs/v1-core-contract.md).
 
-Start with the [ASUS operations and acceptance record](docs/asus-broker-ops.md), [capability and discovery contracts](docs/provider-capability-expansion.md), and the [v1.0 local usage guide](docs/v1-local-guide.md) and [representative live evidence](docs/v1-seven-provider-readiness.md). The `gateway-serve` / `gateway` interface is the primary v1 path. The older `serve`, direct client and separate NVIDIA executor sections below describe compatible historical interfaces.
+For another project's backend, start with the [client integration guide](docs/client-integration.md): authentication, synchronous and queued requests, result retention, error handling, and the future OrderFlow integration boundary. The `gateway-serve` / `gateway` interface is the primary v1 path; it has its own JSON contract and is not a Gemini/OpenAI SDK drop-in endpoint.
+
+See also the [ASUS operations and acceptance record](docs/asus-broker-ops.md), [capability and discovery contracts](docs/provider-capability-expansion.md), [v1.0 local usage guide](docs/v1-local-guide.md), and [representative live evidence](docs/v1-seven-provider-readiness.md). The older `serve`, `DirectClient`, and separate NVIDIA executor sections below describe compatible historical interfaces, not the recommended client integration path.
 
 ## Reproduce locally
 
@@ -20,6 +22,8 @@ Requires Python 3.12 and [uv](https://docs.astral.sh/uv/).
 The demo uses a local HTTP broker, an in-process provider fixture, a temporary SQLite database, and a restart check. It sends no real provider request and needs no provider account, API key, or GPU. Mypy checks all package modules with explicit function signatures. Provider JSON, client requests and SQLite rows remain dynamic data at their boundaries; runtime validation and behavior tests cover those contracts, so a passing type check does not establish their correctness.
 
 ## Legacy broker account setup
+
+This section configures the historical `serve` / `DirectClient` interface, where clients hold provider credentials. New Gateway clients use a broker client token instead; follow the [client integration guide](docs/client-integration.md).
 
 Copy config.example.json to config.local.json (ignored by Git). Every example target is disabled. Confirm current free eligibility, billing state and model access for the actual account/project before enabling one; record the source, verified_at and a short expires_at. Billing enabled or stale/unknown free eligibility closes admission.
 
@@ -48,13 +52,13 @@ Existing SQLite files are migrated without inventing missing route history. A pr
 
 The broker observes only cooperating clients. External usage, server-side metering differences, accounting delay, provider changes, and requests that overrun estimates can exhaust a provider before this local ledger detects it. This is neither third-party exactly-once execution nor a guarantee against charges. Keep billing disabled and reverify account facts before use. The NVIDIA executor is a small HTTP/SQLite process and needs no GPU. HP was an early deployment candidate; the current accepted deployment is the ASUS loopback Gateway described above.
 
-## Usage records and current evidence
+## Legacy usage records and historical evidence
 
 The normal broker persists accounting in the SQLite file passed to `--db`: `reservations` records request lifecycle, `charges` holds per-bucket estimated amounts and later replaces them with reported usage, `reports` records idempotent settlements, and `cooldowns` records rate-limit waits. The separate NVIDIA executor uses its own `serve-nvidia --db` path and adds `nvidia_executions` with provider-reported prompt/completion tokens. Its authenticated `GET /v1/nvidia/requests/{request_key}` and admin recent-request table read these records; the admin also shows the ledger's accounted input tokens. These paths are implemented and tested locally, but require a configured, running service and verified account profile before they can record real admitted traffic.
 
-The one-shot Gemma and Riva scripts bypass that formal admission and SQLite ledger. They write only Git-ignored private `.state/*.json` no-replay receipts. The Riva translation probe's actual provider usage (22 prompt, 3 completion tokens) is in its receipt, **not** in `nvidia_executions` or `charges`; the older Gemma attempt remains `unknown` with no provider usage. There is no evidence of a running production database or deployed usage monitor for this repository. A successful isolated translation proves only that the Riva endpoint responded to that one request, not that the formal executor or usage dashboard has accepted a real request.
+The one-shot Gemma and Riva scripts bypass that formal admission and SQLite ledger. They write only Git-ignored private `.state/*.json` no-replay receipts. The Riva translation probe's actual provider usage (22 prompt, 3 completion tokens) is in its receipt, **not** in `nvidia_executions` or `charges`; the older Gemma attempt remains `unknown` with no provider usage. At that early executor phase, these probes did not establish a running production database or deployed usage monitor. The later Gateway deployment and SQLite acceptance are recorded separately in the [2026-10-09 ASUS evidence](docs/asus-broker-ops.md). A successful isolated translation proves only that the Riva endpoint responded to that one request, not that the formal executor or usage dashboard has accepted a real request.
 
-## Source and scope
+## Legacy source and scope
 
 See [provider sources](docs/provider-sources.md) for primary source links and the 2026-09-25 review. Google Gemini Developer API and Cloudflare Workers AI retain their direct-client v0.1 behavior. NVIDIA now has a separate fixed-route, non-streaming executor candidate, disabled until verified metadata is entered. This legacy path has no prompt/answer persistence, provider key storage, Redis, LLM ranking or paid fallback. The v1 queue below adds encrypted payload/result retention.
 
