@@ -544,7 +544,11 @@ class Registry:
                 (model.provider, model.model): ModelSpec(
                     **asdict(model),
                     adapter="builtin:" + model.provider,
-                    features=(model.capability, "text")
+                    # The existing Google typed binding supports inline PDF and
+                    # JSON Schema; account/resource admission remains separate.
+                    features=(model.capability, "text", "document_input", "structured_output")
+                    if (model.provider, model.model) == ("google", "gemini-3.5-flash-lite")
+                    else (model.capability, "text")
                     if model.capability != "ocr"
                     else ("ocr", "image"),
                     input_parameters=(

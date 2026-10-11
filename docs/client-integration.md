@@ -195,6 +195,8 @@ Broker 僅在送出前失敗，或有明確「未執行」配額拒絕證據時�
 
 ## 8. OrderFlow 後續整合界線
 
+2026-10-12 已另啟動接入候選工作；現場 PDF 能力、schema、資源與尚未部署的界線見 [OrderFlow PDF 接入候選](orderflow-pdf-integration.md)。以下是原規劃，不代表整合已驗收。
+
 目前交付是可引用的接入契約，**尚未修改或切換 OrderFlow**。待 OrderFlow 自己的問題修正完成，回到該專案再授權整合：
 
 1. 核對既有 AI Studio 呼叫的輸入媒體、schema、timeout、重試、結果保存及人工確認流程，逐一對照 Broker 能力。
