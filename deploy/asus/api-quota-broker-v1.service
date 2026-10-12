@@ -35,16 +35,17 @@ ExecStart=/opt/api-quota-broker/current/runtime/bin/python -I -m quota_broker.cl
     --doppler-token-file %d/doppler_service_token \
     --doppler-project api-quota-broker --doppler-config dev \
     --queue-key-file /run/api-quota-broker/queue.key \
-    --max-media-input-bytes 1048576 \
-    --max-request-bytes 2097152 \
+    --google-pdf-count-tokens --serialize-work \
+    --max-media-input-bytes 8388608 \
+    --max-request-bytes 16777216 \
     --max-result-bytes 4194304
 Restart=on-failure
 RestartSec=10s
 TimeoutStopSec=30s
 KillMode=control-group
 CPUQuota=50%
-MemoryHigh=256M
-MemoryMax=384M
+MemoryHigh=384M
+MemoryMax=512M
 MemorySwapMax=0
 TasksMax=32
 LimitCORE=0

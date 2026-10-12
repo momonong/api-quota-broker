@@ -654,3 +654,29 @@ def test_storage_preflight_rejection_does_not_create_database(tmp_path):
     with pytest.raises(GatewayError):
         prepare_queue_storage(path, key)
     assert not path.exists()
+
+
+@pytest.mark.parametrize("completed", [False, True])
+def test_metadata_reads_do_not_allocate_large_ciphertext(tmp_path, completed):
+    import tracemalloc
+
+    gateway, queue = setup(tmp_path)
+    queue.submit(raw())
+    if completed:
+        queue.tick("worker")
+    expected = queue.status("job")
+    purpose = "result" if completed else "payload"
+    ciphertext = queue._encrypt({"body": "x" * (8 * 1024 * 1024)}, "job", purpose)
+    with sqlite3.connect(gateway.db) as con:
+        con.execute(f"UPDATE queue_jobs SET {purpose}=? WHERE request_key='job'", (ciphertext,))
+    del ciphertext
+    tracemalloc.start()
+    try:
+        assert queue.status("job") == expected
+        assert queue.recent()["tasks"] == [expected]
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    # Copying either encrypted 8 MiB body into a Python row exceeds this by >10x.
+    assert peak < 1024 * 1024
+    assert len(gateway.calls) == int(completed)

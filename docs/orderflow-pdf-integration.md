@@ -80,26 +80,37 @@ HTTP 400 invalid_request、401 unauthorized、404 not_found、409 conflict、503
 
 只在 `Registry.builtin()` 為既有 Google 3.5 Flash-Lite 增加 document_input、structured_output，保留 builtin:google 與既有 typed adapter alias。這避免使用 replace_builtin 改成純 family adapter 後，原字串 Google 請求失效。其他模型／provider 不擴張；未新增 Gemini 3.1、adapter、依賴或對外路由。
 
-這項程式變更只解除 feature gate。PDF media 不會自動生成 input_tokens bound；ASUS Google 有 input_tokens cap，沒有可信且有效的 target resource_estimates 時仍以 estimation_unconfigured 拒絕。呼叫端不可傳 resource_bounds 自行降低保留值。fixture 的 4096 只驗證機制，**不是正式 PDF 估算配置**。
+PDF 缺 input_tokens 估值時預設仍拒絕。服務明確啟用 `--google-pdf-count-tokens`，且請求指定 Google / gemini-3.5-flash-lite / text_generation / PDF，才採以下持久化預檢；不影響其他模型或 legacy 字串路徑。呼叫端不可傳 resource_bounds 自行降低保留值。
 
-## 正式 admission 的待決策方案
+## CountTokens admission
 
-PDF 的壓縮大小、page count、base64 長度都不是可靠的 billed input token 上界。[Google 文件處理說明](https://ai.google.dev/gemini-api/docs/document-processing)的通用 page 說明與 Gemini 3 原生文字／影像處理不同，不把 258/page 直接套給 3.5。
+[官方 endpoint](https://ai.google.dev/api/tokens) 接受完整 generateContentRequest，包含模型、PDF、prompt、schema 與生成設定。官方示例 count 與實際 prompt usage 可差 1，這裡明確標記 `provenance=estimated`，不宣稱數學上界或 billed usage。
 
-1. **模型上限保留方案（配置候選）**：以官方 input 上限 1,048,576 作每次 PDF 的最壞保留值，max_input_bytes 覆蓋完整序列化 input+options，max_output_tokens 保留既有正式 8192。此值不是實際用量。現有 131,328/min cap 必定阻擋，若選此方案須明確批准更大的本地 cap，保留原 shared bucket、concurrency=1、requests caps、免費資格、expiry 與未知 hold。官方模型上限與帳號可用 TPM 仍是不同事；供應商可能拒絕。不得自行提高 cap 或把未知官方餘額設為足夠。
-2. **CountTokens 方案（需新增實作與操作契約）**：[官方 endpoint](https://ai.google.dev/api/tokens)接受 generateContentRequest，可把完整相同模型、PDF、prompt、schema 一起送去計數；但官方示例的 countTokens 與實際 prompt usage 可差 1，不能稱為嚴格上界。需要明確保守 margin／本地 cap、模型及完整 wire payload 綁定、短期效期、失敗不派送 generation，以及獨立的 preflight intent/result 持久化。countTokens 是另一個認證外部 POST，費用／配額、timeout 與可否重試需獨立核對並授權；max_attempts=1 本身不授權它。此階段未實作或呼叫該 endpoint。
+- 估值為 `ceil(totalTokens × 1.2) + 256`：20% 比例餘量與 256 固定協定餘量是本地保守政策，不是官方精度保證。只接受正整數且不超過模型 input 上限的計數；估值仍受既有 input cap 131,328/min 與 context/output cap 阻擋，不截低估值硬放行。
+- 估值有效 120 秒，HMAC 綁定 target snapshot、endpoint、Content-Type 與實際 generation body bytes。派送前重驗效期與相同 wire；不跨 target/model 重用。
+- 先建立 gateway job，再把 count intent、target/scope/model、wire HMAC 與 request charge 寫入 SQLite，才外部 POST。只保存 metadata，不保存明文 PDF、prompt、schema、credential 或原始錯誤。
+- count POST 最多 30 秒、response 64 KiB。成功才新增可信 internal resource bound；缺失、拒絕、逾時、壞格式全部停止 generation。count 完成前後 crash 均不能讓 queue 換 execution key 自動重做 count；原工作保留收據，沒有隱藏重試。
+- 計數與 generation 分開記錄；count 消耗一個保守本地 requests charge，generation 沿既有 ledger 結算。預檢先核對本地及已知觀測 request 餘額可容納兩次 POST。count charge 留存，不因逾時退款。新證據後的觀測扣减與本地 cap 分開處理；不宣稱官方 count 費用或 token 配額消耗已知。
+- count unknown 不永久封鎖獨立工作；僅仍處於最多 30 秒傳輸窗口的 intent 暫時佔用 scope，原 job 永不自動重播。generation unknown 繼續沿既有 reservation hold 規則。
+- explain/catalog/status/diagnostics 不解析 provider secret、不觸發 POST。待計數時 explain 回 selected_target_id=null、preflight_target_id、preflight_required=true、estimated_input_tokens=null；這表示可進入預檢，不是生成已 admission。
 
-選定可信上界與資源政策前，保持 PDF admission fail closed。不以任意小值、略過 input_tokens cap 或客戶端宣告替代。
+結果的 `token_preflight` 包含 state、counted_tokens、estimated_tokens、provenance、created/completed/expires 時間。生成實際用量仍看 reported_input_tokens、reported_output_tokens 與 ledger_basis；估值與 provider reported 分開。
 
 ## 8 MiB 相容與資源驗證
 
-OrderFlow 原上傳上限 8 MiB，不能默默縮為 1 MiB 後宣稱完整替代。8 MiB base64 約 10.67 MiB，加上 JSON／prompt／schema 後須使用至少足夠的 HTTP envelope；候選為套件預設 media=8 MiB、request=16 MiB，結果仍可維持原 4 MiB。這些值尚未套到 ASUS。
+保留原 8 MiB PDF 上傳契約，Broker 候選為 media=8 MiB、request=16 MiB、result=4 MiB。服務新增 `--serialize-work`，POST 在 body read 之前取得共用 gate，持續到回應完成；worker tick 及 queue result 解密/回應共用同一 gate。GET 小 metadata 保持可用；status/recent 與到期 maintenance 只投影 metadata，result 只取存在旗標，不載入完整加密 payload/result。body 有 30 秒總讀取期限，慢速滴流不能無限延長。
 
-桌機 Python 3.12 的有界單工作 fixture 使用恰好 8,388,608 bytes 的合法單頁 PDF，完整 HTTP body 11,185,795 bytes，經 queue→加密保存→worker→fixture→結果成功，只有一次注入 transport。10ms 採樣包含 HTTP client、Gateway/worker 與 PDF 子程序的總 RSS 峰值 378,316 KiB（約 369.4 MiB）、PSS 峰值 358,378 KiB（約 350 MiB）；耗時約 1.53 秒。client 與服務在同一測試程序，因此不是純 Broker 數字，也不是 ASUS 負載驗收。單程序／child 的 ru_maxrss 因 fork 繼承峰值不可直接相加當 cgroup 用量。
+忙碌時固定 HTTP 503、JSON `{"error":"work_busy"}`、Content-Type: application/json、精確 Content-Length、Connection: close。大 body 上傳可能先遇 BrokenPipe；只可在同 socket 讀得完整且唯一此錯誤的 framed response 時重送，沒有回應／不完整／不同錯誤仍視未知。對 POST 此回覆在讀 body／submit 前發出，表示零接受、零持久化、零派送，可沿同業務 job/key 有界等待再送。只有此精確錯誤適用，不能泛化其他 503 或 timeout。建議退避 1/2/4/8 秒、8 秒封頂，總 240 秒或原 job deadline 較短者；耗盡保持未提交/busy 可續同 job，不換 key。result GET 遇此錯誤只重取原 key。
 
-ASUS 當時 MemAvailable 約 1.43 GiB；Broker MemoryHigh=256 MiB、MemoryMax=384 MiB、當前約 25.3 MiB；OrderFlow MemoryMax=768 MiB、當前約 34.2 MiB。空閒記憶體不是保留容量。單 fixture 已接近 Broker 硬上限，且 ThreadingHTTPServer 的多個 POST body 可同時解析；provider concurrency=1 不限制這些 buffer，也不限制另一個 submit 與 queue worker 的重疊。
+Google count/generation transport 各最多 30 秒，Gateway execution budget 與 queue execution lease 為 180 秒；gate 本身沒有整個 worker 的強制 wall watchdog，不能把 180 秒稱為含所有 DB/解析操作的絕對上限。PDF parser 保留獨立 256 MiB / 3 CPU 秒 / 5 秒 wall / 最多 128 頁限制。
 
-因此**不能只改兩個 media flags 就宣稱 8 MiB 安全**。部署候選需明確限制大 body 入站／worker 重疊、評估必要的服務記憶體政策，再在 ASUS 核對完整 cgroup peak、CPU/PDF parser timeout 與共存 OrderFlow 工作。現有 PDF parser 有獨立 256 MiB／3 CPU 秒／5 秒 wall bound、最多 128 頁；不為放行而移除。若暫時只能支援 1 MiB，必須送出前明示缺口並由 main 決策，不是完整驗收。
+[資源量測工具](../scripts/measure_pdf_memory.py) 使用乾淨 spawn Broker，client 在另一程序；完整 HTTP queue→count→generation→result，沿用真 transport 的 base64/config/子程序管道，仅把 HTTP child 替換成不連網 fixture。恰好 8,388,608 bytes 合法 PDF，HTTP body 11,185,446 bytes。兩次 5ms 採樣的 Broker 子樹 RSS 峰值 262,176 / 262,336 KiB，PSS 242,979 / 243,073 KiB，count/generation 各一次，正常 output cap 8192、smoke 2048。這不是 ASUS cgroup peak 或 TLS/live 驗收。
+
+ASUS 原生隔離測量已通過同一 whitespace PDF（SHA256 `d40c321fbe27105c07781b4a77812a3791fab48dade1141c04154b8de74d7b13`）：Broker 子樹獨立 CPU50% / MemoryHigh384M / MemoryMax512M / Swap0 / Tasks32 / NOFILE128；client/sampler 在另一無 CPU 限制 user unit，每秒 GET metadata。完整 queue→count fixture→generation fixture→result 42.821 秒成功，count/gen 各一，零真 provider POST；5 次 parser wall 3.096–3.646 秒、CPU 1.452–1.512 秒，原限制未變。cgroup MemoryPeak 237,977,600 bytes、SwapPeak0；5ms 子樹 RSS/PSS 峰值 268,028 / 234,336 KiB。Python 啟動前的少量頁面仍歸原 client cgroup，故同列子樹 RSS，不能將 cgroup peak 當作完整部署峰值。OrderFlow PID 未變，約35 MiB；不代表同時高負載壓測或 TLS/live 驗收。
+
+先前 client 與 Broker 同 CPU50% cgroup 的失敗不作有效資源上界；分離後也曾因每50ms metadata polling 加上 SELECT * 載大 ciphertext 造成第二次 parser 5.082 秒 timeout。修正 metadata 投影並按實際輪詢節奏重驗後通過，沒有調寬 parser CPU/wall/memory 保護。兩個8MiB payload/result metadata測試確認外部metadata相同、Python配置峰值低於1MiB。
+
+部署模板候選 MemoryHigh=384 MiB、MemoryMax=512 MiB、MemorySwapMax=0，CPU50%/Tasks32/NOFILE128 不變。原生證據已過，正式服務尚待固定artifact部署。
 
 ## Credential 與部署候選邊界
 
@@ -115,8 +126,25 @@ ASUS 當時 MemAvailable 約 1.43 GiB；Broker MemoryHigh=256 MiB、MemoryMax=38
 
 - `uv run --locked pytest -q tests/test_orderflow_pdf_contract.py tests/test_registry.py tests/test_family_gateway.py tests/test_family_adapters.py tests/test_families.py`：540 passed。
 - 新增 12 個契約 cases；兩份 schema、PDF wire 轉換、HTTP queue、結果重取、legacy 字串、缺失／過期估算、未知不重播、截斷與用量分開判讀、非法 schema／媒體／caller bound 拒絕。
-- `uv run --locked mypy src/quota_broker`：26 個來源檔通過；修改檔 Ruff check/format 通過。不是全套或實機驗收。
+- 本階段全套初跑 2676 passed / 39 skipped / 1 failed；唯一失敗為 acceptance 對新增 diagnostics.execution_policy 的 exact-key gate，已修正並以受影響測試驗證。
+- count/queue/acceptance/prerequisite 修正後定向108 passed；metadata投影新增後 queue/count/work-gate 73 passed；prerequisite lock drift/recovery 14 passed。
+- `uv run --locked mypy src`：27 個來源檔通過；修改檔 Ruff check/format 通過。不把局部修正後結果宣稱為另一次全套。
 
-有限 live 候選由 OrderFlow 保存一份無私人資料、可人工核對的合成 PDF、其 hash、固定 prompt/schema 與預期品項，建立一個持久化業務 job。只用此既有 Google provider/key/model，max_attempts=1、max_output_tokens≤2048；先以同 payload explain 核對選定 target、bound 與 cap，正式取得新 live 額度／部署授權後才 submit 一次。若選 countTokens，必須把該額外 POST 另列入批准上限，不能藏在一次 job 內。
+有限 live 候選由 OrderFlow 保存一份無私人資料、可人工核對的合成 PDF、其 hash、固定 prompt/schema 與預期品項，建立一個持久化業務 job。只用此既有 Google provider/key/model，max_attempts=1、max_output_tokens≤2048；以同 payload explain 核對 preflight target 與非 token gates，再由持久化工作進行 count 與 generation。2026-10-12 新的人類批准涵蓋必要 count 預檢及唯一合成 PDF 生成；只有 OrderFlow 原 task 發起該工作，Broker 不另作 generation probe。
 
 任一未知結果保留原 job/execution/收據並停止新派送；只查原 job/result。結果需通過完成 metadata、JSON/schema、預期品項與人工確認；用量結算另看 provider 回報。合成成功不代表私人文件、全部大小／頁數、一般大量品項或使用者驗收完成。
+
+## 固定維運準備與恢復邊界
+
+`prepare_pdf_maintenance.py` 是此次固定 prerequisite：只更新已安裝的 verifier allowlist（一個來源檔）、broker-v1.service 模板及 package manifest 對應 hash；不改 `/etc/systemd/system/api-quota-broker.service`、active-release、current、帳號、socket、sudoers、DB 或服務狀態。先核對全 package/固定 baseline、取得既有 operation.lock、root-only 備份及 once intent；來源有漂移則停止。`prepare_pdf_transport.py` 沿用既有 Doppler/PAM 私有管道，只在精確 morris prompt 後取值，兩端 swap/core guard、固定 root source hash、unknown 不重送。
+
+| 狀態 | 服務及維運行為 | 恢復 |
+| --- | --- | --- |
+| prep 前 | 舊 current / installed unit / active pins | 無變更 |
+| prep 成功、尚未 deploy | 舊 unit 繼續運行；重啟/開機仍用舊 unit。active pins 仍指舊 unit；package 新 hash 自洽 | 可沿既有維運 preflight/deploy；不把新模板當正在運行的 unit |
+| prep 可判定寫入失敗 | 僅對仍與本次新 bytes 相同的已改檔復原，保留備份/intent/result | 不動服務/DB；不自動重試 |
+| prep crash／foreign drift | package hash 可能不一致，維運 fail closed；舊 installed unit/current 未改 | 讀原 receipt 與三檔 hash，人工判定後固定修復；不換 ID 重送 |
+| deploy 成功 | 既有 maintenance transaction 備份 ledger/config/unit/policy/active，安裝候選、更新 installed unit/current/active pins並重啟 | 既有保列後檢與 rollback；不還原 DB |
+| deploy 可判定失敗 | 既有 transaction 恢復原 installed unit/current/active；prep 模板仍為新候選，package hash仍自洽 | 查原 deployment receipt；新操作需可判定原狀態，不盲重送 |
+
+prep 不改 gateway.json，故 Google 正式 output 8192、input/request caps、免費資格及歷史未知 hold 保留。新來源採加法 schema initialization，原 ledger/queue 全部保留。最終 source SHA、artifact/unit/config hash、runtime current、備份與原生驗證回條在部署完成後另記，不能以本頁候選當現場證据。
