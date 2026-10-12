@@ -1,6 +1,6 @@
 # OrderFlow PDF 接入與 Broker 部署（2026-10-12）
 
-狀態：Broker `8172505` 已於 2026-10-12 部署至 ASUS，8 MiB 原生離線 fixture 與部署後唯讀核對通過；**OrderFlow 切換與唯一 PDF live 驗收仍待其既有 task 執行，不能宣稱整合已接通**。本階段沿既有 Google provider/key，以 `gemini-3.5-flash-lite` 為候選；不沿用 OrderFlow 舊直連的 `gemini-3.1-flash-lite` 作為已驗證 Broker 模型。
+狀態：Broker `8172505` 已於 2026-10-12 部署至 ASUS，8 MiB 原生離線 fixture 與部署後唯讀核對通過；**backend-only 唯一合成 PDF live 已有 OrderFlow 成功回條，Broker 原 key 的計數／生成／用量唯讀核對通過；HTTP upload、form login、browser 與人工驗收未完成**。本階段沿既有 Google provider/key，以 `gemini-3.5-flash-lite` 為候選；不沿用 OrderFlow 舊直連的 `gemini-3.1-flash-lite` 作為已驗證 Broker 模型。
 
 接入契約基準為 `2145d9ba7b47c153af2022102439d67a1c789365` 的 [README](../README.md) 與 [client-integration.md](client-integration.md)。此頁及能力修改是其後的工作分支；Broker 固定版已部署，尚未合併、推送或發布。固定合作指南版本為 `c7fbf48250a44baf2638c22470410012109efc5d`。OrderFlow 的程式由其既有專案團隊修改，本候選不改該 repo。
 
@@ -16,7 +16,7 @@ ASUS 唯讀檢查日期為台灣時間 2026-10-12；用既有 `aqb` 做 catalog�
 | 現行 features | `text_generation`, `text`；未宣告 PDF／structured |
 | 帳號證據 | free_eligible=true、billing_enabled=false、期限 2026-10-22T03:53:20.337024+00:00；不是官方即時餘額 |
 | 本地 caps | requests 3/min、100/day；input_tokens 131,328/min；shared concurrency 1 |
-| 文字輸出 target cap | 8,192；更新後的唯一合成 live 沿正式 HTTP 流程使用此既有上限 |
+| 文字輸出 target cap | 8,192 維持；本輪唯一隔離合成 job 的 max_output_tokens≤2048 |
 | Queue worker | enabled=true、running=true、error_code=null |
 | 最低 readiness | credential_inventory_unknown；不可推定 key 不存在或可用 |
 | 現場媒體／HTTP／結果上限 | 1 MiB / 2 MiB / 4 MiB，與套件預設 8 / 16 / 32 MiB 不同 |
@@ -56,7 +56,7 @@ PDF 擷取使用 **`capability=text_generation` 的 typed messages**；不是 le
     }
   },
   "requirements": {"features": ["document_input", "structured_output"]},
-  "max_output_tokens": 8192,
+  "max_output_tokens": 2048,
   "max_attempts": 1,
   "wait_policy": "reject"
 }
@@ -130,9 +130,11 @@ ASUS 原生隔離測量已通過同一 whitespace PDF（SHA256 `d40c321fbe27105c
 - count/queue/acceptance/prerequisite 修正後定向108 passed；metadata投影新增後 queue/count/work-gate 73 passed；prerequisite lock drift/recovery 14 passed。
 - `uv run --locked mypy src`：27 個來源檔通過；修改檔 Ruff check/format 通過。不把局部修正後結果宣稱為另一次全套。
 
-更新後的有限 live 計畫由 OrderFlow 保存一份無私人資料、可人工核對、含 1–2 個品項的合成 PDF、其 hash、固定 prompt/schema 與預期品項，沿原有 HTTP upload→recognition 建立一個持久化業務 job。只用此既有 Google provider/key/model，max_attempts=1，沿一般正式 max_output_tokens=8192 上限；以同完整 payload explain 核對 preflight target 與非 token gates，再由持久化工作進行必要 count 與唯一一次 generation，實際輸出用量據實記錄。不得為測試新增產品 API。2026-10-12 新的人類批准涵蓋必要 count 預檢及唯一合成 PDF 生成；只有 OrderFlow 原 task 發起該工作，Broker 不另作 generation probe。
+本輪最終有限 live 計畫已由 Broker main 與 OrderFlow main 對齊：OrderFlow 保存一份無私人資料、可人工核對、含 1–2 個品項的合成 PDF、其 hash、固定 prompt/schema 與預期品項，以 backend-only seed 建立唯一隔離持久化 job，經正式 worker→Broker→Google 執行。只用既有 Google provider/key/model，max_attempts=1，該 job 的 max_output_tokens≤2048；一般正式 cap8192 維持不變。以同完整 payload explain 核對 preflight target 與非 token gates，再由該 job 進行必要 count 與唯一一次 generation，實際輸出用量據實記錄。不得為測試新增產品 API。2026-10-12 人類批准涵蓋必要 count 預檢及唯一合成 PDF 生成；只有 OrderFlow 原 task 發起該工作，Broker 不另作 generation probe。
 
-2026-10-12 main 已更新先前的 smoke≤2048 執行候選：兩處人類批准原文均未指定 2048 硬上限，為驗證真 HTTP 入口改沿既有正式 8192 設定。已完成的離線資源 fixture 仍保留原 2048 設定與證據，不將其改述為 8192 live 驗證。這只更新驗收安排與文件，不修改 Broker source/config 或重部署。
+本輪 **HTTP upload、form login 與 browser 流程均未驗證**；backend-only 成功不能回報為這些入口已接通或完整使用者 E2E 通過。實際 backend-only live 已完成，回條與驗證範圍見文末。
+
+方案變更紀錄（2026-10-12）：最初候選為 smoke≤2048；Broker main 曾提出沿正式 HTTP upload→recognition、8192 上限，文件於 `aa3beff` 記錄此安排。兩 main 對齊後，Broker main 已撤回 HTTP8192 作為本輪必要要求，最終採上述 backend-only 唯一 job≤2048。此處保留先前提案歷史，不表示它已執行。已完成的離線資源 fixture 維持原 2048 設定與證據；此次勘誤只改文件，不修改已部署 Broker source/config 或重部署。
 
 任一未知結果保留原 job/execution/收據並停止新派送；只查原 job/result。結果需通過完成 metadata、JSON/schema、預期品項與人工確認；用量結算另看 provider 回報。合成成功不代表私人文件、全部大小／頁數、一般大量品項或使用者驗收完成。
 
@@ -165,3 +167,28 @@ prep 不改 gateway.json，故 Google 正式 output 8192、input/request caps、
 Diagnostics 的 `local_minimum_admission_snapshot` 只測最小 token envelope；Google state=unknown 的唯一原因為 credential_inventory_unknown，不代表缺 key，也不證明免費帳號餘額、PDF2048/8192 admission 或 Google 成功。OF 仍須用其完整唯一合成 payload explain 核对 preflight target/非token gates，並由同一持久化 job 進行 count/唯一生成。Broker 此次部署與驗證真 provider POST 為零。
 
 原 native receipt 的 limitations 沿用 `offline_not_ASUS` 工具標籤；這次實際在 ASUS 執行，host/PID/cgroup/public resource projection 已核對，該字串不描述此次主機。它仍是無 provider 網路的離線 fixture，未據此宣稱真 Google 或使用者驗收。
+
+
+## 唯一 backend-only live 與 Broker 唯讀核對
+
+2026-10-12 台灣時間 14:38:34 完成，14:40:55 核對。Broker audit 只做兩次 HTTP GET：指定外層 queue key，再取它指向的原 gateway execution status；未取 PDF/prompt/辨識文字、未另 submit/count/generation。
+
+| 項目 | Broker 原 key 證據 |
+| --- | --- |
+| 外層 request key | `of-smoke-60e2f4f4dff043d5a5fae809f4378fbe` |
+| 原 execution key | `q-10550122497e4885a044419770dface6` |
+| Queue | completed；attempt_count=1、attempt_budget_used=1、max_attempts=1 |
+| CountTokens | 1 筆 completed/HTTP200 持久化收據；本版同 key 僅一次 intent、沒有 count retry |
+| 計數／估值 | counted_tokens=681；estimated_tokens=1074，provenance=estimated |
+| Generation | 1 筆 attempt、HTTP200、completed；finish=stop、response_truncated=false |
+| 實際回報用量 | input=661、output=134；usage_source=provider_reported |
+| 本地結算 | ledger_state=completed、ledger_basis=settled_provider_usage；無未知生成用量 |
+| 此次 audit | HTTP GET=2、provider POST=0 |
+
+Count 在 06:38:30.646965Z 完成、估值有效至 06:40:30.646551Z；generation 於 06:38:31.200403Z 派送，位於有效窗口。此收據與已部署的一次性 count 路徑支持應用端 **一次 count＋一次 generation，共兩次 provider POST**。count 的 681 與加餘量估值 1074 都不是 generation 實際用量 661，亦不當成 billed usage。CountTokens 官方費用、帳戶即時剩餘與帳單未核實。
+
+非秘密投影：`docs/evidence/pdf-integration-2026-10-12/of-smoke-60e2f4f4dff043d5a5fae809f4378fbe.audit.json`，SHA256 `89309070f6966889d88e007ac2dbca9bb1024082a39df879d74c31b23db0aa26`；observed_at `2026-10-12T06:40:55.733086+00:00`。核對時 Broker current 仍為上述 `release-d7fccdcc...655afa`。
+
+以下為協調者交付的 **OrderFlow 回條**，不是此次 Broker metadata audit 對內容的獨立驗證：job `8a522759-9705-44fe-a506-4146097d4a68`、doc `17a4f154-7fa1-4cac-9904-33100955dafe`、source `316ec314b7878994c3c50eed562f3be9f990dfbd`、task SHA256 `ac3b1ecec8dd2dc7897b4ee9a1ebb28d7f4bd95daa180905640a859c89f079bf`、PDF SHA256 `7970e48bb5b75e7b7d8d8c3ebbd892729fa35f83eb0dab2886e2029afec198af`、max_output_tokens=2048、done/complete、expected_items_match=true、usage_unknown=false、舊 rows/files 保留。
+
+驗證只涵蓋唯一隔離 job→正式 worker→Broker→Google 的 backend 路徑。HTTP upload、form login、browser、私人文件、一般大量品項與使用者人工接受均不在此次成功聲明內。
