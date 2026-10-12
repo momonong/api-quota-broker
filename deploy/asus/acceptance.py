@@ -598,7 +598,9 @@ def _api(initial: bool, empty: bool) -> dict[str, Any]:
     require(
         status == 200
         and isinstance(diagnosis, dict)
-        and set(diagnosis) == {"as_of", "ready_targets", "targets", "basis", "queue_worker"},
+        and {"as_of", "ready_targets", "targets", "basis", "queue_worker"} <= set(diagnosis)
+        and not set(diagnosis)
+        - {"as_of", "ready_targets", "targets", "basis", "queue_worker", "execution_policy"},
         "http",
         "diagnostics_schema",
     )

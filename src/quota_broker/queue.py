@@ -45,6 +45,14 @@ SAFE_RESULT_FIELDS = {
 }
 
 
+# Metadata queries must not materialize encrypted PDF payloads or result bodies.
+_METADATA_COLUMNS = (
+    "request_key,state,priority,deadline,wait_policy,max_attempts,attempt_count,"
+    "created_at,expires_at,completed_at,next_retry_at,error_code,execution_key,"
+    "metadata_json,run_started,CASE WHEN result IS NULL THEN NULL ELSE 1 END AS result"
+)
+
+
 def _private(path: Path, mode: int, *, directory: bool = False) -> None:
     """Reject symlinks, wrong owners and permissive files instead of fixing them."""
     try:
@@ -264,8 +272,13 @@ class DurableQueue:
             raise GatewayError("queue_ciphertext_invalid", "queue content authentication failed")
         return decoded["data"]
 
-    def _row(self, con: sqlite3.Connection, key: str) -> sqlite3.Row:
-        row = con.execute("SELECT * FROM queue_jobs WHERE request_key=?", (key,)).fetchone()
+    def _row(
+        self, con: sqlite3.Connection, key: str, *, metadata_only: bool = False
+    ) -> sqlite3.Row:
+        columns = _METADATA_COLUMNS if metadata_only else "*"
+        row = con.execute(
+            f"SELECT {columns} FROM queue_jobs WHERE request_key=?", (key,)
+        ).fetchone()
         if row is None:
             raise GatewayError("not_found", "queue task not found")
         return row
@@ -330,6 +343,14 @@ class DurableQueue:
         task = con.execute("SELECT * FROM gateway_tasks WHERE request_key=?", (key,)).fetchone()
         if task is None:
             return "unsent"
+        if (
+            "gateway_token_counts" in tables
+            and con.execute(
+                "SELECT 1 FROM gateway_token_counts WHERE request_key=?",
+                (key,),
+            ).fetchone()
+        ):
+            return "unknown"
         attempts = (
             list(con.execute("SELECT * FROM gateway_attempts WHERE request_key=?", (key,)))
             if "gateway_attempts" in tables
@@ -434,7 +455,7 @@ class DurableQueue:
     def _maintenance(self, con: sqlite3.Connection) -> None:
         now = stamp(self.clock())
         for row in con.execute(
-            "SELECT * FROM queue_jobs WHERE state='running' AND (lease_until<=? OR expires_at<=? OR (deadline IS NOT NULL AND deadline<=?))",
+            f"SELECT {_METADATA_COLUMNS} FROM queue_jobs WHERE state='running' AND (lease_until<=? OR expires_at<=? OR (deadline IS NOT NULL AND deadline<=?))",
             (now, now, now),
         ).fetchall():
             dispatched = self._execution(con, row) != "unsent"
@@ -448,7 +469,7 @@ class DurableQueue:
                     (row["request_key"],),
                 )
         for row in con.execute(
-            "SELECT * FROM queue_jobs WHERE state IN ('queued','waiting') AND (expires_at<=? OR (deadline IS NOT NULL AND deadline<=?))",
+            f"SELECT {_METADATA_COLUMNS} FROM queue_jobs WHERE state IN ('queued','waiting') AND (expires_at<=? OR (deadline IS NOT NULL AND deadline<=?))",
             (now, now),
         ).fetchall():
             self._finish(con, row, "expired", error="deadline_expired")
@@ -521,7 +542,7 @@ class DurableQueue:
     def status(self, key: str) -> dict[str, Any]:
         with self._tx() as con:
             self._maintenance(con)
-            return self._view(con, self._row(con, key))
+            return self._view(con, self._row(con, key, metadata_only=True))
 
     def result(self, key: str) -> dict[str, Any]:
         with self._tx() as con:
@@ -537,7 +558,7 @@ class DurableQueue:
         with self._tx() as con:
             self._maintenance(con)
             rows = con.execute(
-                "SELECT * FROM queue_jobs ORDER BY created_at DESC,request_key DESC LIMIT ?",
+                f"SELECT {_METADATA_COLUMNS} FROM queue_jobs ORDER BY created_at DESC,request_key DESC LIMIT ?",
                 (limit,),
             ).fetchall()
             return {"tasks": [self._view(con, row) for row in rows]}
@@ -624,7 +645,7 @@ class DurableQueue:
             current = self._owned(con, row)
             if current is None:
                 return self._view(con, self._row(con, row["request_key"]))
-            if plan.get("selected_target_id") is None:
+            if plan.get("selected_target_id") is None and not plan.get("preflight_target_id"):
                 if plan.get("temporary") and not plan.get("permanent_rejection"):
                     self._wait(con, current, plan.get("next_retry_at"))
                 else:
@@ -736,7 +757,17 @@ class DurableQueue:
                 state in {"dispatched", "unknown", "preparing"}
                 or self._execution(con, current) != "unsent"
             ):
-                self._finish(con, current, "unknown", error="execution_uncertain", result=outcome)
+                if (
+                    state == "rejected"
+                    and (outcome.get("token_preflight") or {}).get("state") == "rejected"
+                ):
+                    self._finish(
+                        con, current, "failed", error="token_preflight_rejected", result=outcome
+                    )
+                else:
+                    self._finish(
+                        con, current, "unknown", error="execution_uncertain", result=outcome
+                    )
             elif (
                 (outcome.get("temporary") or state == "quota_exhausted")
                 and self._execution(con, current) == "unsent"

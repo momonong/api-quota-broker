@@ -100,7 +100,7 @@ MODELS = {
         free_kind="free_tier_for_eligible_projects",
         use_restrictions="Confirm model access and Free tier for the API key's project before dispatch.",
         source="https://ai.google.dev/gemini-api/docs/models/gemini-3.5-flash-lite",
-        verified_at="2026-10-02",
+        verified_at="2026-10-12",
     ),
     "@cf/meta/llama-3.2-1b-instruct": Model(
         provider="cloudflare",

@@ -671,6 +671,16 @@ def main() -> None:
     )
     gateway_serve.add_argument("--queue-ttl-seconds", type=int, default=86400)
     gateway_serve.add_argument("--no-queue-worker", action="store_true")
+    gateway_serve.add_argument(
+        "--google-pdf-count-tokens",
+        action="store_true",
+        help="allow one durable Google PDF token-count preflight per job",
+    )
+    gateway_serve.add_argument(
+        "--serialize-work",
+        action="store_true",
+        help="bound memory by serializing POST, result reads and worker",
+    )
     gateway_serve.add_argument("--secret-names-file", help="optional expiring names-only inventory")
     gateway = sub.add_parser("gateway")
     gateway.add_argument("--version", action="version", version=__version__)
@@ -815,6 +825,7 @@ def main() -> None:
             secret_inventory=inventory,
             registry=registry,
             media_limits=_media_limits(args),
+            google_pdf_count_tokens=args.google_pdf_count_tokens,
         )
         client_token = Path(args.client_token_file).read_text(encoding="utf-8").strip()
         queue = (
@@ -830,6 +841,7 @@ def main() -> None:
             port=args.port,
             queue=queue,
             worker=queue is not None and not args.no_queue_worker,
+            serialize_work=args.serialize_work,
             admin_token=Path(args.admin_token_file).read_text().strip()
             if args.admin_token_file
             else None,

@@ -3,7 +3,9 @@
 import hmac
 import json
 import threading
+import time
 import uuid
+from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
@@ -13,6 +15,8 @@ from .discovery import DiscoveryError
 from .families import MediaLimits
 from .gateway import Gateway, GatewayError
 from .queue import DurableQueue
+
+BODY_READ_TIMEOUT = 30.0
 
 
 def _json_depth(raw: bytes, maximum: int = 32) -> None:
@@ -58,6 +62,7 @@ def make_gateway_server(
     queue: DurableQueue | None = None,
     worker: bool = False,
     admin_token: str | None = None,
+    serialize_work: bool = False,
 ) -> ThreadingHTTPServer:
     if host not in {"127.0.0.1", "::1", "localhost"}:
         raise ValueError("gateway binds loopback only")
@@ -68,6 +73,7 @@ def make_gateway_server(
     ):
         raise ValueError("separate administrator token required")
     media_limits = getattr(gateway, "media_limits", MediaLimits())
+    work_gate = threading.Lock() if serialize_work else None
     worker_state: dict[str, Any] = {
         "enabled": queue is not None and worker,
         "running": False,
@@ -80,7 +86,7 @@ def make_gateway_server(
         def log_message(self, *_args: object) -> None:
             pass
 
-        def _send(self, status: int, data: object) -> None:
+        def _send(self, status: int, data: object, *, close: bool = False) -> None:
             try:
                 body = _bounded_json(data, media_limits.result_bytes)
             except (ValueError, TypeError, OverflowError, RecursionError, UnicodeError):
@@ -89,8 +95,43 @@ def make_gateway_server(
             self.send_header("Content-Type", "application/json")
             self.send_header("Cache-Control", "no-store")
             self.send_header("Content-Length", str(len(body)))
+            if close:
+                self.close_connection = True
+                self.send_header("Connection", "close")
             self.end_headers()
             self.wfile.write(body)
+
+        def _work(self, action: Callable[[], None]) -> None:
+            if work_gate is None:
+                action()
+                return
+            if not work_gate.acquire(blocking=False):
+                self._send(503, {"error": "work_busy"}, close=True)
+                return
+            try:
+                # Also bound response writes while the gate is held.
+                self.connection.settimeout(BODY_READ_TIMEOUT)
+                action()
+            finally:
+                work_gate.release()
+
+        def _read_body(self, length: int) -> bytes:
+            if work_gate is None:
+                return self.rfile.read(length)
+            # An idle socket timeout alone can be kept alive by a slow drip.
+            deadline = time.monotonic() + BODY_READ_TIMEOUT
+            raw = bytearray()
+            while len(raw) < length:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError
+                self.connection.settimeout(remaining)
+                chunk = self.rfile.read1(length - len(raw))
+                if not chunk:
+                    raise ValueError("incomplete body")
+                raw.extend(chunk)
+            self.connection.settimeout(BODY_READ_TIMEOUT)
+            return bytes(raw)
 
         def _authorized(self) -> bool:
             supplied = self.headers.get("Authorization", "")
@@ -186,6 +227,18 @@ def make_gateway_server(
                 ):
                     result = gateway.diagnostics()
                     result["queue_worker"] = dict(worker_state)
+                    result["execution_policy"] = {
+                        "serialize_work": serialize_work,
+                        "media_input_bytes": media_limits.decoded_input_bytes,
+                        "request_bytes": media_limits.request_bytes,
+                        "result_bytes": media_limits.result_bytes,
+                        "google_pdf_count_tokens": getattr(
+                            gateway, "google_pdf_count_tokens", False
+                        ),
+                        "count_estimate_ttl_seconds": 120,
+                        "count_margin_percent": 20,
+                        "count_margin_tokens": 256,
+                    }
                 elif self.command == "GET" and parsed.path == "/v1/tasks":
                     query = parse_qs(parsed.query, keep_blank_values=True)
                     if set(query) - {"limit", "before", "provider", "model", "state"} or any(
@@ -262,11 +315,17 @@ def make_gateway_server(
 
         def do_GET(self) -> None:
             if self._authorized():
-                self._handle()
+                parts = urlsplit(self.path).path.split("/")
+                if len(parts) == 5 and parts[1:3] == ["v1", "queue"] and parts[4] == "result":
+                    self._work(self._handle)
+                else:
+                    self._handle()
 
         def do_POST(self) -> None:
-            if not self._authorized():
-                return
+            if self._authorized():
+                self._work(self._post)
+
+        def _post(self) -> None:
             try:
                 length = int(self.headers.get("Content-Length", "0"))
                 max_bytes = (
@@ -278,13 +337,16 @@ def make_gateway_server(
                     raise ValueError
                 if self.headers.get("Content-Type", "").split(";", 1)[0] != "application/json":
                     raise ValueError
-                raw = self.rfile.read(length)
+                raw = self._read_body(length)
                 _json_depth(raw)
                 body = json.loads(raw)
                 if not isinstance(body, dict):
                     raise TypeError
+            except TimeoutError:
+                self._send(408, {"error": "request_timeout"}, close=True)
+                return
             except (ValueError, TypeError, RecursionError, UnicodeError):
-                self._send(400, {"error": "invalid_request"})
+                self._send(400, {"error": "invalid_request"}, close=work_gate is not None)
                 return
             self._handle(body)
 
@@ -302,8 +364,15 @@ def make_gateway_server(
                     worker_state["running"] = True
                     while not self.stop_worker.is_set():
                         try:
-                            queue.tick(worker_id)
-                            worker_state["last_tick_at"] = stamp(gateway.clock())
+                            if work_gate is None:
+                                queue.tick(worker_id)
+                                worker_state["last_tick_at"] = stamp(gateway.clock())
+                            elif work_gate.acquire(blocking=False):
+                                try:
+                                    queue.tick(worker_id)
+                                    worker_state["last_tick_at"] = stamp(gateway.clock())
+                                finally:
+                                    work_gate.release()
                         except Exception:  # noqa: BLE001 - no content or credential logs
                             # A broken configuration stops processing; leases preserve recovery.
                             self.stop_worker.set()

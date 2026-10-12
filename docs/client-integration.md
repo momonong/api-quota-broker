@@ -2,7 +2,7 @@
 
 其他專案的後端可以透過 Gateway HTTP API 共用路由、配額帳本與供應商執行。呼叫端使用 Broker client token，供應商金鑰由 Broker 管理。這是獨立的 JSON 契約；既有 Gemini／OpenAI SDK 不能只換 base URL 或 API key 就完成接入。
 
-本文於 2026-10-11 核對程式版本 `21f064b198be75f0c506464953ff1de54e9c0f24`，供接入專案引用。文件更新不代表 ASUS 已部署這個 Git revision，也不代表任何帳號或模型目前可用。實際部署及有限 live 驗收見[維運紀錄](asus-broker-ops.md)；typed 能力與限制見[能力契約](provider-capability-expansion.md)。
+本文於 2026-10-12 隨套件 `1.1.0` 更新；PDF 實作與既有部署證據基準為 `81725056364b9c88296a38c93a745e90000fa57e`。Git／套件版本更新不表示 ASUS 已部署 `1.1.0`，也不證明帳號或模型目前可用。歷史部署與有限 live 驗收見[維運紀錄](asus-broker-ops.md)及 [PDF 接入證據](orderflow-pdf-integration.md)；typed 能力與限制見[能力契約](provider-capability-expansion.md)。
 
 ## 1. 連線與認證
 
@@ -193,17 +193,19 @@ Broker 僅在送出前失敗，或有明確「未執行」配額拒絕證據時�
 
 本地 caps、觀測餘額、已驗證免費資格是不同證據；不明、過期或不合格時應停止 admission，不能自行開啟付費 fallback。
 
-## 8. OrderFlow 後續整合界線
+## 8. OrderFlow PDF 接入與驗收界線
 
-目前交付是可引用的接入契約，**尚未修改或切換 OrderFlow**。待 OrderFlow 自己的問題修正完成，回到該專案再授權整合：
+2026-10-12 已完成 Broker `8172505` 部署、ASUS 原生 8 MiB 離線 fixture，以及唯一合成 PDF 的 OrderFlow backend live 驗收。Broker 原 key 核對為一次 countTokens、一次 generation，結果完成且用量已結算；**HTTP upload、form login、browser 與人工驗收未完成**。精確 payload、schema、部署識別與回條見 [PDF 接入與部署紀錄](orderflow-pdf-integration.md)。本次 `1.1.0` Git 收尾不重新部署或呼叫 provider。
 
-1. 核對既有 AI Studio 呼叫的輸入媒體、schema、timeout、重試、結果保存及人工確認流程，逐一對照 Broker 能力。
-2. 由 OrderFlow 後端 adapter 轉換成 Task JSON，選定同步或 queue；需要可靠重取的背景工作優先 queue。設定 base URL、受保護 client credential、provider/model／features 與明確 attempt budget。
-3. 先以 fixture 驗證成功、截斷、未知執行、pending、TTL 到期、schema 不符與重複提交；確認原有業務資料及使用者確認流程維持契約。
-4. 取得該階段授權後，才以有限真實樣本驗收連線、模型品質及帳本。工程成功與使用者接受分開記錄。
-5. 若保留原 AI Studio 實作，以明確配置選擇路徑；一個業務 job 固定一條路徑，禁止雙送或未知結果後自動切回直連。
+PDF 使用 typed `text_generation`，要求 `document_input`／`structured_output`；接入端須解析 `result.text` 並驗證 schema、截斷與業務內容。已知或未知工作都保持原 queue key，不切回直連、不換 provider、不以新 key 補取結果；結果仍需經業務人工確認。
 
-這份文件不授權 OrderFlow 改碼、部署、服務／網路變更或真實 provider 呼叫。
+服務明確啟用 `--google-pdf-count-tokens` 後，限定 Google／`gemini-3.5-flash-lite` 的 PDF 路徑才可使用持久化預檢。countTokens 綁定完整 generation payload，輸入 hold 為 `ceil(count × 1.2) + 256`，有效期 120 秒；admission 須保留 count 與 generation 共兩次 request 的空間。receipt 缺失、未知或過期不自動重做計數／生成；provider 用量及帳號餘額仍須分開判讀。
+
+部署證據的 media/request/result 上限為 **8/16/4 MiB**，與套件通用預設不同。從 diagnostics.execution_policy 核對實例的限制及 `--serialize-work`、計數功能是否啟用。序列 gate 涵蓋 POST body 讀取、worker 與 result 解密／回應，小型 metadata 查詢保持可用。
+
+只有完整、精確的 HTTP 503 `{"error":"work_busy"}`，含 JSON Content-Type、正確 Content-Length 與 Connection: close，才表示該 POST 在讀 body／提交前被拒絕，可沿原 job/key 有限退避再送。BrokenPipe 本身不是此證據；須從同一 socket 讀得完整回應。建議 1/2/4/8 秒退避、8 秒封頂，總計 240 秒或原 deadline 較短者；不完整回應、其他 503 或 timeout 仍按未知工作處理。result GET 僅重取原 key。
+
+這份文件不授權新的 OrderFlow 改碼、部署、服務／網路變更或真實 provider 呼叫。
 
 ## 9. 可核對的實作與驗證範圍
 
@@ -215,6 +217,6 @@ Broker 僅在送出前失敗，或有明確「未執行」配額拒絕證據時�
 | Typed messages／options／結果 | [families.py](../src/quota_broker/families.py) 與 [family_adapters.py](../src/quota_broker/family_adapters.py) |
 | CLI 與操作範例 | [v1-local-guide.md](v1-local-guide.md) |
 
-2026-10-11 文件驗證解析全部 6 個 JSON 區塊，並以本機 loopback Gateway、暫存資料庫及注入的 provider fixture 執行 3 個請求範例。核對同步／queue／typed response 節錄、同 key 不重播與衝突、pending／TTL 錯誤、結果重取、priority 邊界及 schema 轉換；本地文件連結也已核對。驗證使用既有 [HTTP fixture helpers](../tests/test_framework.py) 與 [typed registry helpers](../tests/test_family_gateway.py)，socket guard 僅允許 loopback 連線。本次未重跑完整測試套件、不消耗 provider 配額，也不代表 live 模型行為或 OrderFlow 已接入。
+2026-10-11 文件驗證解析全部 6 個 JSON 區塊，並以本機 loopback Gateway、暫存資料庫及注入的 provider fixture 執行 3 個請求範例。核對同步／queue／typed response 節錄、同 key 不重播與衝突、pending／TTL 錯誤、結果重取、priority 邊界及 schema 轉換；本地文件連結也已核對。驗證使用既有 [HTTP fixture helpers](../tests/test_framework.py) 與 [typed registry helpers](../tests/test_family_gateway.py)，socket guard 僅允許 loopback 連線。該次文件驗證未重跑完整測試套件、不消耗 provider 配額，也不能單獨證明 live 模型行為或 OrderFlow 接入。
 
-既有 ASUS live 證據停在 2026-10-09 的有限範圍：Groq／Google 用量已結算，Cloudflare 缺 Neurons 用量而保留 hold／unknown；有服務重啟與短時間 idle 觀察，沒有主機重開機或全部七家新一輪 live 驗收。本次文件工作未連 ASUS，也未重新驗證其當前健康或部署 revision。引用時應同時保留此限制與[原始維運證據入口](asus-broker-ops.md)。
+2026-10-09 的七家代表性驗證與限制保留於[原始維運紀錄](asus-broker-ops.md)。2026-10-12 新增的 PDF backend 證據只涵蓋上述單一合成工作，不擴張成全部模型、帳號、瀏覽器流程或人工驗收。本次版本收尾未連 ASUS，未刷新主機健康、部署 revision 或官方餘額；引用時須保留證據日期與範圍。

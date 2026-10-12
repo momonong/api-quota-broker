@@ -15,7 +15,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from .config import SecretInventory, Target
+from . import token_preflight
+from .config import Quota, SecretInventory, Target
 from .core import Broker, BrokerError, canonical, stamp, utcnow
 from .discovery import DiscoveryStore
 from .discovery_sources import candidate_bundle
@@ -331,6 +332,7 @@ class Gateway:
         family_transport: Callable[
             [FamilyRequest, float, int], tuple[int, dict[str, str], bytes]
         ] = send_family_request,
+        google_pdf_count_tokens: bool = False,
     ) -> None:
         if len(digest_key) < 32:
             raise ValueError("persisted HMAC key must be at least 32 bytes")
@@ -347,6 +349,7 @@ class Gateway:
         self.family_registry = family_registry or FamilyRegistry.builtin()
         self.media_limits = media_limits or MediaLimits()
         self.family_transport = family_transport
+        self.google_pdf_count_tokens = google_pdf_count_tokens
         self._discovery: DiscoveryStore | None = None
         self.broker = Broker(db, targets, clock, self.registry)
         self.routing = RoutingState(self.db)
@@ -355,6 +358,7 @@ class Gateway:
         self.broker.reservation_policy = self._hold_observations
         with closing(sqlite3.connect(self.db)) as con, con:
             con.execute("BEGIN IMMEDIATE")
+            token_preflight.initialize(con)
             con.execute("""
                 CREATE TABLE IF NOT EXISTS gateway_tasks (
                     request_key TEXT PRIMARY KEY, payload_hmac TEXT NOT NULL,
@@ -587,6 +591,14 @@ class Gateway:
                 "confidence": "configured_evidence" if evidence.value is not None else "unknown",
             }
             observations.append(self.routing.with_holds(con, scope, item, now, exclude_reservation))
+        for item in observations:
+            if item["metric"] == "requests" and item.get("effective_remaining") is not None:
+                auxiliary = con.execute(
+                    "SELECT count(*) FROM gateway_token_counts WHERE quota_scope=? AND created_at>=?",
+                    (scope, item.get("as_of") or ""),
+                ).fetchone()[0]
+                item["auxiliary_request_holds"] = auxiliary
+                item["effective_remaining"] = max(0, item["effective_remaining"] - auxiliary)
         return observations
 
     def _permit_dispatch(
@@ -622,10 +634,17 @@ class Gateway:
                 "WHERE request_key=? ORDER BY attempt_no",
                 (request_key,),
             ).fetchall()
+            count = con.execute(
+                "SELECT target_id,model,state,created_at,completed_at,expires_at,"
+                "counted_tokens,estimated_tokens,http_status,provenance "
+                "FROM gateway_token_counts WHERE request_key=?",
+                (request_key,),
+            ).fetchone()
         if row is None:
             raise GatewayError("not_found", "task not found")
         result = dict(row)
         result["attempts"] = [dict(attempt) for attempt in attempts]
+        result["token_preflight"] = dict(count) if count else None
         for item in [result, *result["attempts"]]:
             resources = item.pop("reported_resources_json")
             if resources is not None:
@@ -935,6 +954,12 @@ class Gateway:
         }
         model = self.registry.resolve(target.model, target.provider)
         reasons = []
+        count_scope = target.shared_concurrency_scope or target.id
+        if con.execute(
+            "SELECT 1 FROM gateway_token_counts WHERE scope=? AND state='intent' AND expires_at>?",
+            (count_scope, stamp(now)),
+        ).fetchone():
+            reasons.append("token_preflight_busy")
         if data["provider"] not in (None, target.provider):
             reasons.append("provider_constraint")
         if data["model"] not in (None, target.model):
@@ -1062,7 +1087,7 @@ class Gateway:
             except BrokerError:
                 reasons.append("estimation_unconfigured")
                 continue
-            used, _ = self.broker._used(con, quota, now, cost)
+            used, _ = self._quota_used(con, quota, now, cost)
             if used + cost > quota.limit:
                 reasons.append("local_cap:" + quota.bucket)
         return reasons
@@ -1124,7 +1149,7 @@ class Gateway:
                 except BrokerError:
                     permanent = True
                     continue
-                used, wait = self.broker._used(con, quota, now, cost)
+                used, wait = self._quota_used(con, quota, now, cost)
                 pressure.append(used / quota.limit)
                 if used + cost > quota.limit:
                     if cost > quota.limit:
@@ -1251,7 +1276,159 @@ class Gateway:
         data, bound = self._execution_data(data)
         with self.broker._tx() as con:
             self.broker._expire_unsent(con, self.clock())
+            if self.google_pdf_count_tokens and token_preflight.needs_count(data):
+                return self._count_plan(con, data)
             return self._route_plan(con, data, bound)
+
+    def _quota_used(
+        self, con: sqlite3.Connection, quota: Quota, now: datetime, cost: int
+    ) -> tuple[int, str | None]:
+        used, wait = self.broker._used(con, quota, now, cost)
+        auxiliary, auxiliary_wait = token_preflight.used(con, quota, now)
+        waits = [value for value in (wait, auxiliary_wait) if value]
+        return used + auxiliary, max(waits) if waits else None
+
+    def _count_plan(self, con: sqlite3.Connection, data: dict[str, Any]) -> dict[str, Any]:
+        # The minimum policy allowance permits checking non-token gates locally.
+        # It is never admitted as a generation estimate or exposed as one.
+        probe = {**data, "resource_bounds": {**data["resource_bounds"], "input_tokens": 256}}
+        plan = self._route_plan(con, probe, 256)
+        target_id = plan["selected_target_id"]
+        if target_id is not None:
+            target = next(t for t in self.targets if t.id == target_id)
+            for observation in self._quota_observations(con, target, self.clock()):
+                if (
+                    observation["metric"] == "requests"
+                    and observation["current"]
+                    and observation["effective_remaining"] is not None
+                    and observation["effective_remaining"] < 2
+                ):
+                    target_id = None
+                    wait = observation.get("reset_at") or observation.get("valid_until")
+                    plan.update(
+                        temporary=bool(wait), permanent_rejection=not bool(wait), next_retry_at=wait
+                    )
+                    break
+            # Keep headroom for both auxiliary POST and generation before sending.
+            for quota in target.quotas:
+                if quota.metric == "requests":
+                    used, wait = self._quota_used(con, quota, self.clock(), 2)
+                    if used + 2 > quota.limit:
+                        target_id = None
+                        plan.update(
+                            temporary=quota.limit >= 2,
+                            permanent_rejection=quota.limit < 2,
+                            next_retry_at=wait,
+                        )
+                        break
+        plan.update(
+            selected_target_id=None,
+            preflight_target_id=target_id,
+            preflight_required=target_id is not None,
+            estimated_input_tokens=None,
+        )
+        for row in plan["candidates"]:
+            if row["eligible"]:
+                row["eligible"] = False
+                row["reasons"].append("token_preflight_required")
+        return plan
+
+    def _count_pdf(
+        self,
+        data: dict[str, Any],
+        execution_deadline: datetime,
+        dispatch_guard: Callable[[sqlite3.Connection], None] | None,
+    ) -> tuple[dict[str, Any], int, str, str, datetime]:
+        key = data["request_key"]
+        with self.broker._tx() as con:
+            plan = self._count_plan(con, data)
+        target_id = plan["preflight_target_id"]
+        if target_id is None:
+            raise GatewayError("token_preflight_unavailable", "token preflight unavailable")
+        target = next(t for t in self.targets if t.id == target_id)
+        spec = self.registry.resolve(target.model, target.provider)
+        assert target.secret_ref is not None
+        secret = self.secret_resolver(target.secret_ref)
+        if not isinstance(secret, str) or not secret:
+            raise ValueError("missing credential")
+        generation = self.registry.request_task(spec, target.account_id, secret, data)
+        request = token_preflight.count_request(generation)
+        if len(request.body) > self.media_limits.request_bytes:
+            raise ValueError("count request exceeds limit")
+        wire_hmac = self._wire_hmac(target, generation)
+        del generation
+        with self.broker._tx() as con:
+            if dispatch_guard is not None:
+                dispatch_guard(con)
+            if self.clock() >= execution_deadline:
+                raise ValueError("deadline elapsed")
+            if self._count_plan(con, data)["preflight_target_id"] != target_id:
+                raise ValueError("preflight route changed")
+            con.execute(
+                "INSERT INTO gateway_token_counts(request_key,target_id,scope,quota_scope,model,wire_hmac,"
+                "state,created_at,expires_at) VALUES(?,?,?,?,?,?,'intent',?,?)",
+                (
+                    key,
+                    target.id,
+                    target.shared_concurrency_scope or target.id,
+                    self.broker._quota_scope(json.loads(self.broker._snapshot(target))),
+                    target.model,
+                    wire_hmac,
+                    stamp(self.clock()),
+                    stamp(min(execution_deadline, self.clock() + timedelta(seconds=30))),
+                ),
+            )
+            token_preflight.charge(con, key, target.quotas, self.clock())
+        state, status, count, bound = "unknown", None, None, None
+        try:
+            timeout = min(30.0, max(0.001, (execution_deadline - self.clock()).total_seconds()))
+            status, headers, response = self.family_transport(
+                request, timeout, token_preflight.RESPONSE_BYTES
+            )
+            if status == 200:
+                if self.registry.response_reflects(response, headers, (secret, target.account_id)):
+                    raise ValueError("invalid response")
+                count, bound = token_preflight.estimate(response)
+                state = "completed"
+            elif 400 <= status < 500:
+                state = "rejected"
+        except Exception:  # noqa: BLE001 - never persist raw provider/secret exceptions
+            state = "unknown"
+        expires = self.clock() + timedelta(seconds=token_preflight.TTL_SECONDS)
+        with self.broker._tx() as con:
+            con.execute(
+                "UPDATE gateway_token_counts SET state=?,completed_at=?,expires_at=?,"
+                "counted_tokens=?,estimated_tokens=?,http_status=? WHERE request_key=?",
+                (
+                    state,
+                    stamp(self.clock()),
+                    stamp(expires) if state == "completed" else None,
+                    count,
+                    bound,
+                    status,
+                    key,
+                ),
+            )
+        if state != "completed" or bound is None:
+            raise GatewayError("token_preflight_" + state, "token preflight did not complete")
+        resources = {
+            **data["resource_bounds"],
+            "input_tokens": bound,
+            "total_tokens": bound + data["max_output_tokens"],
+        }
+        return {**data, "resource_bounds": resources}, bound, target_id, wire_hmac, expires
+
+    def _wire_hmac(self, target: Target, request: FamilyRequest) -> str:
+        fingerprint = hmac.new(self.digest_key, digestmod=hashlib.sha256)
+        for piece in (
+            self.broker._snapshot(target).encode(),
+            request.url.encode(),
+            request.content_type.encode(),
+            request.body,
+        ):
+            fingerprint.update(str(len(piece)).encode() + b":")
+            fingerprint.update(piece)
+        return fingerprint.hexdigest()
 
     def _update(self, key: str, values: dict[str, Any]) -> None:
         allowed = set(COLUMNS) - {"request_key", "created_at"}
@@ -1288,6 +1465,8 @@ class Gateway:
         if row is None or tuple(row) != ("preparing", None, None, None, None, None, None):
             return False
         if con.execute("SELECT 1 FROM gateway_attempts WHERE request_key=?", (key,)).fetchone():
+            return False
+        if con.execute("SELECT 1 FROM gateway_token_counts WHERE request_key=?", (key,)).fetchone():
             return False
         # Covers the crash gap after ledger reserve but before Gateway links it.
         prefix = "gw:" + key + ":"
@@ -1342,6 +1521,24 @@ class Gateway:
             execution_deadline = min(execution_deadline, datetime.fromisoformat(data["deadline"]))
         typed = isinstance(data["input"], dict)
         data, input_bound = self._execution_data(data)
+        counted_target = counted_hmac = counted_expires = None
+        if self.google_pdf_count_tokens and token_preflight.needs_count(data):
+            try:
+                data, input_bound, counted_target, counted_hmac, counted_expires = self._count_pdf(
+                    data, execution_deadline, dispatch_guard
+                )
+            except Exception as exc:  # noqa: BLE001 - one durable preflight, no fallback/retry
+                self._update(
+                    key,
+                    {
+                        "state": "rejected",
+                        "error_code": exc.code
+                        if isinstance(exc, GatewayError)
+                        else "token_preflight_unavailable",
+                        "completed_at": stamp(self.clock()),
+                    },
+                )
+                return self._view(key)
         content_strings = (
             self._content_strings([data["input"], data.get("options", {})])
             if typed
@@ -1356,6 +1553,8 @@ class Gateway:
             else None
         )
         excluded: list[str] = []
+        if counted_target is not None:
+            excluded = [target.id for target in self.targets if target.id != counted_target]
         for candidate in self.targets:
             try:
                 self.registry.admit(
@@ -1521,11 +1720,23 @@ class Gateway:
                     target: Target = target,
                     reservation_id: str = plan["reservation_id"],
                     effective_neurons: int | None = effective_neurons,
+                    family_request: FamilyRequest | None = family_request,
                 ) -> None:
                     if dispatch_guard is not None:
                         dispatch_guard(con)
                     if self.clock() >= execution_deadline:
                         raise ValueError("task deadline elapsed")
+                    if counted_target is not None and (
+                        target.id != counted_target
+                        or counted_expires is None
+                        or self.clock() >= counted_expires
+                        or family_request is None
+                        or not hmac.compare_digest(
+                            counted_hmac or "",
+                            self._wire_hmac(target, family_request),
+                        )
+                    ):
+                        raise ValueError("token estimate expired or wire changed")
                     for observation in self._quota_observations(
                         con, target, self.clock(), reservation_id
                     ):

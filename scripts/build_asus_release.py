@@ -46,6 +46,7 @@ SOURCE_FILES = (
     "src/quota_broker/retry.py",
     "src/quota_broker/routing.py",
     "src/quota_broker/server.py",
+    "src/quota_broker/token_preflight.py",
 )
 DEPLOY_FILES = (
     "deploy/asus/acceptance.py",

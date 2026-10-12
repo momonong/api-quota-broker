@@ -1,12 +1,18 @@
 # API Quota Broker
 
-Local control plane for trusted, cooperative clients using an extensible resource pool, initially seven official API providers: NVIDIA, Gemini, Groq, Mistral, Cloudflare, OpenRouter and OCR.space. The **v1.0 Gateway** uses one authenticated Gateway for text generation, translation and small-image OCR: match capability and input bounds, order verified free capacity, atomically reserve shared quotas, dispatch under strict non-replay rules, settle SQLite usage, and query through CLI/API. The ASUS loopback instance was deployed and passed bounded live acceptance on 2026-10-09. There is no paid fallback.
+Local control plane for trusted, cooperative clients using an extensible resource pool, initially seven official API providers: NVIDIA, Gemini, Groq, Mistral, Cloudflare, OpenRouter and OCR.space. The **v1.1 Gateway** uses one authenticated Gateway for text generation, translation and small-image OCR: match capability and input bounds, order verified free capacity, atomically reserve shared quotas, dispatch under strict non-replay rules, settle SQLite usage, and query through CLI/API. The ASUS loopback instance was deployed and passed bounded live acceptance on 2026-10-09. There is no paid fallback.
 
 The instance-local trusted Registry adds compatible providers/models by manifest; registered adapters supply protocol admission, error, usage and quota semantics. Persistent routing health and an explicitly enabled encrypted durable queue support bounded waiting and restart. See the [core acceptance contract](docs/v1-core-contract.md).
 
-For another project's backend, start with the [client integration guide](docs/client-integration.md): authentication, synchronous and queued requests, result retention, error handling, and the future OrderFlow integration boundary. The `gateway-serve` / `gateway` interface is the primary v1 path; it has its own JSON contract and is not a Gemini/OpenAI SDK drop-in endpoint.
+For another project's backend, start with the [client integration guide](docs/client-integration.md): authentication, synchronous and queued requests, result retention, error handling, and the verified OrderFlow backend integration and remaining acceptance scope. The `gateway-serve` / `gateway` interface is the primary v1 path; it has its own JSON contract and is not a Gemini/OpenAI SDK drop-in endpoint.
 
 See also the [ASUS operations and acceptance record](docs/asus-broker-ops.md), [capability and discovery contracts](docs/provider-capability-expansion.md), [v1.0 local usage guide](docs/v1-local-guide.md), and [representative live evidence](docs/v1-seven-provider-readiness.md). The older `serve`, `DirectClient`, and separate NVIDIA executor sections below describe compatible historical interfaces, not the recommended client integration path.
+
+## Version 1.1.0
+
+This compatible release adds Google PDF input with structured output, opt-in durable `countTokens` preflight (`--google-pdf-count-tokens`), and opt-in serialized request/worker/result processing (`--serialize-work`). Preflight binds the complete generation request, reserves a conservative input hold, accounts for the extra request, and does not retry unknown work. Queue metadata reads avoid loading large encrypted payloads/results. See the [PDF contract and evidence](docs/orderflow-pdf-integration.md) for limits and exact `work_busy` retry handling.
+
+On 2026-10-12, ASUS source `8172505` (package version `1.0.0`) passed an isolated 8 MiB PDF fixture and one bounded OrderFlow backend PDF live request, with generation usage settled. HTTP upload, form login, browser flow and human acceptance remain unverified. Version `1.1.0` records the Git/package release; this closeout does not deploy it or refresh host/account evidence.
 
 ## Reproduce locally
 
@@ -62,7 +68,7 @@ The one-shot Gemma and Riva scripts bypass that formal admission and SQLite ledg
 
 See [provider sources](docs/provider-sources.md) for primary source links and the 2026-09-25 review. Google Gemini Developer API and Cloudflare Workers AI retain their direct-client v0.1 behavior. NVIDIA now has a separate fixed-route, non-streaming executor candidate, disabled until verified metadata is entered. This legacy path has no prompt/answer persistence, provider key storage, Redis, LLM ranking or paid fallback. The v1 queue below adds encrypted payload/result retention.
 
-## Unified gateway v1.0
+## Unified gateway v1.1
 
 `gateway-serve` joins routing and provider execution behind **one required-auth loopback API**. `gateway.example.json` has ten disabled targets across seven providers: the successful representatives Gemini 3.5 Flash-Lite, Cloudflare Llama 3.2 1B, Groq GPT-OSS 20B, Mistral Ministral 3B, NVIDIA Nemotron Lightning, OpenRouter LFM 2.5 free and OCR.space Engine 2, plus historical NVIDIA Riva/Gemma and Mistral Small. All account eligibility remains unverified in the example. A model's `author` is distinct from its `provider`; `google/gemma-4-31b-it` consumes NVIDIA API Catalog capacity, and `openai/gpt-oss-20b` uses Groq.
 
