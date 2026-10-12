@@ -16,7 +16,7 @@ ASUS 唯讀檢查日期為台灣時間 2026-10-12；用既有 `aqb` 做 catalog�
 | 現行 features | `text_generation`, `text`；未宣告 PDF／structured |
 | 帳號證據 | free_eligible=true、billing_enabled=false、期限 2026-10-22T03:53:20.337024+00:00；不是官方即時餘額 |
 | 本地 caps | requests 3/min、100/day；input_tokens 131,328/min；shared concurrency 1 |
-| 文字輸出 target cap | 8,192；本次一筆合成 smoke 限 2,048，不更動正式 cap |
+| 文字輸出 target cap | 8,192；更新後的唯一合成 live 沿正式 HTTP 流程使用此既有上限 |
 | Queue worker | enabled=true、running=true、error_code=null |
 | 最低 readiness | credential_inventory_unknown；不可推定 key 不存在或可用 |
 | 現場媒體／HTTP／結果上限 | 1 MiB / 2 MiB / 4 MiB，與套件預設 8 / 16 / 32 MiB 不同 |
@@ -56,7 +56,7 @@ PDF 擷取使用 **`capability=text_generation` 的 typed messages**；不是 le
     }
   },
   "requirements": {"features": ["document_input", "structured_output"]},
-  "max_output_tokens": 2048,
+  "max_output_tokens": 8192,
   "max_attempts": 1,
   "wait_policy": "reject"
 }
@@ -104,7 +104,7 @@ PDF 缺 input_tokens 估值時預設仍拒絕。服務明確啟用 `--google-pdf
 
 Google count/generation transport 各最多 30 秒，Gateway execution budget 與 queue execution lease 為 180 秒；gate 本身沒有整個 worker 的強制 wall watchdog，不能把 180 秒稱為含所有 DB/解析操作的絕對上限。PDF parser 保留獨立 256 MiB / 3 CPU 秒 / 5 秒 wall / 最多 128 頁限制。
 
-[資源量測工具](../scripts/measure_pdf_memory.py) 使用乾淨 spawn Broker，client 在另一程序；完整 HTTP queue→count→generation→result，沿用真 transport 的 base64/config/子程序管道，仅把 HTTP child 替換成不連網 fixture。恰好 8,388,608 bytes 合法 PDF，HTTP body 11,185,446 bytes。兩次 5ms 採樣的 Broker 子樹 RSS 峰值 262,176 / 262,336 KiB，PSS 242,979 / 243,073 KiB，count/generation 各一次，正常 output cap 8192、smoke 2048。這不是 ASUS cgroup peak 或 TLS/live 驗收。
+[資源量測工具](../scripts/measure_pdf_memory.py) 使用乾淨 spawn Broker，client 在另一程序；完整 HTTP queue→count→generation→result，沿用真 transport 的 base64/config/子程序管道，仅把 HTTP child 替換成不連網 fixture。恰好 8,388,608 bytes 合法 PDF，HTTP body 11,185,446 bytes。兩次 5ms 採樣的 Broker 子樹 RSS 峰值 262,176 / 262,336 KiB，PSS 242,979 / 243,073 KiB，count/generation 各一次，正常 output cap 8192、離線 fixture smoke 2048。這不是 ASUS cgroup peak 或 TLS/live 驗收。
 
 ASUS 原生隔離測量已通過同一 whitespace PDF（SHA256 `d40c321fbe27105c07781b4a77812a3791fab48dade1141c04154b8de74d7b13`）：Broker 子樹獨立 CPU50% / MemoryHigh384M / MemoryMax512M / Swap0 / Tasks32 / NOFILE128；client/sampler 在另一無 CPU 限制 user unit，每秒 GET metadata。完整 queue→count fixture→generation fixture→result 42.821 秒成功，count/gen 各一，零真 provider POST；5 次 parser wall 3.096–3.646 秒、CPU 1.452–1.512 秒，原限制未變。cgroup MemoryPeak 237,977,600 bytes、SwapPeak0；5ms 子樹 RSS/PSS 峰值 268,028 / 234,336 KiB。Python 啟動前的少量頁面仍歸原 client cgroup，故同列子樹 RSS，不能將 cgroup peak 當作完整部署峰值。OrderFlow PID 未變，約35 MiB；不代表同時高負載壓測或 TLS/live 驗收。
 
@@ -130,7 +130,9 @@ ASUS 原生隔離測量已通過同一 whitespace PDF（SHA256 `d40c321fbe27105c
 - count/queue/acceptance/prerequisite 修正後定向108 passed；metadata投影新增後 queue/count/work-gate 73 passed；prerequisite lock drift/recovery 14 passed。
 - `uv run --locked mypy src`：27 個來源檔通過；修改檔 Ruff check/format 通過。不把局部修正後結果宣稱為另一次全套。
 
-有限 live 候選由 OrderFlow 保存一份無私人資料、可人工核對的合成 PDF、其 hash、固定 prompt/schema 與預期品項，建立一個持久化業務 job。只用此既有 Google provider/key/model，max_attempts=1、max_output_tokens≤2048；以同 payload explain 核對 preflight target 與非 token gates，再由持久化工作進行 count 與 generation。2026-10-12 新的人類批准涵蓋必要 count 預檢及唯一合成 PDF 生成；只有 OrderFlow 原 task 發起該工作，Broker 不另作 generation probe。
+更新後的有限 live 計畫由 OrderFlow 保存一份無私人資料、可人工核對、含 1–2 個品項的合成 PDF、其 hash、固定 prompt/schema 與預期品項，沿原有 HTTP upload→recognition 建立一個持久化業務 job。只用此既有 Google provider/key/model，max_attempts=1，沿一般正式 max_output_tokens=8192 上限；以同完整 payload explain 核對 preflight target 與非 token gates，再由持久化工作進行必要 count 與唯一一次 generation，實際輸出用量據實記錄。不得為測試新增產品 API。2026-10-12 新的人類批准涵蓋必要 count 預檢及唯一合成 PDF 生成；只有 OrderFlow 原 task 發起該工作，Broker 不另作 generation probe。
+
+2026-10-12 main 已更新先前的 smoke≤2048 執行候選：兩處人類批准原文均未指定 2048 硬上限，為驗證真 HTTP 入口改沿既有正式 8192 設定。已完成的離線資源 fixture 仍保留原 2048 設定與證據，不將其改述為 8192 live 驗證。這只更新驗收安排與文件，不修改 Broker source/config 或重部署。
 
 任一未知結果保留原 job/execution/收據並停止新派送；只查原 job/result。結果需通過完成 metadata、JSON/schema、預期品項與人工確認；用量結算另看 provider 回報。合成成功不代表私人文件、全部大小／頁數、一般大量品項或使用者驗收完成。
 
