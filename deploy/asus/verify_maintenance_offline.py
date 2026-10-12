@@ -45,7 +45,11 @@ def main():
     if hashlib.sha256(raw).hexdigest() != profile["archive_sha256"]:
         raise ValueError("source_identity")
     checked = verifier.verify_archive(raw, profile["manifest_sha256"])
-    ops.wheel_files((args.packet / "project.whl").read_bytes(), checked["release"]["files"])
+    ops.wheel_files(
+        (args.packet / "project.whl").read_bytes(),
+        checked["release"]["files"],
+        checked["release"]["package_version"],
+    )
     for op in protocol.OPERATIONS:
         request = {"operation": op, "request_id": "a" * 32}
         entry.request(protocol.canonical(request))

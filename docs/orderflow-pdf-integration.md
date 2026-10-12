@@ -2,7 +2,9 @@
 
 狀態：Broker `8172505` 已於 2026-10-12 部署至 ASUS，8 MiB 原生離線 fixture 與部署後唯讀核對通過；**backend-only 唯一合成 PDF live 已有 OrderFlow 成功回條，Broker 原 key 的計數／生成／用量唯讀核對通過；HTTP upload、form login、browser 與人工驗收未完成**。本階段沿既有 Google provider/key，以 `gemini-3.5-flash-lite` 為候選；不沿用 OrderFlow 舊直連的 `gemini-3.1-flash-lite` 作為已驗證 Broker 模型。
 
-接入契約基準為 `2145d9ba7b47c153af2022102439d67a1c789365` 的 [README](../README.md) 與 [client-integration.md](client-integration.md)。此頁及能力修改是其後的工作分支；Broker 固定版已部署，尚未合併、推送或發布。固定合作指南版本為 `c7fbf48250a44baf2638c22470410012109efc5d`。OrderFlow 的程式由其既有專案團隊修改，本候選不改該 repo。
+接入契約基準為 `2145d9ba7b47c153af2022102439d67a1c789365` 的 [README](../README.md) 與 [client-integration.md](client-integration.md)。此頁記錄其後的接入與部署階段；當時 Broker 固定版已部署，尚未合併、推送或發布。該階段固定合作指南版本為 `c7fbf48250a44baf2638c22470410012109efc5d`。OrderFlow 的程式由其既有專案團隊修改，本候選不改該 repo。
+
+版本收尾：套件升為 `1.1.0`，README 與接入指南同步更新；本次只處理 Git／版本，不重新部署或增加 live 請求。下列 runtime revision、回條與資源證據保留原日期及範圍。
 
 ## 已核對的現場與缺口
 

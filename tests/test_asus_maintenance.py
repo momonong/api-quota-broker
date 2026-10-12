@@ -241,8 +241,11 @@ def test_wheel_identity_matches_release():
     files = builder.packet()
     with tarfile.open(builder.NORMAL / "source.tar") as archive:
         manifest = json.loads(archive.extractfile("release-manifest.json").read())
-    wheel = ops.wheel_files(files["project.whl"], manifest["files"])
-    assert b"Version: 1.0.0\n" in wheel["api_quota_broker-1.0.0.dist-info/METADATA"]
+    version = manifest["package_version"]
+    wheel = ops.wheel_files(files["project.whl"], manifest["files"], version)
+    assert (
+        f"Version: {version}\n".encode() in wheel[f"api_quota_broker-{version}.dist-info/METADATA"]
+    )
 
 
 def test_transaction_failure_restores_files_not_database():
@@ -444,7 +447,14 @@ def filesystem_transaction(tmp_path, monkeypatch):
     verifier = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(verifier)
     archive = (builder.NORMAL / "source.tar").read_bytes()
-    monkeypatch.setattr(ops.Native, "upload", lambda _: (archive, verifier))
+
+    def fixture_upload(native):
+        # Preserve upload's version discovery while replacing only file transport.
+        verified = verifier.verify_archive(archive, native.manifest_sha)
+        native.version = verified["release"]["package_version"]
+        return archive, verifier
+
+    monkeypatch.setattr(ops.Native, "upload", fixture_upload)
     # Only route writes for the one fixed wrapper to the fixture namespace.
     original_path = ops.Path
 
@@ -552,7 +562,7 @@ def later_packet():
     with zipfile.ZipFile(io.BytesIO(files["project.whl"])) as wheel:
         content = {name: wheel.read(name) for name in wheel.namelist()}
     content["quota_broker/__init__.py"] = payload["src/quota_broker/__init__.py"]
-    record = "api_quota_broker-1.0.0.dist-info/RECORD"
+    record = f"api_quota_broker-{manifest['package_version']}.dist-info/RECORD"
     rows = []
     for name, raw in content.items():
         rows.append(
