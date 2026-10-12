@@ -1,8 +1,8 @@
-# OrderFlow PDF 接入候選（2026-10-12）
+# OrderFlow PDF 接入與 Broker 部署（2026-10-12）
 
-狀態：本機能力與契約 fixture 已驗證，**尚未部署或進行 PDF live 驗收，不能宣稱 OrderFlow 已接通**。本階段沿既有 Google provider/key，以 `gemini-3.5-flash-lite` 為候選；不沿用 OrderFlow 舊直連的 `gemini-3.1-flash-lite` 作為已驗證 Broker 模型。
+狀態：Broker `8172505` 已於 2026-10-12 部署至 ASUS，8 MiB 原生離線 fixture 與部署後唯讀核對通過；**OrderFlow 切換與唯一 PDF live 驗收仍待其既有 task 執行，不能宣稱整合已接通**。本階段沿既有 Google provider/key，以 `gemini-3.5-flash-lite` 為候選；不沿用 OrderFlow 舊直連的 `gemini-3.1-flash-lite` 作為已驗證 Broker 模型。
 
-接入契約基準為 `2145d9ba7b47c153af2022102439d67a1c789365` 的 [README](../README.md) 與 [client-integration.md](client-integration.md)。此頁及能力修改是其後的工作分支候選，尚未部署或發布。固定合作指南版本為 `c7fbf48250a44baf2638c22470410012109efc5d`。OrderFlow 的程式由其既有專案團隊修改，本候選不改該 repo。
+接入契約基準為 `2145d9ba7b47c153af2022102439d67a1c789365` 的 [README](../README.md) 與 [client-integration.md](client-integration.md)。此頁及能力修改是其後的工作分支；Broker 固定版已部署，尚未合併、推送或發布。固定合作指南版本為 `c7fbf48250a44baf2638c22470410012109efc5d`。OrderFlow 的程式由其既有專案團隊修改，本候選不改該 repo。
 
 ## 已核對的現場與缺口
 
@@ -148,3 +148,18 @@ ASUS 原生隔離測量已通過同一 whitespace PDF（SHA256 `d40c321fbe27105c
 | deploy 可判定失敗 | 既有 transaction 恢復原 installed unit/current/active；prep 模板仍為新候選，package hash仍自洽 | 查原 deployment receipt；新操作需可判定原狀態，不盲重送 |
 
 prep 不改 gateway.json，故 Google 正式 output 8192、input/request caps、免費資格及歷史未知 hold 保留。新來源採加法 schema initialization，原 ledger/queue 全部保留。最終 source SHA、artifact/unit/config hash、runtime current、備份與原生驗證回條在部署完成後另記，不能以本頁候選當現場證据。
+
+
+## Broker 已部署回條（2026-10-12T05:55:13Z）
+
+- 固定來源：`81725056364b9c88296a38c93a745e90000fa57e`，artifact payload_dirty=false；33 個既有 untracked 歷史檔案 hash 均保留。未 merge/push。
+- 現行 release：`/opt/api-quota-broker/releases/release-d7fccdccbd40e6b9c3d25746bf46b2b1ff1b605b3d37f13d7beec7409a655afa`。遠端 release manifest 與固定 archive payload 逐項一致。
+- installed unit / active unit pin：`cba27e1e58c4ff2c63b2b0d76c45e291c8815f1c51967217972342f202bf8ab8`；config SHA256 `072f1e79252a27fdeaa4fe06fe1c89c31cb95240efbfd227edf1e2f343ae8831`。
+- deploy request `16d6d1194db8405883bb45ec9bea4f75`：maintenance_state=passed、code=ok、queue_jobs=1、database_restored=false、provider_posts=0。root prerequisite backup `/var/backups/api-quota-broker/pdf-integration-20261012-r1`；deployment backup `/var/lib/api-quota-broker-ops/backup-16d6d1194db8405883bb45ec9bea4f75`，原 ledger/queue 保列交易通過。
+- Broker active、PID473639、NRestarts0；OrderFlow PID460208 未變；ops socket active。Broker CPU50%、High384M/Max512M/Swap0、Tasks32、NOFILE128，無 drop-in。
+- HTTP execution_policy 已反映 count/gate=true、media/request/result=8/16/4MiB、TTL120、margin20%+256；worker enabled/running=true、error=null。Google features 已含 document_input/structured_output，正式 output8192、原免費配置與caps維持。
+- 完整唯讀收據 `docs/evidence/pdf-integration-2026-10-12/release-8172505/ready.json`，SHA256 `fbf4c879f419412198d5716823281db08d7d46777f4da6e31040efa8843d5e1a`，有效檢查窗口至 2026-10-12T07:55:13Z；其後須重新核對。
+
+Diagnostics 的 `local_minimum_admission_snapshot` 只測最小 token envelope；Google state=unknown 的唯一原因為 credential_inventory_unknown，不代表缺 key，也不證明免費帳號餘額、PDF2048/8192 admission 或 Google 成功。OF 仍須用其完整唯一合成 payload explain 核对 preflight target/非token gates，並由同一持久化 job 進行 count/唯一生成。Broker 此次部署與驗證真 provider POST 為零。
+
+原 native receipt 的 limitations 沿用 `offline_not_ASUS` 工具標籤；這次實際在 ASUS 執行，host/PID/cgroup/public resource projection 已核對，該字串不描述此次主機。它仍是無 provider 網路的離線 fixture，未據此宣稱真 Google 或使用者驗收。
