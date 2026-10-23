@@ -28,6 +28,9 @@ SOURCE_FILES = (
     "src/quota_broker/client_credentials.py",
     "src/quota_broker/config.py",
     "src/quota_broker/core.py",
+    "src/quota_broker/dashboard.py",
+    "src/quota_broker/dashboard_demo.py",
+    "src/quota_broker/dashboard_server.py",
     "src/quota_broker/discovery.py",
     "src/quota_broker/discovery_parsers.py",
     "src/quota_broker/discovery_sources.py",
@@ -47,6 +50,11 @@ SOURCE_FILES = (
     "src/quota_broker/routing.py",
     "src/quota_broker/server.py",
     "src/quota_broker/token_preflight.py",
+)
+ASSET_FILES = (
+    "src/quota_broker/dashboard_assets/index.html",
+    "src/quota_broker/dashboard_assets/dashboard.css",
+    "src/quota_broker/dashboard_assets/dashboard.js",
 )
 DEPLOY_FILES = (
     "deploy/asus/acceptance.py",
@@ -108,6 +116,7 @@ def _paths(source_only_fixture: bool = False) -> tuple[str, ...]:
         sorted(
             BASE_FILES
             + SOURCE_FILES
+            + ASSET_FILES
             + (VERIFIER_FILE, RUNTIME_BUILDER_FILE)
             + (() if source_only_fixture else DEPLOY_FILES)
         )
@@ -188,7 +197,16 @@ def _inventory(root: Path) -> None:
             if entry.is_symlink():
                 raise ReleaseError("source_type")
             if entry.is_dir(follow_symlinks=False):
-                if entry.name != "__pycache__":
+                if entry.name == "dashboard_assets":
+                    observed_assets = set()
+                    with os.scandir(entry.path) as assets:
+                        for asset in assets:
+                            if asset.is_symlink() or not asset.is_file(follow_symlinks=False):
+                                raise ReleaseError("source_type")
+                            observed_assets.add("src/quota_broker/dashboard_assets/" + asset.name)
+                    if observed_assets != set(ASSET_FILES):
+                        raise ReleaseError("source_layout")
+                elif entry.name != "__pycache__":
                     raise ReleaseError("source_layout")
             elif not entry.is_file(follow_symlinks=False):
                 raise ReleaseError("source_type")

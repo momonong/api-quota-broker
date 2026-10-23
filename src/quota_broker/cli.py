@@ -763,7 +763,40 @@ def main() -> None:
     catalog.add_argument("--config", required=True)
     catalog.add_argument("--db", required=True)
     sub.add_parser("demo")
+    dashboard = sub.add_parser("dashboard-serve", help="local advice-only quota dashboard")
+    mode = dashboard.add_mutually_exclusive_group()
+    mode.add_argument("--demo", action="store_true", help="synthetic offline mode (default)")
+    mode.add_argument("--upstream", metavar="URL", help="explicit local Gateway mode")
+    dashboard.add_argument("--upstream-token-file")
+    dashboard.add_argument("--dashboard-token-file", required=True)
+    dashboard.add_argument("--port", type=int, default=18086)
     args = parser.parse_args()
+    if args.command == "dashboard-serve":
+        from .dashboard import Dashboard, UpstreamSource
+        from .dashboard_demo import create_demo
+        from .dashboard_server import make_dashboard_server, read_private_token
+
+        if bool(args.upstream) != bool(args.upstream_token_file):
+            parser.error("--upstream and --upstream-token-file must be provided together")
+        dashboard_token = read_private_token(args.dashboard_token_file)
+        with tempfile.TemporaryDirectory(prefix="quota-dashboard-demo-") as directory:
+            source = (
+                UpstreamSource(args.upstream, read_private_token(args.upstream_token_file))
+                if args.upstream
+                else create_demo(directory)
+            )
+            server = make_dashboard_server(Dashboard(source), dashboard_token, port=args.port)
+            print(
+                f"Quota Broker dashboard: http://127.0.0.1:{server.server_port} ({source.kind}; advice only)",
+                flush=True,
+            )
+            try:
+                server.serve_forever()
+            except KeyboardInterrupt:
+                pass
+            finally:
+                server.server_close()
+        return
     if args.command == "key-admin-serve":
         token_path = Path(args.admin_token_file)
         descriptor = os.open(token_path, os.O_RDONLY | os.O_NOFOLLOW)

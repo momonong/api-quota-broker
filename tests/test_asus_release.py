@@ -197,7 +197,7 @@ def test_r4_install_helpers_are_explicit_required_regular_644_payload(source, pa
     assert path in release.DEPLOY_FILES
     assert "deploy/asus/operator.py" not in release._paths()
     artifact = build(source)
-    assert len(release._paths()) == len(artifact.manifest["release"]["files"]) == 45
+    assert len(release._paths()) == len(artifact.manifest["release"]["files"]) == 51
     assert "src/quota_broker/token_preflight.py" in release.SOURCE_FILES
     assert unpack(artifact)[path] == ("# fixture payload: " + path + "\n").encode()
     record = next(row for row in artifact.manifest["release"]["files"] if row["path"] == path)
@@ -497,3 +497,31 @@ def test_cli_invalid_arguments_and_manifest_never_echo_untrusted_paths(source, c
     error = json.loads(capsys.readouterr().out)
     assert set(error) == {"error", "reason"}
     assert "missing-private-path" not in json.dumps(error)
+
+
+def test_dashboard_modules_and_exact_static_assets_are_release_payload(source):
+    artifact = release.build_release(source)
+    members = unpack(artifact)
+    for path in (
+        "src/quota_broker/dashboard.py",
+        "src/quota_broker/dashboard_server.py",
+        "src/quota_broker/dashboard_demo.py",
+        "src/quota_broker/dashboard_assets/index.html",
+        "src/quota_broker/dashboard_assets/dashboard.css",
+        "src/quota_broker/dashboard_assets/dashboard.js",
+    ):
+        assert members[path] == (source / path).read_bytes()
+
+
+@pytest.mark.parametrize("kind", ["unknown", "symlink", "directory"])
+def test_dashboard_asset_inventory_rejects_unreviewed_entries(source, kind):
+    folder = source / "src/quota_broker/dashboard_assets"
+    if kind == "unknown":
+        (folder / "unreviewed.js").write_text("private fixture")
+    elif kind == "symlink":
+        (folder / "dashboard.js").unlink()
+        (folder / "dashboard.js").symlink_to(source / "pyproject.toml")
+    else:
+        (folder / "unexpected").mkdir()
+    with pytest.raises(release.ReleaseError):
+        release.build_release(source)

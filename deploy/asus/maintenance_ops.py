@@ -395,6 +395,31 @@ def queue_gate(con, *, first):
     return count
 
 
+def copy_dashboard_assets(source, destination):
+    """Copy only the reviewed package assets; never accept an arbitrary subtree."""
+    names = {"index.html", "dashboard.css", "dashboard.js"}
+    need(source.is_dir() and not source.is_symlink(), "runtime_invalid")
+    need({p.name for p in source.iterdir()} == names, "runtime_invalid")
+    need(
+        all((source / name).is_file() and not (source / name).is_symlink() for name in names),
+        "runtime_invalid",
+    )
+    need(not destination.is_symlink(), "runtime_invalid")
+    if destination.exists():
+        need(
+            destination.is_dir() and {p.name for p in destination.iterdir()} <= names,
+            "runtime_invalid",
+        )
+        need(
+            all(p.is_file() and not p.is_symlink() for p in destination.iterdir()),
+            "runtime_invalid",
+        )
+    destination.mkdir(mode=0o755, exist_ok=True)
+    for name in names:
+        shutil.copyfile(source / name, destination / name)
+        (destination / name).chmod(0o644)
+
+
 class Native:
     def __init__(self, entry, req):
         self.e, self.req, self.p = entry, req, profile(entry)
@@ -610,6 +635,9 @@ class Native:
         package = site / "quota_broker"
         need(package.is_dir() and not package.is_symlink(), "runtime_invalid")
         for source in (destination / "src/quota_broker").iterdir():
+            if source.name == "dashboard_assets":
+                copy_dashboard_assets(source, package / source.name)
+                continue
             need(source.is_file() and source.suffix == ".py", "runtime_invalid")
             shutil.copyfile(source, package / source.name)
             (package / source.name).chmod(0o644)
