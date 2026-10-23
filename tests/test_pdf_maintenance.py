@@ -18,7 +18,12 @@ def load(name):
 
 
 def historical(path):
-    raw = (ROOT / path).read_bytes()
+    # The fixed October-12 packet must not follow later release-builder additions.
+    raw = (
+        (ROOT / "tests/fixtures/asus-history/release-verifier-pdf.py").read_bytes()
+        if path == "scripts/build_asus_release.py"
+        else (ROOT / path).read_bytes()
+    )
     if path.endswith(".service"):
         return (
             raw.replace(b"    --google-pdf-count-tokens --serialize-work \\\n", b"")
@@ -73,7 +78,7 @@ def test_precise_delta_preserves_backup_and_blocks_repeat(packet):
         ROOT / "deploy/asus/api-quota-broker-v1.service"
     ).read_bytes()
     assert (module.BASE / "release_verifier.py").read_bytes() == (
-        ROOT / "scripts/build_asus_release.py"
+        ROOT / "tests/fixtures/asus-history/release-verifier-pdf.py"
     ).read_bytes()
     assert all((module.BACKUP / name).read_bytes() == raw for name, raw in old.items())
     with pytest.raises(ValueError):

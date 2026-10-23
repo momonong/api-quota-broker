@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Quota Broker · 配額與路由</title><link rel="stylesheet" href="/dashboard.css"><script src="/dashboard.js" defer></script></head>
+<body>
+<header class="brand"><a href="/" aria-label="Quota Broker 首頁"><svg aria-hidden="true" width="26" height="26" viewBox="0 0 26 26"><path d="M3 5h7v7H3zm13 9h7v7h-7zM10 8h8v6M6 12v6h10" fill="none" stroke="currentColor" stroke-width="2"/></svg>Quota Broker</a><span>本機配額工作台</span><button id="logout" hidden>登出</button></header>
+<main>
+<div class="title-row"><div><h1>配額與路由</h1><p id="source">登入後讀取資料來源與證據時效。</p></div><div class="header-actions"><a id="advice-jump" class="jump" href="#advice-panel" hidden>選路建議</a><button id="refresh" hidden>重新整理</button></div></div>
+<section id="login-panel" class="login panel" aria-labelledby="login-title"><h2 id="login-title">登入配額工作台</h2><p>使用獨立的工作台登入權杖。</p><form id="login-form"><label for="login-token">工作台權杖</label><input id="login-token" type="password" autocomplete="current-password" required minlength="32"><button class="primary" type="submit">登入</button><p id="login-error" role="alert"></p></form></section>
+<div id="error" class="notice" role="alert" hidden><h2>無法取得目前資料</h2><p id="error-message">資料來源無法使用，請重新整理。舊資料已隱藏。</p></div>
+<div id="workspace" hidden>
+<div class="scope"><span id="pool-status"></span><span>僅提供建議 · 不執行工作 · 不允許付費</span></div>
+<div class="work-grid">
+<section class="panel providers" aria-labelledby="providers-title"><div class="section-head"><h2 id="providers-title">供應商配額</h2><span>每個單位與視窗獨立</span></div><div id="providers"></div></section>
+<section id="advice-panel" class="panel advice" aria-labelledby="advice-title" tabindex="-1"><h2 id="advice-title">這個任務可以交給誰？</h2><p>檢查單一任務的免費資格與已確認餘額。缺少或過期的證據會要求你確認。</p><form id="advice-form"><label for="task-input">文字任務</label><textarea id="task-input" rows="3" maxlength="8000" required placeholder="輸入要評估的文字任務"></textarea><div class="field-pair"><div><label for="provider">供應商限制</label><select id="provider"><option value="">不限供應商</option></select></div><div><label for="output">輸出上限（tokens）</label><input id="output" type="number" min="1" max="65536" value="128" required></div></div><details class="constraints"><summary>模型限制（選填）</summary><label for="model">模型 ID</label><input id="model" maxlength="160" autocomplete="off"></details><button type="submit" class="primary">檢查免費路由</button></form><div id="advice-result" aria-live="polite"><p class="empty">尚未評估任務。配額充足仍需通過本次任務檢查。</p></div></section>
+</div>
+<div class="secondary-grid"><section class="panel" aria-labelledby="usage-title"><h2 id="usage-title">本機記錄用量</h2><p class="meta">已送出生成嘗試的聚合；不是供應商帳單，不包含全部帳號消耗或輔助請求。</p><div id="usage"></div></section><section class="panel" aria-labelledby="recent-title"><h2 id="recent-title">最近工作</h2><p class="meta">僅顯示既有狀態與時間，不含輸入或回覆。</p><div id="recent"></div></section></div>
+<section class="definitions"><h2>時間代表什麼？</h2><div><p><strong>免費資格證據到期</strong>：本機確認需要更新，不代表帳號或額度到期。</p><p><strong>餘額觀測到期</strong>：讀值已過時，不能據此推薦。</p><p><strong>配額重置</strong>：供應商視窗補充時間，與證據期限不同。</p><p><strong>實際點數到期</strong>：僅在明確證據存在時顯示；目前資料契約未提供。</p></div></section>
+</div>
+<footer>建議不會保留、排程或送出任務。Gateway 解釋路由時可能清理已到期且未送出的保留紀錄。</footer>
+</main></body></html>

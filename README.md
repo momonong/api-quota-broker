@@ -1,12 +1,18 @@
 # API Quota Broker
 
-Local control plane for trusted, cooperative clients using an extensible resource pool, initially seven official API providers: NVIDIA, Gemini, Groq, Mistral, Cloudflare, OpenRouter and OCR.space. The **v1.1 Gateway** uses one authenticated Gateway for text generation, translation and small-image OCR: match capability and input bounds, order verified free capacity, atomically reserve shared quotas, dispatch under strict non-replay rules, settle SQLite usage, and query through CLI/API. The ASUS loopback instance was deployed and passed bounded live acceptance on 2026-10-09. There is no paid fallback.
+Local control plane for trusted, cooperative clients using an extensible resource pool, initially seven official API providers: NVIDIA, Gemini, Groq, Mistral, Cloudflare, OpenRouter and OCR.space. The **Gateway** uses one authenticated Gateway for text generation, translation and small-image OCR: match capability and input bounds, order verified free capacity, atomically reserve shared quotas, dispatch under strict non-replay rules, settle SQLite usage, and query through CLI/API. The ASUS loopback instance was deployed and passed bounded live acceptance on 2026-10-09. There is no paid fallback.
 
 The instance-local trusted Registry adds compatible providers/models by manifest; registered adapters supply protocol admission, error, usage and quota semantics. Persistent routing health and an explicitly enabled encrypted durable queue support bounded waiting and restart. See the [core acceptance contract](docs/v1-core-contract.md).
 
 For another project's backend, start with the [client integration guide](docs/client-integration.md): authentication, synchronous and queued requests, result retention, error handling, and the verified OrderFlow backend integration and remaining acceptance scope. The `gateway-serve` / `gateway` interface is the primary v1 path; it has its own JSON contract and is not a Gemini/OpenAI SDK drop-in endpoint.
 
 See also the [ASUS operations and acceptance record](docs/asus-broker-ops.md), [capability and discovery contracts](docs/provider-capability-expansion.md), [v1.0 local usage guide](docs/v1-local-guide.md), and [representative live evidence](docs/v1-seven-provider-readiness.md). The older `serve`, `DirectClient`, and separate NVIDIA executor sections below describe compatible historical interfaces, not the recommended client integration path.
+
+## Version 1.2.0
+
+This compatible release adds an offline-first [Traditional Chinese quota dashboard](docs/dashboard.md) and a session-authenticated, advice-only API. It separates provider-reported remaining from current-window local ledger usage and caps, preserves unknown values, and recommends a route only when its task constraints, credentials inventory, free eligibility and authoritative quota evidence are current and sufficient. Advice never executes or queues work and always disallows paid execution.
+
+The default demo uses synthetic evidence with the actual Gateway routing engine and forbidden provider/credential transports. Connecting the facade to a real local Gateway requires explicit upstream mode and separate server-side credentials. Version `1.2.0` records the Git/package release and offline verification; it does not deploy services, renew account evidence or claim current real-provider allowance.
 
 ## Version 1.1.0
 
@@ -127,3 +133,7 @@ Do not run the example `run` command until its account facts, credential, local 
 The separately authenticated `key-admin-serve` page accepts a key only when the owner submits its form. It has fixed NVIDIA and Groq Doppler destinations; it does not call a provider or validate free eligibility. The management CLI login must be separate from the gateway's read-only runtime credential. See [private key admin](docs/private-key-admin.md) for the exact scope, local start command, status meaning, and safety limits.
 
 The [historical representative verification record](docs/v1-seven-provider-readiness.md) separates successful live capabilities, historical unknowns and accounting limits. The [early 2026-10-02 verification snapshot](docs/verification-2026-10-02.md) is historical.
+
+## Local quota dashboard
+
+The [quota dashboard](docs/dashboard.md) provides an offline-first Traditional Chinese interface and a session-authenticated, advice-only API. It reuses Gateway routing, requires current authoritative free-capacity evidence to recommend a target, and never executes or queues work. Real Gateway connection requires explicit mode and separate server-side credentials.

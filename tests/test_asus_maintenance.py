@@ -8,12 +8,14 @@ import sqlite3
 import sys
 import tarfile
 import types
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 from asus_packet_fixtures import normal_review
 
 ROOT = Path(__file__).resolve().parents[1]
+HISTORICAL_NOW = datetime(2026, 10, 12, tzinfo=UTC)
 
 
 def load(name):
@@ -178,14 +180,22 @@ def test_profile_matches_already_verified_app_planner():
         (ROOT / "tests/fixtures/asus-history/seven-r2-admission.json").read_bytes()
     )
     old = seven.config(
-        base, set(seven.PROVIDERS), evidence["admission"], "2026-11-02T03:36:17+00:00", normal=True
+        base,
+        set(seven.PROVIDERS),
+        evidence["admission"],
+        "2026-11-02T03:36:17+00:00",
+        normal=True,
+        now=HISTORICAL_NOW,
     )
-    assert ops.normal_config(old) == plan.config(old)
+    assert ops.normal_config(old, now=HISTORICAL_NOW) == plan.config(old)
     assert all(
         t["max_output_tokens"] > 64
-        for t in ops.normal_config(old)["targets"]
+        for t in ops.normal_config(old, now=HISTORICAL_NOW)["targets"]
         if t["provider"] != "ocrspace"
     )
+    expiry = min(datetime.fromisoformat(t["expires_at"]) for t in old["targets"])
+    with pytest.raises(ValueError, match="expiry_invalid"):
+        ops.normal_config(old, now=expiry)
 
 
 def test_packet_keeps_r15_modules_and_roots_exporter_outside_release():
@@ -358,6 +368,11 @@ def filesystem_transaction(tmp_path, monkeypatch):
     # Transaction fixture is unprivileged; native UID/capability behavior has its
     # own tests and sealed ASUS r3 receipt, rather than pretending this is root.
     monkeypatch.setattr(ops, "runtime_capabilities", lambda: None)
+    # Freeze only the historical profile's admission check, never production time/evidence.
+    normal_config = ops.normal_config
+    monkeypatch.setattr(
+        ops, "normal_config", lambda original: normal_config(original, now=HISTORICAL_NOW)
+    )
 
     names = {
         "BASE": "ops",
@@ -405,7 +420,12 @@ def filesystem_transaction(tmp_path, monkeypatch):
     base = load("provider_pool_plan")
     policy = json.loads((ROOT / "tests/fixtures/asus-history/seven-r2-admission.json").read_bytes())
     old = plan.config(
-        base, set(plan.PROVIDERS), policy["admission"], "2026-11-02T03:36:17+00:00", normal=True
+        base,
+        set(plan.PROVIDERS),
+        policy["admission"],
+        "2026-11-02T03:36:17+00:00",
+        normal=True,
+        now=HISTORICAL_NOW,
     )
     original = ops.wire(old)
     ops.CONFIG.write_bytes(original)
@@ -681,3 +701,57 @@ def test_authorized_continuation_preserves_original_and_blocks_new_ids(tmp_path,
     (tmp_path / (ops.REPAIR_ID + ".repair-authorized.json")).write_bytes(ops.wire(permit))
     with pytest.raises(ValueError, match="scope_invalid"):
         ops.result(entry, original)
+
+
+@pytest.mark.parametrize(
+    "kind",
+    [
+        "unknown",
+        "nested",
+        "asset_link",
+        "source_link",
+        "destination_link",
+        "destination_asset_link",
+    ],
+)
+def test_dashboard_runtime_asset_copy_rejects_unsafe_layout(tmp_path, kind):
+    source = tmp_path / "source"
+    destination = tmp_path / "destination"
+    source.mkdir()
+    for name in ("index.html", "dashboard.css", "dashboard.js"):
+        (source / name).write_text("synthetic " + name)
+    if kind == "unknown":
+        (source / "unreviewed.js").write_text("not in asset contract")
+    elif kind == "nested":
+        (source / "nested").mkdir()
+    elif kind == "asset_link":
+        (source / "dashboard.js").unlink()
+        (source / "dashboard.js").symlink_to(source / "index.html")
+    elif kind == "source_link":
+        linked = tmp_path / "source-link"
+        linked.symlink_to(source)
+        source = linked
+    elif kind == "destination_link":
+        destination.symlink_to(source)
+    else:
+        destination.mkdir()
+        (destination / "dashboard.js").symlink_to(source / "dashboard.js")
+    with pytest.raises(ValueError, match="runtime_invalid"):
+        ops.copy_dashboard_assets(source, destination)
+
+
+def test_dashboard_runtime_asset_copy_preserves_exact_bytes_and_permissions(tmp_path):
+    source = tmp_path / "source"
+    source.mkdir()
+    for name in ("index.html", "dashboard.css", "dashboard.js"):
+        (source / name).write_text("synthetic " + name)
+    destination = tmp_path / "destination"
+    ops.copy_dashboard_assets(source, destination)
+    assert {p.name for p in destination.iterdir()} == {
+        "index.html",
+        "dashboard.css",
+        "dashboard.js",
+    }
+    for path in destination.iterdir():
+        assert path.read_bytes() == (source / path.name).read_bytes()
+        assert path.stat().st_mode & 0o777 == 0o644

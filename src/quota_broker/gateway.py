@@ -112,6 +112,7 @@ def validate_task(
     *,
     family_registry: FamilyRegistry | None = None,
     media_limits: MediaLimits | None = None,
+    check_registry_constraints: bool = True,
 ) -> dict[str, Any]:
     registry = registry or Registry.builtin()
     families = family_registry or FamilyRegistry.builtin()
@@ -188,10 +189,13 @@ def validate_task(
         raise GatewayError("invalid_request", "max_output_tokens must be 1..65536")
     provider, model = raw.get("provider"), raw.get("model")
     if provider is not None and (
-        not isinstance(provider, str) or provider not in registry.providers
+        not isinstance(provider, str)
+        or (check_registry_constraints and provider not in registry.providers)
     ):
         raise GatewayError("invalid_request", "unsupported provider")
-    if model is not None:
+    if model is not None and not isinstance(model, str):
+        raise GatewayError("invalid_request", "model must be a string")
+    if model is not None and check_registry_constraints:
         try:
             spec = registry.resolve(model, provider)
         except (ValueError, TypeError) as exc:
@@ -226,7 +230,7 @@ def validate_task(
                 break
             except ValueError:
                 continue
-        if not accepted:
+        if check_registry_constraints and not accepted:
             raise GatewayError(
                 "invalid_request", "translation does not meet selected adapter policy"
             )
@@ -718,6 +722,26 @@ class Gateway:
     def catalog(self) -> list[dict[str, Any]]:
         diagnosis = {row["target_id"]: row for row in self.diagnostics()["targets"]}
         items = self.broker.catalog()
+        # Additive metadata only: use the same ledger windows/cost accounting as admission.
+        # Do not expire unsent reservations while reading this snapshot.
+        now = self.clock()
+        with closing(sqlite3.connect(self.db)) as con:
+            con.row_factory = sqlite3.Row
+            local_usage = {
+                target.id: [
+                    {
+                        "metric": quota.metric,
+                        "window": quota.window,
+                        "timezone": quota.timezone,
+                        "limit": quota.limit,
+                        "used": self._quota_used(con, quota, now, 0)[0],
+                        "as_of": stamp(now),
+                        "basis": "local_ledger_current_window_including_holds",
+                    }
+                    for quota in target.quotas
+                ]
+                for target in self.targets
+            }
         for item in items:
             current = diagnosis[item["target_id"]]
             item["configured_available"] = item["available"]
@@ -727,6 +751,7 @@ class Gateway:
             item["quota_observations"] = current["quota_observations"]
             item["request_limits"] = current["request_limits"]
             item["features"] = list(self.registry.resolve(item["model"], item["provider"]).features)
+            item["local_ledger_usage"] = local_usage[item["target_id"]]
         return items
 
     def _request_limits(self, target: Target, output: int, input_bound: int = 0) -> dict:
