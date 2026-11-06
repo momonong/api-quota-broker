@@ -6,15 +6,39 @@ import time
 from collections.abc import Callable
 from datetime import datetime
 from http.client import HTTPConnection
+from pathlib import Path
 from typing import Any, Protocol
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlencode, urlsplit
 
 from .core import stamp, utcnow
-from .gateway import Gateway, GatewayError, validate_task
+from .dashboard_accounts import CreditAccounts
+from .dashboard_provider_metadata import MODEL_TTL, quota_projection, read_metadata
+from .gateway import RECORDED_TASK_TYPES, Gateway, GatewayError, validate_task
 from .gateway_server import _bounded_json, _json_depth
 
 MAX_RESPONSE = 2 * 1024 * 1024
+PROVIDER_INVENTORY = Path(__file__).with_name("dashboard_assets") / "provider-inventory.json"
 POLICY = {"execution_allowed": False, "paid_allowed": False, "mode": "single_task_advice"}
+USAGE_FIELDS = (
+    "provider",
+    "model",
+    "requests",
+    "reported_input_tokens",
+    "reported_output_tokens",
+    "reported_total_tokens",
+    "reported_neurons",
+    "reported_audio_seconds",
+    "reported_images",
+    "reported_pages",
+    "reported_conversions",
+    "input_unknown_count",
+    "output_unknown_count",
+    "neurons_unknown_count",
+    "ledger_held_count",
+    "outcome_unknown_count",
+    "quota_rejected_count",
+)
+TASK_TYPES = RECORDED_TASK_TYPES | {"unknown"}
 
 
 class DashboardError(ValueError):
@@ -24,10 +48,13 @@ class DashboardError(ValueError):
 class Source(Protocol):
     kind: str
 
+    def source_metadata(self) -> dict[str, Any]: ...
     def catalog(self) -> Any: ...
     def diagnostics(self) -> Any: ...
     def usage(self) -> Any: ...
     def recent(self) -> Any: ...
+    def models(self) -> Any: ...
+    def usage_history(self, filters: dict[str, Any]) -> Any: ...
     def explain(self, task: dict[str, Any]) -> Any: ...
 
 
@@ -36,6 +63,9 @@ class GatewaySource:
 
     def __init__(self, gateway: Gateway) -> None:
         self.gateway = gateway
+
+    def source_metadata(self) -> dict[str, Any]:
+        return {}
 
     def catalog(self) -> Any:
         return self.gateway.catalog()
@@ -49,6 +79,21 @@ class GatewaySource:
     def recent(self) -> Any:
         return self.gateway.recent(limit=6)
 
+    def models(self) -> Any:
+        return self.gateway.model_inventory()
+
+    def usage_history(self, filters: dict[str, Any]) -> Any:
+        return {
+            "rows": self.gateway.usage(
+                provider=filters["provider"],
+                model=filters["model"],
+                from_at=filters["from"],
+                to_at=filters["to"],
+                task_type=filters["task"],
+            ),
+            "task_types_recorded": True,
+        }
+
     def explain(self, task: dict[str, Any]) -> Any:
         return self.gateway.explain(task)
 
@@ -60,6 +105,7 @@ class UpstreamSource:
     ROUTES = frozenset(
         {
             ("GET", "/v1/catalog"),
+            ("GET", "/v1/model-inventory"),
             ("GET", "/v1/diagnostics"),
             ("GET", "/v1/usage"),
             ("GET", "/v1/tasks?limit=6"),
@@ -87,7 +133,32 @@ class UpstreamSource:
         self._port = parsed.port
 
     def _get(self, method: str, path: str, task: dict[str, Any] | None = None) -> Any:
-        if (method, path) not in self.ROUTES:
+        allowed = (method, path) in self.ROUTES
+        if not allowed and method == "GET" and ("GET", "/v1/usage") in self.ROUTES:
+            try:
+                parsed = urlsplit(path)
+                query = parse_qs(parsed.query, keep_blank_values=True, strict_parsing=True)
+                if (
+                    parsed.path != "/v1/usage"
+                    or parsed.netloc
+                    or parsed.scheme
+                    or parsed.fragment
+                    or not query
+                    or set(query) - {"provider", "model", "from", "to", "task"}
+                    or any(len(values) != 1 for values in query.values())
+                ):
+                    raise ValueError
+                _usage_filters(
+                    {
+                        key: values[0]
+                        for key, values in query.items()
+                        if not (key == "task" and values == ["all"])
+                    }
+                )
+                allowed = True
+            except (ValueError, DashboardError):
+                pass
+        if not allowed:
             raise DashboardError("route_not_allowed")
         try:
             data = _bounded_json(task, 65536) if task is not None else None
@@ -136,6 +207,9 @@ class UpstreamSource:
         except Exception:  # noqa: BLE001 - fixed error never reflects upstream/token
             raise DashboardError("source_unavailable") from None
 
+    def source_metadata(self) -> dict[str, Any]:
+        return {}
+
     def catalog(self) -> Any:
         return self._get("GET", "/v1/catalog")
 
@@ -148,8 +222,33 @@ class UpstreamSource:
     def recent(self) -> Any:
         return self._get("GET", "/v1/tasks?limit=6")
 
+    def models(self) -> Any:
+        return self._get("GET", "/v1/model-inventory")
+
+    def usage_history(self, filters: dict[str, Any]) -> Any:
+        fields = {key: filters[key] for key in ("provider", "model", "from", "to") if filters[key]}
+        query = urlencode({**fields, "task": filters["task"] or "all"})
+        try:
+            return {"rows": self._get("GET", "/v1/usage?" + query), "task_types_recorded": True}
+        except DashboardError:
+            if filters["task"] is not None:
+                raise
+            # Old Gateways reject the new task query. Only the unfiltered history
+            # may fall back; a filtered failure must never become a false zero.
+            legacy = urlencode(fields)
+            return {
+                "rows": self._get("GET", "/v1/usage" + ("?" + legacy if legacy else "")),
+                "task_types_recorded": False,
+            }
+
     def explain(self, task: dict[str, Any]) -> Any:
         return self._get("POST", "/v1/routes/explain", task)
+
+
+class ActivitySource(UpstreamSource):
+    """Read recorded activity and runtime switches, without advice or execution."""
+
+    ROUTES = frozenset({("GET", "/v1/catalog"), ("GET", "/v1/usage"), ("GET", "/v1/tasks?limit=6")})
 
 
 def _rows(value: Any) -> list[dict[str, Any]]:
@@ -170,6 +269,11 @@ def _number(value: Any) -> int | None:
     return value if type(value) is int and 0 <= value <= 10**15 else None
 
 
+def _fraction(value: Any) -> int | float | None:
+    # Comparisons reject NaN/infinity; booleans are not numeric evidence.
+    return value if type(value) in {int, float} and 0 <= value <= 1 else None
+
+
 def _time(value: Any) -> datetime | None:
     try:
         result = datetime.fromisoformat(value) if isinstance(value, str) else None
@@ -181,6 +285,75 @@ def _time(value: Any) -> datetime | None:
 def _current(start: Any, end: Any, now: datetime) -> bool:
     since, until = _time(start), _time(end)
     return bool(since and until and since <= now < until)
+
+
+def _usage_filters(raw: Any) -> dict[str, str | None]:
+    if not isinstance(raw, dict) or set(raw) - {"provider", "model", "from", "to", "task"}:
+        raise DashboardError("invalid_filters")
+    result: dict[str, str | None] = {
+        key: None for key in ("provider", "model", "from", "to", "task")
+    }
+    for key, value in raw.items():
+        if not isinstance(value, str) or len(value) > (160 if key == "model" else 80) or not value:
+            raise DashboardError("invalid_filters")
+        if key in {"from", "to"}:
+            parsed = _time(value)
+            if parsed is None:
+                raise DashboardError("invalid_filters")
+            result[key] = stamp(parsed)
+        elif key == "provider":
+            if not re.fullmatch(r"[a-z][a-z0-9_-]{0,63}", value):
+                raise DashboardError("invalid_filters")
+            result[key] = value
+        elif key == "model":
+            if not re.fullmatch(r"[A-Za-z0-9@/:._-]{1,160}", value):
+                raise DashboardError("invalid_filters")
+            result[key] = value
+        elif value in TASK_TYPES:
+            result[key] = value
+        else:
+            raise DashboardError("invalid_filters")
+    if result["from"] and result["to"] and result["from"] >= result["to"]:
+        raise DashboardError("invalid_filters")
+    return result
+
+
+def _model_projection(item: dict[str, Any]) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "provider": _text(item.get("provider")),
+        "model": _text(item.get("model")),
+        "context_tokens": _number(item.get("context_tokens")),
+        "max_output_tokens": _number(item.get("max_output_tokens")),
+        "capability_basis": "configured_registry",
+    }
+    for field in ("capabilities", "features", "input_modalities", "output_modalities"):
+        values = item.get(field)
+        result[field] = (
+            [
+                value
+                for value in values
+                if isinstance(value, str) and re.fullmatch(r"[a-z][a-z0-9_]{0,63}", value)
+            ][:32]
+            if isinstance(values, list)
+            else []
+        )
+    result["variants"] = [
+        {
+            "task": v["task"],
+            **{
+                field: [
+                    x
+                    for x in v[field]
+                    if isinstance(x, str) and re.fullmatch(r"[a-z][a-z0-9_]{0,63}", x)
+                ][:32]
+                for field in ("inputs", "outputs", "features")
+            },
+        }
+        for v in _rows(item.get("variants", []))[:32]
+        if v.get("task") in result["capabilities"]
+        and all(isinstance(v.get(field), list) for field in ("inputs", "outputs", "features"))
+    ]
+    return result
 
 
 def _strings(value: Any) -> list[str]:
@@ -209,6 +382,7 @@ def _strings(value: Any) -> list[str]:
         "estimation_unconfigured",
         "token_preflight_required",
         "unknown_requires_reconciliation",
+        "credit_expired",
     }
     if not isinstance(value, list):
         return ["gateway_blocked"]
@@ -225,15 +399,48 @@ def _strings(value: Any) -> list[str]:
 def _project(row: dict[str, Any], fields: tuple[str, ...]) -> dict[str, Any]:
     return {
         key: _number(row.get(key))
-        if key not in {"provider", "model", "state", "created_at", "completed_at"}
+        if key not in {"provider", "model", "task_type", "state", "created_at", "completed_at"}
         else _text(row.get(key))
         for key in fields
     }
 
 
 class Dashboard:
-    def __init__(self, source: Source, *, clock: Callable[[], datetime] = utcnow) -> None:
+    def __init__(
+        self,
+        source: Source,
+        *,
+        clock: Callable[[], datetime] = utcnow,
+        accounts: CreditAccounts | None = None,
+        activity: UpstreamSource | None = None,
+        provider_metadata_file: str | Path | None = None,
+    ) -> None:
         self.source, self.clock = source, clock
+        self.accounts, self.activity = accounts, activity
+        self.provider_metadata_file = (
+            Path(provider_metadata_file) if provider_metadata_file else None
+        )
+
+    def _provider_evidence(self, targets: list[dict[str, Any]]) -> dict[str, Any]:
+        if self.provider_metadata_file is None:
+            return {}
+        now = self.clock()
+        report = read_metadata(self.provider_metadata_file, now)
+        if report is None:
+            return {"provider_metadata": {"state": "unavailable", "openrouter": None}}
+        observations = {(row["provider"], row["model"]): row for row in report["models"]}
+        for target in targets:
+            row = observations.get((target["provider"], target["model"]))
+            if row is not None:
+                checked = _time(row["checked_at"])
+                if checked is not None:
+                    target["catalog_observation"] = {
+                        **row,
+                        "current": now < checked + MODEL_TTL,
+                    }
+        return {
+            "provider_metadata": {"state": "available", "openrouter": quota_projection(report, now)}
+        }
 
     def _metadata(self) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]], str]:
         catalog, diagnostic = self.source.catalog(), self.source.diagnostics()
@@ -267,12 +474,16 @@ class Dashboard:
     def _source(self, as_of: str) -> dict[str, Any]:
         return {
             "kind": self.source.kind,
-            "label": "合成示範資料・非帳號讀值"
-            if self.source.kind == "demo"
-            else "本機 Gateway 中繼資料",
+            "label": {
+                "demo": "合成示範資料・非帳號讀值",
+                "reviewed": "人工核對帳戶快照・非即時同步・憑證未核對",
+            }.get(self.source.kind, "本機 Gateway 中繼資料"),
             "as_of": as_of,
             "fetched_at": stamp(self.clock()),
-            "freshness": "current_snapshot",
+            "freshness": "manually_reviewed_snapshot"
+            if self.source.kind == "reviewed"
+            else "current_snapshot",
+            **(self.source.source_metadata() if self.source.kind == "reviewed" else {}),
         }
 
     def _target(self, item: dict[str, Any], diag: dict[str, Any]) -> dict[str, Any]:
@@ -308,17 +519,65 @@ class Dashboard:
                     "basis": "local_ledger_current_window_including_holds",
                 }
             )
+        reviewed = item.get("reviewed_account") if self.source.kind == "reviewed" else None
+        contexts = (
+            {(q["metric"], q["window"]): q for q in reviewed["limit_context"]}
+            if isinstance(reviewed, dict)
+            else {}
+        )
+        billing_state = (
+            reviewed["billing_state"]
+            if isinstance(reviewed, dict)
+            else (
+                "disabled"
+                if item.get("billing_enabled") is False
+                else "enabled"
+                if item.get("billing_enabled") is True
+                else "unknown"
+            )
+        )
         return {
+            **_model_projection(item),
+            "model_scope": "configured_gateway_target",
             "target_id": _text(item.get("target_id")),
+            "enabled": item.get("enabled") if type(item.get("enabled")) is bool else None,
+            "billing_state": billing_state,
+            "reviewed_account": reviewed,
+            "provider_limits": [
+                {
+                    "metric": _text(fact.get("metric")),
+                    "window": _text(fact.get("window")),
+                    "value": _number(fact.get("limit", {}).get("value")),
+                    **{
+                        key: _text(fact.get("limit", {}).get(key))
+                        for key in ("provenance", "as_of", "valid_until")
+                    },
+                    "source": _text(fact.get("limit", {}).get("source")) if reviewed else None,
+                    "scope": _text(fact.get("limit", {}).get("scope")) if reviewed else None,
+                    "current": _current(
+                        fact.get("limit", {}).get("as_of"),
+                        fact.get("limit", {}).get("valid_until"),
+                        self.clock(),
+                    ),
+                    "basis": contexts.get((fact.get("metric"), fact.get("window")), {}).get(
+                        "basis", "unspecified"
+                    ),
+                    "reset": contexts.get((fact.get("metric"), fact.get("window")), {}).get(
+                        "reset", "unknown"
+                    ),
+                }
+                for fact in _rows(item.get("provider_quota_facts", []))
+            ],
             "provider": _text(item.get("provider")),
             "model": _text(item.get("model")),
             "state": diag.get("state")
             if diag.get("state") in {"ready", "blocked", "unknown"}
             else "unknown",
             "free_eligible": item.get("free_eligible") is True,
-            "billing_enabled": item.get("billing_enabled") is not False,
+            "billing_enabled": None if billing_state == "unknown" else billing_state == "enabled",
             "free_verified_at": _text(item.get("account_verified_at")),
             "free_evidence_expires_at": _text(item.get("account_expires_at")),
+            "credit_expires_at": _text((item.get("capacity") or {}).get("credit_expires_at")),
             "credentials": {
                 "state": credentials.get("state")
                 if credentials.get("state") in {"present", "missing", "unknown"}
@@ -326,7 +585,12 @@ class Dashboard:
                 "verified_at": _text(credentials.get("verified_at")),
                 "expires_at": _text(credentials.get("expires_at")),
             },
-            "reasons": _strings(diag.get("reasons")),
+            "reasons": [
+                "billing_state_unknown"
+                if reason == "billing_enabled" and billing_state == "unknown"
+                else reason
+                for reason in _strings(diag.get("reasons"))
+            ],
             "local_caps": caps,
             "observations": [
                 {
@@ -340,6 +604,7 @@ class Dashboard:
                             "reset_at",
                             "provenance",
                             "confidence",
+                            "remaining_basis",
                         )
                     },
                     **{
@@ -351,24 +616,130 @@ class Dashboard:
                             "local_observation_hold",
                         )
                     },
+                    "effective_remaining": _number(q.get("effective_remaining"))
+                    if _current(q.get("as_of"), q.get("valid_until"), self.clock())
+                    else None,
                     "current": _current(q.get("as_of"), q.get("valid_until"), self.clock()),
                 }
                 for q in _rows(diag.get("quota_observations"))
             ],
         }
 
+    def _activity(
+        self,
+    ) -> tuple[dict[str, Any], list[dict[str, Any]] | None, list[dict[str, Any]] | None]:
+        source = self.activity or (self.source if self.source.kind != "reviewed" else None)
+        metadata = {
+            "kind": "gateway" if self.activity else self.source.kind,
+            "state": "unavailable",
+            "label": "本機 Gateway 已記錄活動"
+            if self.activity or self.source.kind == "gateway"
+            else "合成示範活動"
+            if self.source.kind == "demo"
+            else "未接入實際用量來源",
+            "as_of": None,
+            "fetched_at": stamp(self.clock()),
+            "basis": "local_recorded_generation_attempts_not_provider_billing",
+        }
+        if source is None:
+            return metadata, None, None
+        try:
+            usage = _rows(source.usage())
+            recent = source.recent()
+            if not isinstance(recent, dict):
+                raise TypeError
+            tasks = _rows(recent.get("tasks"))
+            if any(
+                not isinstance(row.get("provider"), str)
+                or not isinstance(row.get("model"), str)
+                or _number(row.get("requests")) is None
+                for row in usage
+            ):
+                raise ValueError
+            for row in [*usage, *tasks]:
+                for key in ("provider", "model"):
+                    if row.get(key) is not None and (
+                        not isinstance(row[key], str)
+                        or not re.fullmatch(r"[A-Za-z0-9@/:._-]{1,160}", row[key])
+                    ):
+                        raise ValueError
+            if any(
+                not isinstance(row.get("state"), str)
+                or not re.fullmatch(r"[a-z_]{1,80}", row["state"])
+                or _time(row.get("created_at")) is None
+                or (row.get("completed_at") is not None and _time(row["completed_at"]) is None)
+                for row in tasks
+            ):
+                raise ValueError
+            metadata.update(state="available", as_of=stamp(self.clock()))
+            return metadata, usage, tasks
+        except Exception:  # noqa: BLE001 - unavailable activity must not hide account evidence
+            return metadata, None, None
+
+    def _runtime_configuration(self, targets: list[dict[str, Any]]) -> None:
+        """A reviewed fixture's protective switch is never a live service reading."""
+        rows = None
+        if self.source.kind == "reviewed" and self.activity is not None:
+            try:
+                rows = _rows(self.activity.catalog())
+                if any(
+                    type(row.get("enabled")) is not bool
+                    or any(
+                        not isinstance(row.get(key), str)
+                        or not re.fullmatch(r"[A-Za-z0-9@/:._-]{1,160}", row[key])
+                        for key in ("provider", "model")
+                    )
+                    for row in rows
+                ):
+                    rows = None
+            except Exception:  # noqa: BLE001 - runtime failure preserves reviewed evidence
+                rows = None
+        for target in targets:
+            config: dict[str, Any] = {
+                "state": "unknown",
+                "enabled": None,
+                "observed_at": None,
+                "basis": "live_catalog_model_match_not_account_qualification",
+            }
+            if self.source.kind != "reviewed":
+                config.update(
+                    state="available", enabled=target["enabled"], observed_at=stamp(self.clock())
+                )
+            elif rows is not None:
+                matches = [
+                    row
+                    for row in rows
+                    if (row["provider"], row["model"]) == (target["provider"], target["model"])
+                ]
+                config.update(
+                    state="available"
+                    if len(matches) == 1
+                    else "ambiguous"
+                    if matches
+                    else "not_configured",
+                    observed_at=stamp(self.clock()),
+                )
+                if len(matches) == 1:
+                    config["enabled"] = matches[0]["enabled"]
+            target["runtime_configuration"] = config
+
     def snapshot(self) -> dict[str, Any]:
         try:
             catalog, diag, as_of = self._metadata()
-            usage = _rows(self.source.usage())
-            recent = self.source.recent()
-            if not isinstance(recent, dict):
-                raise DashboardError("source_unavailable")
+            activity_source, usage, recent = self._activity()
             targets = [self._target(item, diag[item["target_id"]]) for item in catalog]
+            self._runtime_configuration(targets)
+            inventory, models = self._models(catalog)
             return {
                 **POLICY,
+                **self._provider_evidence(targets),
                 "source": self._source(as_of),
                 "targets": targets,
+                "models": models,
+                "model_inventory": inventory,
+                "provider_inventory": self._provider_inventory(),
+                "accounts": self.accounts.snapshot(self.clock()) if self.accounts else [],
+                "activity_source": activity_source,
                 "usage_basis": "local_recorded_generation_attempts_not_provider_billing",
                 "usage": [
                     _project(
@@ -385,19 +756,186 @@ class Dashboard:
                         ),
                     )
                     for r in usage
-                ],
+                ]
+                if usage is not None
+                else None,
                 "recent": [
                     _project(
                         r,
                         ("provider", "model", "state", "created_at", "completed_at", "latency_ms"),
                     )
-                    for r in _rows(recent.get("tasks"))[:6]
-                ],
+                    for r in recent[:6]
+                ]
+                if recent is not None
+                else None,
             }
         except Exception:  # noqa: BLE001 - sanitized public boundary
             raise DashboardError("source_unavailable") from None
 
+    def _provider_inventory(self) -> dict[str, Any] | None:
+        if self.source.kind == "demo":
+            return None
+        try:
+            with PROVIDER_INVENTORY.open("rb") as source:
+                raw = source.read(512 * 1024 + 1)
+            if len(raw) <= 512 * 1024:
+                data = json.loads(raw)
+                if isinstance(data, dict) and data.get("schema_version") == 1:
+                    return data
+        except (OSError, ValueError, RecursionError):
+            pass
+        return None
+
+    def _models(self, catalog: list[dict[str, Any]]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+        metadata = {
+            "state": "unavailable",
+            "basis": "instance_registry_not_provider_complete_catalog",
+        }
+        try:
+            rows = _rows(self.source.models())
+            result = []
+            seen = set()
+            for row in rows:
+                identity = row.get("provider"), row.get("model")
+                if (
+                    any(
+                        not isinstance(value, str)
+                        or not re.fullmatch(r"[A-Za-z0-9@/:._-]{1,160}", value)
+                        for value in identity
+                    )
+                    or identity in seen
+                ):
+                    raise ValueError
+                seen.add(identity)
+                target_ids = row.get("configured_target_ids")
+                expected = [
+                    target["target_id"]
+                    for target in catalog
+                    if (target["provider"], target["model"]) == identity
+                ]
+                if (
+                    not isinstance(target_ids, list)
+                    or len(target_ids) > 256
+                    or any(
+                        not isinstance(value, str)
+                        or not re.fullmatch(r"[A-Za-z0-9._~-]{1,160}", value)
+                        for value in target_ids
+                    )
+                    or sorted(target_ids) != sorted(expected)
+                    or row.get("model_scope")
+                    != ("configured_gateway_target" if target_ids else "registered_unconfigured")
+                ):
+                    raise ValueError
+                result.append(
+                    {
+                        **_model_projection(row),
+                        "configured_target_ids": target_ids,
+                        "model_scope": row["model_scope"],
+                        "execution_allowed": False,
+                        "paid_allowed": False,
+                    }
+                )
+            if {(row["provider"], row["model"]) for row in catalog} - seen:
+                raise ValueError
+            metadata["state"] = "available"
+            return metadata, result
+        except Exception:  # noqa: BLE001 - old/unavailable inventories preserve account evidence
+            return metadata, []
+
+    def usage_report(self, raw: dict[str, Any]) -> dict[str, Any]:
+        filters = _usage_filters(raw)
+        source = self.activity or (self.source if self.source.kind != "reviewed" else None)
+        metadata: dict[str, Any] = {
+            "kind": "gateway" if self.activity else self.source.kind,
+            "state": "unavailable",
+            "label": "合成示範活動"
+            if self.source.kind == "demo" and not self.activity
+            else "本機 Gateway 已記錄活動"
+            if source
+            else "未接入實際用量來源",
+            "as_of": None,
+            "fetched_at": stamp(self.clock()),
+            "basis": "local_recorded_generation_attempts_not_provider_billing",
+        }
+        result: dict[str, Any] = {
+            **POLICY,
+            "source": metadata,
+            "filters": filters,
+            "rows": None,
+            "task_metadata": {
+                "state": "unavailable",
+                "basis": "historical_task_labels_not_recorded",
+            },
+            "coverage": {
+                "state": "unavailable",
+                "time_basis": "dispatched_at",
+                "interval": "from_inclusive_to_exclusive",
+            },
+        }
+        if source is None:
+            return result
+        try:
+            history = source.usage_history(filters)
+            if (
+                not isinstance(history, dict)
+                or type(history.get("task_types_recorded")) is not bool
+            ):
+                raise ValueError
+            typed = history["task_types_recorded"]
+            rows = _rows(history.get("rows"))
+            if filters["task"] is not None and not typed:
+                raise ValueError
+            for row in rows:
+                if (
+                    any(
+                        not isinstance(row.get(key), str)
+                        or not re.fullmatch(r"[A-Za-z0-9@/:._-]{1,160}", row[key])
+                        for key in ("provider", "model")
+                    )
+                    or _number(row.get("requests")) is None
+                    or (filters["provider"] is not None and row["provider"] != filters["provider"])
+                    or (filters["model"] is not None and row["model"] != filters["model"])
+                    or (typed and row.get("task_type") not in TASK_TYPES)
+                    or (filters["task"] is not None and row.get("task_type") != filters["task"])
+                ):
+                    raise ValueError
+            result["rows"] = [
+                {
+                    **_project(row, USAGE_FIELDS),
+                    "task_type": row["task_type"] if typed else "unknown",
+                }
+                for row in rows
+            ]
+            if typed:
+                result["task_metadata"] = {
+                    "state": "available_for_new_records",
+                    "basis": "validated_capability_for_new_records_legacy_unknown",
+                }
+            result["coverage"]["state"] = "complete_for_local_recorded_attempts"
+            metadata.update(state="available", as_of=stamp(self.clock()))
+        except Exception:  # noqa: BLE001 - unavailable is unknown, never a fabricated empty report
+            return result
+        return result
+
     def advice(self, raw: dict[str, Any]) -> dict[str, Any]:
+        if raw.get("mode") == "match":
+            from .task_matching import match_models, validate_match
+
+            try:
+                validate_match(raw)
+                if "route_task" in raw:
+                    validate_task(raw["route_task"], check_registry_constraints=False)
+            except (ValueError, TypeError, AttributeError, GatewayError):
+                raise DashboardError("invalid_task") from None
+            snapshot = self.snapshot()
+            task = raw.get("route_task")
+            configured = task and any(
+                task.get("provider") in (None, t["provider"])
+                and task.get("model") in (None, t["model"])
+                for t in snapshot["targets"]
+            )
+            checked = self.advice(task) if configured and isinstance(task, dict) else None
+            return match_models(raw, snapshot, checked)
         # Task validation before contacting upstream; the Gateway remains the route authority.
         try:
             # Validate the common task schema/envelope locally; the actual Gateway
@@ -424,7 +962,12 @@ class Dashboard:
                 ):
                     raise DashboardError("source_unavailable")
                 target = self._target(by_id[identity], diag[identity])
-                reasons = _strings(candidate.get("reasons"))
+                reasons = [
+                    "billing_state_unknown"
+                    if reason == "billing_enabled" and target["billing_state"] == "unknown"
+                    else reason
+                    for reason in _strings(candidate.get("reasons"))
+                ]
                 if target["state"] != "ready" or target["reasons"]:
                     reasons.append("diagnostics_not_ready")
                 if candidate.get("eligible") is not True:
@@ -434,8 +977,10 @@ class Dashboard:
                     credentials["verified_at"], credentials["expires_at"], self.clock()
                 ):
                     reasons.append("credential_inventory_not_current")
-                if target["billing_enabled"]:
-                    reasons.append("billing_enabled")
+                if target["billing_state"] != "disabled":
+                    reasons.append(
+                        "billing_enabled" if target["billing_enabled"] else "billing_state_unknown"
+                    )
                 if not target["free_eligible"] or not _current(
                     target["free_verified_at"], target["free_evidence_expires_at"], self.clock()
                 ):
@@ -521,6 +1066,22 @@ class Dashboard:
                         "model": target["model"],
                         "safe": not reasons,
                         "reasons": list(dict.fromkeys(reasons)),
+                        "remaining": target["observations"],
+                        "ranking": {
+                            "policy": "verified_expiry_then_headroom_health",
+                            "value_loss_seconds": _number(
+                                candidate.get("ranking_factors", {}).get("value_loss_seconds")
+                            ),
+                            "value_loss_basis": candidate.get("ranking_factors", {}).get(
+                                "value_loss_basis"
+                            )
+                            if candidate.get("ranking_factors", {}).get("value_loss_basis")
+                            in {"credit_expiry", "quota_reset"}
+                            else None,
+                            "observed_headroom": _fraction(
+                                candidate.get("ranking_factors", {}).get("observed_headroom")
+                            ),
+                        },
                     }
                 )
             if len(candidates) != len(catalog) or len({r["target_id"] for r in candidates}) != len(

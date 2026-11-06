@@ -40,7 +40,6 @@ SAFE_DIAGNOSTICS = {
             "model_id_url",
             "model_id_secret_pattern",
             "model_id_provider_format",
-            "context_bound",
             "collection_schema",
             "item_schema",
             "options",
@@ -158,6 +157,13 @@ def parse_reply(raw: bytes) -> dict[str, Any]:
         return result
     except (ValueError, UnicodeError, RecursionError):
         raise FetchError("normalize", "schema") from None
+
+
+def _key_observation(raw: dict[str, Any], started: datetime, checked: datetime) -> dict[str, Any]:
+    observation = plan.parse_openrouter_key(raw, checked)
+    if started.astimezone(UTC).date() != checked.astimezone(UTC).date():
+        observation["free_model_daily_requests"] = None
+    return observation
 
 
 def credential_factory() -> tuple[Resolver, float]:
@@ -330,14 +336,15 @@ def run_batch(
                     )
                     phase = "transport"
                     result["request_count"] += 1
+                    key_started = clock() if request["purpose"] == "current_key_metadata" else None
                     raw = get(url, headers, min(20, remaining))
                     if monotonic() > deadline:
                         raise FetchError("budget", "deadline")
                     phase = "normalize"
                     data = parse_reply(raw)
                     checked_at = clock()
-                    if request["purpose"] == "current_key_metadata":
-                        account_metadata = plan.parse_openrouter_key(data, checked_at)
+                    if key_started is not None:
+                        account_metadata = _key_observation(data, key_started, checked_at)
                         reject_reflection(account_metadata, cache)
                         result["account_metadata"].append(account_metadata)
                         break
@@ -443,19 +450,20 @@ class SafeParser(plan.SafeArgumentParser):
 
 def main(argv: list[str] | None = None) -> int:
     parser = SafeParser(description=__doc__)
-    parser.add_argument(
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument(
         "--execute", action="store_true", help="Execute only after separate human authorization"
     )
-    parser.add_argument("--normalize-stdin", choices=plan.PROVIDERS)
+    mode.add_argument("--normalize-stdin", choices=plan.PROVIDERS)
+    mode.add_argument(
+        "--openrouter-key-stdin",
+        action="store_true",
+        help="Read an existing OpenRouter key from a pipe and GET its quota metadata once",
+    )
     parser.add_argument("--fixture-kind", choices=("models", "key"), default="models")
     args = parser.parse_args(argv)
     try:
-        if (
-            args.execute
-            and args.normalize_stdin
-            or args.fixture_kind != "models"
-            and args.normalize_stdin != "openrouter"
-        ):
+        if args.fixture_kind != "models" and args.normalize_stdin != "openrouter":
             raise FetchError("options", "options")
         if args.normalize_stdin:
             raw = parse_reply(sys.stdin.buffer.read(MAX_SNAPSHOT_BYTES + 1))
@@ -467,6 +475,18 @@ def main(argv: list[str] | None = None) -> int:
                     parse_models(args.normalize_stdin, raw, now, output_modalities="all"), now
                 )
             )
+        elif args.openrouter_key_stdin:
+            if sys.stdin.isatty():
+                raise FetchError("credentials", "unavailable")
+            supplied = sys.stdin.buffer.read(259)
+            key = supplied.removesuffix(b"\n").removesuffix(b"\r")
+            if not re.fullmatch(rb"[A-Za-z0-9._~-]{8,256}", key):
+                raise FetchError("credentials", "unavailable")
+            token = key.decode("ascii")
+            started = datetime.now(UTC)
+            reply = metadata_get(plan.KEY_URL, {"Authorization": "Bearer " + token}, 20)
+            result = _key_observation(parse_reply(reply), started, datetime.now(UTC))
+            reject_reflection(result, {"OPENROUTER_API_KEY": token})
         elif args.execute:
             result = run_batch(credentials=credential_factory, get=metadata_get)
         else:

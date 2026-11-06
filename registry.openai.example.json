@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "providers": [
+    {
+      "id": "openai",
+      "adapter": "openai_chat",
+      "origin": "https://api.openai.com",
+      "endpoint": "https://api.openai.com/v1/chat/completions"
+    }
+  ],
+  "models": [
+    {
+      "provider": "openai",
+      "model": "gpt-5.4-mini",
+      "capability": "text_generation",
+      "context_tokens": 400000,
+      "max_output_tokens": 128000,
+      "features": ["text_generation", "text"],
+      "author": "OpenAI",
+      "host": "OpenAI",
+      "free_kind": "subscription_api_credits",
+      "use_restrictions": "Disabled text-only candidate. Model access, usable credits and billing require separate verification.",
+      "source": "https://developers.openai.com/api/docs/models/gpt-5.4-mini",
+      "verified_at": "2026-11-06"
+    }
+  ]
+}

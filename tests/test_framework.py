@@ -322,7 +322,7 @@ def test_observation_changed_after_reserve_fences_dispatch(tmp_path):
     assert status["ledger_state"] == "cancelled"
 
 
-def test_ranking_uses_observed_headroom_health_and_budget_refresh(tmp_path):
+def test_ranking_prefers_verified_headroom_over_soft_health_and_interval(tmp_path):
     targets = [
         replace(
             target(name, "google", "gemini-2.5-flash-lite", priority=index),
@@ -337,7 +337,7 @@ def test_ranking_uses_observed_headroom_health_and_budget_refresh(tmp_path):
     assert plan["selected_target_id"] == "b"
     assert plan["candidates"][-1]["ranking_factors"]["observed_headroom"] is None
     gateway.routing.record("b", NOW, 500, 100, False, None, None)
-    assert gateway.explain(task())["selected_target_id"] == "a"
+    assert gateway.explain(task())["selected_target_id"] == "b"
     gateway.routing.record("a", NOW, 200, 500, True, None, None)
     refreshed = replace(
         targets[2],
@@ -353,7 +353,7 @@ def test_ranking_uses_observed_headroom_health_and_budget_refresh(tmp_path):
         gateway.transport,
         clock=gateway.clock,
     )
-    assert restarted.explain(task())["selected_target_id"] == "c"
+    assert restarted.explain(task())["selected_target_id"] == "b"
     clock.now += timedelta(seconds=61)
     assert all(
         o["current"] is False

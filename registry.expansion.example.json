@@ -1,0 +1,76 @@
+{
+  "schema_version": 1,
+  "providers": [
+    {
+      "id": "sambanova",
+      "adapter": "openai_chat",
+      "origin": "https://api.sambanova.ai",
+      "endpoint": "https://api.sambanova.ai/v1/chat/completions"
+    },
+    {
+      "id": "huggingface",
+      "adapter": "openai_chat",
+      "origin": "https://router.huggingface.co",
+      "endpoint": "https://router.huggingface.co/v1/chat/completions"
+    },
+    {
+      "id": "cerebras",
+      "adapter": "openai_chat",
+      "origin": "https://api.cerebras.ai",
+      "endpoint": "https://api.cerebras.ai/v1/chat/completions"
+    }
+  ],
+  "models": [
+    {
+      "provider": "sambanova",
+      "model": "Meta-Llama-3.3-70B-Instruct",
+      "capability": "text_generation",
+      "context_tokens": 8192,
+      "max_output_tokens": 1024,
+      "features": [
+        "text_generation",
+        "text"
+      ],
+      "author": "Meta",
+      "host": "SambaNova",
+      "free_kind": "account_free_tier_unverified",
+      "use_restrictions": "Disabled candidate; string input only. 8192 context / 1024 output are local profile caps, not provider maxima. Verify account, billing and call budget before live use.",
+      "source": "https://docs.sambanova.ai/docs/en/get-started/quickstart",
+      "verified_at": "2026-10-18"
+    },
+    {
+      "provider": "huggingface",
+      "model": "openai/gpt-oss-120b:cerebras",
+      "capability": "text_generation",
+      "context_tokens": 8192,
+      "max_output_tokens": 1024,
+      "features": [
+        "text_generation",
+        "text"
+      ],
+      "author": "OpenAI",
+      "host": "Cerebras via Hugging Face",
+      "free_kind": "paid_or_subscription_credits_required",
+      "use_restrictions": "Disabled candidate; string input only. HF Free accounts currently have no included monthly inference credits. 8192 context / 1024 output are local profile caps, not provider maxima. Verify account, billing and call budget before live use.",
+      "source": "https://huggingface.co/docs/inference-providers/guides/gpt-oss",
+      "verified_at": "2026-10-18"
+    },
+    {
+      "provider": "cerebras",
+      "model": "gpt-oss-120b",
+      "capability": "text_generation",
+      "context_tokens": 8192,
+      "max_output_tokens": 1024,
+      "features": [
+        "text_generation",
+        "text"
+      ],
+      "author": "OpenAI",
+      "host": "Cerebras",
+      "free_kind": "one_time_trial_credit_unverified",
+      "use_restrictions": "Disabled candidate; string input only. 8192 context / 1024 output are local profile caps, not provider maxima. Verify account, billing and call budget before live use.",
+      "source": "https://inference-docs.cerebras.ai/resources/openai",
+      "verified_at": "2026-10-18"
+    }
+  ]
+}

@@ -1,20 +1,99 @@
 <!doctype html>
 <html lang="zh-Hant">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Quota Broker · 配額與路由</title><link rel="stylesheet" href="/dashboard.css"><script src="/dashboard.js" defer></script></head>
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Momonong Quota · 配額與路由</title>
+<link rel="stylesheet" href="./dashboard.css"><script src="./dashboard.js" defer></script>
+</head>
 <body>
-<header class="brand"><a href="/" aria-label="Quota Broker 首頁"><svg aria-hidden="true" width="26" height="26" viewBox="0 0 26 26"><path d="M3 5h7v7H3zm13 9h7v7h-7zM10 8h8v6M6 12v6h10" fill="none" stroke="currentColor" stroke-width="2"/></svg>Quota Broker</a><span>本機配額工作台</span><button id="logout" hidden>登出</button></header>
-<main>
-<div class="title-row"><div><h1>配額與路由</h1><p id="source">登入後讀取資料來源與證據時效。</p></div><div class="header-actions"><a id="advice-jump" class="jump" href="#advice-panel" hidden>選路建議</a><button id="refresh" hidden>重新整理</button></div></div>
-<section id="login-panel" class="login panel" aria-labelledby="login-title"><h2 id="login-title">登入配額工作台</h2><p>使用獨立的工作台登入權杖。</p><form id="login-form"><label for="login-token">工作台權杖</label><input id="login-token" type="password" autocomplete="current-password" required minlength="32"><button class="primary" type="submit">登入</button><p id="login-error" role="alert"></p></form></section>
-<div id="error" class="notice" role="alert" hidden><h2>無法取得目前資料</h2><p id="error-message">資料來源無法使用，請重新整理。舊資料已隱藏。</p></div>
-<div id="workspace" hidden>
-<div class="scope"><span id="pool-status"></span><span>僅提供建議 · 不執行工作 · 不允許付費</span></div>
-<div class="work-grid">
-<section class="panel providers" aria-labelledby="providers-title"><div class="section-head"><h2 id="providers-title">供應商配額</h2><span>每個單位與視窗獨立</span></div><div id="providers"></div></section>
-<section id="advice-panel" class="panel advice" aria-labelledby="advice-title" tabindex="-1"><h2 id="advice-title">這個任務可以交給誰？</h2><p>檢查單一任務的免費資格與已確認餘額。缺少或過期的證據會要求你確認。</p><form id="advice-form"><label for="task-input">文字任務</label><textarea id="task-input" rows="3" maxlength="8000" required placeholder="輸入要評估的文字任務"></textarea><div class="field-pair"><div><label for="provider">供應商限制</label><select id="provider"><option value="">不限供應商</option></select></div><div><label for="output">輸出上限（tokens）</label><input id="output" type="number" min="1" max="65536" value="128" required></div></div><details class="constraints"><summary>模型限制（選填）</summary><label for="model">模型 ID</label><input id="model" maxlength="160" autocomplete="off"></details><button type="submit" class="primary">檢查免費路由</button></form><div id="advice-result" aria-live="polite"><p class="empty">尚未評估任務。配額充足仍需通過本次任務檢查。</p></div></section>
-</div>
-<div class="secondary-grid"><section class="panel" aria-labelledby="usage-title"><h2 id="usage-title">本機記錄用量</h2><p class="meta">已送出生成嘗試的聚合；不是供應商帳單，不包含全部帳號消耗或輔助請求。</p><div id="usage"></div></section><section class="panel" aria-labelledby="recent-title"><h2 id="recent-title">最近工作</h2><p class="meta">僅顯示既有狀態與時間，不含輸入或回覆。</p><div id="recent"></div></section></div>
-<section class="definitions"><h2>時間代表什麼？</h2><div><p><strong>免費資格證據到期</strong>：本機確認需要更新，不代表帳號或額度到期。</p><p><strong>餘額觀測到期</strong>：讀值已過時，不能據此推薦。</p><p><strong>配額重置</strong>：供應商視窗補充時間，與證據期限不同。</p><p><strong>實際點數到期</strong>：僅在明確證據存在時顯示；目前資料契約未提供。</p></div></section>
-</div>
-<footer>建議不會保留、排程或送出任務。Gateway 解釋路由時可能清理已到期且未送出的保留紀錄。</footer>
-</main></body></html>
+<a class="skip-link" href="#main">跳到工作台</a>
+<div id="demo-notice" class="demo-notice" role="status" hidden><strong>合成資料預覽</strong><span>所有模型、餘額與用量均為測試範例，不代表真實帳戶。</span></div>
+<header class="brand">
+  <a href="./" aria-label="Momonong Quota 首頁"><svg aria-hidden="true" width="28" height="28" viewBox="0 0 28 28"><path d="M3 23V10a5.5 5.5 0 0 1 11 0v13m0-13a5.5 5.5 0 0 1 11 0v13" fill="none" stroke="currentColor" stroke-width="1.8"/></svg><span class="brand-name">Momonong <span>Quota</span></span></a>
+  <span class="brand-scope">私人資源工作台</span><button id="logout" hidden>登出</button>
+</header>
+<main id="main">
+  <div class="title-row"><div><h1>配額與路由</h1><p id="source">登入後查看資料來源與證據時效。</p></div><button id="refresh" hidden>重讀本機資料</button></div>
+  <section id="login-panel" class="login panel" aria-labelledby="login-title"><div class="login-mark" aria-hidden="true">m.</div><h2 id="login-title">登入配額工作台</h2><p>核對模型與額度，為下一個任務選路。</p><form id="login-form"><label for="login-token">Quota 網站密碼</label><input id="login-token" type="password" autocomplete="current-password" required aria-describedby="login-help login-error"><p id="login-help" class="meta">使用 Quota 獨立網站密碼；可至首頁的密碼設定更新。</p><button class="primary" type="submit">登入</button><p id="login-error" role="alert"></p></form></section>
+  <div id="error" class="notice" role="alert" hidden><h2>無法取得目前資料</h2><p id="error-message">資料來源無法使用。舊資料已隱藏，請重新讀取。</p></div>
+  <div id="workspace" hidden>
+    <nav class="tabs" role="tablist" aria-label="配額工作台">
+      <button id="tab-models" role="tab" aria-selected="true" aria-controls="view-models" tabindex="0">供應商與模型</button>
+      <button id="tab-usage" role="tab" aria-selected="false" aria-controls="view-usage" tabindex="-1">總用量</button>
+      <button id="tab-advice" role="tab" aria-selected="false" aria-controls="view-advice" tabindex="-1">任務建議</button>
+    </nav>
+    <section id="view-models" role="tabpanel" aria-labelledby="tab-models">
+      <div class="view-heading"><div><h2>供應商與模型</h2><p>查各家 API 和模型能力，再核對 Broker 的路由與額度。</p></div><p id="pool-status" class="meta"></p></div>
+      <div class="model-views" role="group" aria-label="模型清單範圍"><button type="button" id="model-view-broker" aria-pressed="true" aria-controls="broker-models">Broker 路由與額度</button><button type="button" id="model-view-catalog" aria-pressed="false" aria-controls="provider-catalog">供應商 API 與型錄</button></div>
+      <section id="provider-catalog" aria-labelledby="provider-catalog-title" hidden>
+        <div class="view-heading"><div><h3 id="provider-catalog-title">查 API、模型與任務</h3><p>型錄列出供應商的能力。帳戶證據和 Broker 配置各自標示。</p></div><p id="catalog-summary" class="meta" role="status"></p></div>
+        <div id="catalog-controls" hidden>
+          <div class="catalog-filters">
+            <div><label for="catalog-search">搜尋模型</label><input id="catalog-search" type="search" maxlength="200" placeholder="例如 Gemini、Whisper、OCR"></div>
+            <div><label for="catalog-provider">供應商</label><select id="catalog-provider"></select></div>
+            <div><label for="catalog-task">任務</label><select id="catalog-task"></select></div>
+          </div>
+          <details id="catalog-advanced" class="catalog-disclosure"><summary>模態與上市狀態篩選</summary>
+            <div class="catalog-filters catalog-extra">
+              <div><label for="catalog-input">輸入模態</label><select id="catalog-input"></select></div>
+              <div><label for="catalog-output">輸出模態</label><select id="catalog-output"></select></div>
+              <div><label for="catalog-status">上市狀態</label><select id="catalog-status"><option value="current">可參考型錄</option><option value="all">含歷史與開放權重</option><option value="retired">已退場</option></select></div>
+            </div>
+          </details>
+          <details id="catalog-source-panel" class="catalog-disclosure"><summary>供應商 API 與資料來源</summary><div id="catalog-sources" class="catalog-sources"></div></details>
+        </div>
+        <p id="catalog-count" class="meta" aria-live="polite"></p>
+        <div id="catalog-models"></div>
+        <nav id="catalog-pages" class="catalog-pages" aria-label="供應商型錄分頁" hidden><button type="button" id="catalog-prev">上一頁</button><span id="catalog-page"></span><button type="button" id="catalog-next">下一頁</button></nav>
+      </section>
+      <div id="broker-models">
+      <section class="evidence-strip" aria-label="資源證據摘要"><div id="evidence-brief"></div><span class="meta">只提供建議 · 不執行工作 · 不允許付費</span></section>
+      <div class="model-filters"><div><label for="model-provider">供應商</label><select id="model-provider"><option value="">全部供應商</option></select></div><div><label for="model-task">任務能力</label><select id="model-task"><option value="">全部任務</option></select></div><div><label for="model-input">輸入模態</label><select id="model-input"><option value="">全部輸入</option></select></div><p id="model-count" class="meta" aria-live="polite"></p></div>
+      <div id="providers"></div>
+      <div class="model-bottom">
+        <section class="panel account-overview" aria-labelledby="accounts-title"><div class="section-head"><h2 id="accounts-title">獨立點數帳戶</h2><span>僅監看</span></div><div id="accounts"></div></section>
+        <section class="panel" aria-labelledby="time-title"><div class="section-head"><h2 id="time-title">期限與重置</h2><span id="time-preview"></span></div><div id="time-overview"></div></section>
+      </div>
+      </div>
+    </section>
+    <section id="view-usage" role="tabpanel" aria-labelledby="tab-usage" hidden>
+      <div class="view-heading"><div><h2>這段時間用了多少？</h2><p>依完整本機帳本的生成嘗試統計，非供應商全帳戶帳單。</p></div></div>
+      <form id="usage-form" class="filter-bar"><div><label for="usage-period">時間範圍</label><select id="usage-period"><option value="all">全部紀錄</option><option value="today">今天</option><option value="7">最近 7 天</option><option value="30">最近 30 天</option><option value="custom">自訂日期</option></select></div><div><label for="usage-provider">供應商</label><select id="usage-provider"><option value="">全部供應商</option></select></div><div><label for="usage-model">模型</label><select id="usage-model"><option value="">全部模型</option></select></div><div><label for="usage-task">任務類別</label><select id="usage-task"><option value="">全部類別</option><option value="unknown">類別未記錄</option><option value="text_generation">文字生成</option><option value="translation">翻譯</option><option value="ocr">文字辨識</option></select></div><button type="submit">套用篩選</button><div id="usage-dates" class="date-range" hidden><div><label for="usage-from">開始日期（含）</label><input id="usage-from" type="date"></div><div><label for="usage-to">結束日期（含）</label><input id="usage-to" type="date"></div></div></form>
+      <p id="activity-source" class="meta"></p><p id="usage-coverage" class="meta"></p><p id="usage-filter-note" class="section-note">新紀錄依實際任務能力分類；歷史未記錄類別的嘗試保留為「類別未記錄」。</p>
+      <section class="panel usage-panel" aria-labelledby="usage-title"><div class="section-head"><h2 id="usage-title">本機記錄用量</h2><span id="usage-status" aria-live="polite"></span></div><div id="usage-totals" class="usage-totals"></div><div id="usage"></div><p class="section-note">requests 與各資源單位分開統計。已回報數字不等於完整實際消耗；部分回報或完整性未知會另標示。</p></section>
+      <section class="panel recent-panel" aria-labelledby="recent-title"><div class="section-head"><h2 id="recent-title">最近工作</h2><span>僅供活動核對，不作完整統計</span></div><div id="recent"></div><p class="section-note">此處為未套用篩選的最近工作；只顯示狀態與時間。</p></section>
+    </section>
+    <section id="view-advice" role="tabpanel" aria-labelledby="tab-advice" hidden>
+      <div class="view-heading"><div><h2>下一個任務，交給誰？</h2><p>先選出適合任務的模型，再確認免費資格與可用額度。</p></div><span class="meta">只評估 · 不送出任務</span></div>
+      <section class="panel match-panel" aria-labelledby="match-title">
+        <div class="section-head"><h3 id="match-title">能力與免費額度配對</h3><span>先適合，再排序</span></div>
+        <p class="section-note">選擇任務即可取得模型建議，不必先貼入提示詞。免費方案、剩餘額度與執行條件分開呈現；額度未知時仍能比較模型，但不會自動執行或付費。</p>
+        <form id="match-form">
+          <div class="filter-bar">
+            <div><label for="match-task">要做的任務</label><select id="match-task" required><option value="text_generation">文字生成</option></select></div>
+            <div><label for="match-input">輸入</label><select id="match-input" required><option value="text">文字</option></select></div>
+            <div><label for="match-output">輸出</label><select id="match-output" required><option value="text">文字</option></select></div>
+            <div><label for="match-provider">供應商</label><select id="match-provider"><option value="">不限供應商</option></select></div>
+          </div>
+          <details id="match-text-options"><summary>加入實際文字，核對本次成本與免費路由</summary>
+            <label for="match-text">本次文字（選填，不會送給模型）</label><textarea id="match-text" rows="3" maxlength="8000" placeholder="留空時只做能力配對，任務成本維持未知"></textarea>
+            <div class="field-pair"><div><label for="match-limit">輸出上限（tokens）</label><input id="match-limit" type="number" min="1" max="65536" value="128" required></div></div>
+            <p class="section-note">此欄只適用於文字生成。翻譯請用下方完整任務檢查；媒體任務不會被替換成文字呼叫。此處為單次建議，不會預約或排程批次。</p>
+          </details>
+          <button id="match-submit" type="submit" class="primary">配對模型與額度</button>
+        </form>
+        <div id="match-result" aria-live="polite"><p class="empty">選擇任務後配對。能力相符不代表品質已評測，也不代表有免費餘額。</p></div>
+      </section>
+      <details class="advanced-advice"><summary>完整文字／翻譯任務的路由檢查</summary>
+      <div class="advice-layout">
+        <section id="advice-panel" class="panel advice" aria-labelledby="advice-title"><h3 id="advice-title">任務需求</h3><form id="advice-form"><label for="task-input">文字任務</label><textarea id="task-input" rows="4" maxlength="8000" required placeholder="例如：將這段英文翻成繁體中文"></textarea><div class="field-pair"><div><label for="task-kind">任務</label><select id="task-kind"><option value="text_generation">文字生成</option><option value="translation">翻譯</option></select></div><div><label for="output">輸出上限（tokens）</label><select id="output"><option value="128">128</option><option value="512">512</option><option value="1024">1,024</option><option value="4096">4,096</option><option value="8192">8,192</option></select></div><div><label for="input-modality">輸入需求</label><select id="input-modality"><option value="text">文字</option><option value="image">文字 + 圖片</option><option value="document">文字 + 文件</option><option value="audio">音訊</option></select></div><div><label for="output-modality">輸出需求</label><select id="output-modality"><option value="text">文字</option><option value="json">JSON</option><option value="image">圖片</option><option value="audio">音訊</option></select></div></div><div id="translation-fields" class="field-pair" hidden><div><label for="source-language">來源語言</label><select id="source-language"><option value="en">英文</option><option value="zh-Hant">繁體中文</option><option value="ja">日文</option></select></div><div><label for="target-language">目標語言</label><select id="target-language"><option value="zh-Hant">繁體中文</option><option value="en">英文</option><option value="ja">日文</option></select></div></div><div class="field-pair"><div><label for="provider">供應商限制</label><select id="provider"><option value="">不限供應商</option></select></div><div><label for="model">模型限制</label><select id="model"><option value="">不限模型</option></select></div></div><p id="advice-compatibility" class="section-note"></p><button id="advice-submit" type="submit" class="primary">檢查免費路由 <span aria-hidden="true">↗</span></button></form></section>
+        <section class="panel advice-results" aria-labelledby="advice-result-title"><div class="section-head"><h3 id="advice-result-title">推薦與阻擋原因</h3><span>Broker 判斷</span></div><div id="advice-result" aria-live="polite"><p class="empty">填寫任務後檢查；不會執行或保留任務。</p></div></section>
+      </div>
+      </details>
+    </section>
+    <details class="definitions"><summary>資料來源與時間，如何判讀？</summary><div id="source-detail" class="source-detail"></div><div class="definition-grid"><p><strong>模型範圍</strong>：Broker 路由與額度使用 Gateway 登錄資料；供應商型錄另列各來源的時間與涵蓋範圍。</p><p><strong>帳戶資格</strong>：免費資格、計費與憑證證據另行核對；支援能力不代表可用。</p><p><strong>餘額證據期限</strong>：讀值過時後不能用來推薦；不等於配額重置。</p><p><strong>實際點數到期</strong>：依 grant 原始精度顯示，僅日期時不補時間或時區。</p><p><strong>供應商上限</strong>：與即時剩餘、本機保護上限分開。</p><p><strong>本機用量</strong>：只涵蓋此帳本；無紀錄不代表帳戶沒有消耗。</p></div></details>
+  </div>
+  <footer><span>Momonong · Quota Broker</span><span>建議不會保留、排程或送出任務。Gateway 解釋路由時可能清理已到期且未送出的保留紀錄。</span></footer>
+</main>
+</body>
+</html>

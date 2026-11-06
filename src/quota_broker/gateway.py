@@ -44,9 +44,11 @@ CAPACITY_ORDER = {"short_renewable": 0, "unknown": 1, "one_time_gift": 2}
 DEFAULT_TEXT_OUTPUT_TOKENS = 1024
 MAX_TEXT_OUTPUT_TOKENS = 65536
 MAX_LEGACY_INPUT_BYTES = 32768
+RECORDED_TASK_TYPES = frozenset(FamilyRegistry.builtin().contracts)
 COLUMNS = (
     "request_key",
     "state",
+    "task_type",
     "reservation_id",
     "target_id",
     "provider",
@@ -76,6 +78,7 @@ ATTEMPT_COLUMNS = (
     "provider",
     "model",
     "state",
+    "task_type",
     "created_at",
     "dispatched_at",
     "completed_at",
@@ -355,6 +358,9 @@ class Gateway:
         self.family_transport = family_transport
         self.google_pdf_count_tokens = google_pdf_count_tokens
         self._discovery: DiscoveryStore | None = None
+        # Shared by the legacy/private HTTP listeners of this one Gateway.
+        self._project_access: Any | None = None
+        self._http_work_gate: Any | None = None
         self.broker = Broker(db, targets, clock, self.registry)
         self.routing = RoutingState(self.db)
         self.broker.routing_policy = self._route_plan
@@ -399,6 +405,7 @@ class Gateway:
             for table in ("gateway_tasks", "gateway_attempts"):
                 existing = {row[1] for row in con.execute(f"PRAGMA table_info({table})")}
                 for column, kind in (
+                    ("task_type", "TEXT"),
                     ("finish_reason", "TEXT"),
                     ("response_truncated", "INTEGER"),
                     ("diagnostics_json", "TEXT"),
@@ -743,7 +750,9 @@ class Gateway:
                 for target in self.targets
             }
         for item in items:
+            model_metadata = self._model_metadata(item["provider"], item["model"])
             current = diagnosis[item["target_id"]]
+            item["enabled"] = next(t.enabled for t in self.targets if t.id == item["target_id"])
             item["configured_available"] = item["available"]
             item["available"] = item["available"] and current["state"] != "blocked"
             item["admission_state"] = current["state"]
@@ -751,8 +760,111 @@ class Gateway:
             item["quota_observations"] = current["quota_observations"]
             item["request_limits"] = current["request_limits"]
             item["features"] = list(self.registry.resolve(item["model"], item["provider"]).features)
+            item.update(model_metadata)
             item["local_ledger_usage"] = local_usage[item["target_id"]]
         return items
+
+    def _model_metadata(self, provider: str, model: str) -> dict[str, Any]:
+        """Only registered adapter capabilities, never a provider-wide model claim."""
+        spec = self.registry.resolve(model, provider)
+        capabilities = sorted(
+            capability
+            for capability in (spec.capabilities or (spec.capability,))
+            if self.registry.supports_family(spec, capability)
+        )
+        inputs: set[str] = set()
+        outputs: set[str] = set()
+        variants = []
+        for capability in capabilities:
+            adapter = dict(spec.family_adapters).get(capability, spec.adapter)
+            supported = self.registry.adapter_features(adapter)
+            family_features = set(spec.features) & set(supported or ())
+            if supported is None and len(capabilities) == 1:
+                family_features = set(spec.features)
+            family_inputs: set[str] = set()
+            if capability in {"audio_transcription", "audio_translation"}:
+                family_inputs.add("audio")
+            elif capability == "ocr":
+                family_inputs.add("image")
+                if "document_input" in family_features:
+                    family_inputs.add("document")
+            elif capability == "vision":
+                family_inputs.update({"text", "image"})
+            else:
+                family_inputs.add("text")
+            family_output = (
+                "audio"
+                if capability == "tts"
+                else "image"
+                if capability == "image_generation"
+                else "vector"
+                if capability == "embedding"
+                else "scores"
+                if capability == "rerank"
+                else "labels"
+                if capability in {"classification", "moderation"}
+                else "text"
+            )
+            if capability in {"text_generation", "vision", "code_completion"}:
+                for feature, modality in (
+                    ("vision", "image"),
+                    ("image", "image"),
+                    ("audio_input", "audio"),
+                    ("document_input", "document"),
+                ):
+                    if feature in family_features:
+                        family_inputs.add(modality)
+            inputs.update(family_inputs)
+            outputs.add(family_output)
+            variants.append(
+                {
+                    "task": capability,
+                    "inputs": sorted(family_inputs),
+                    "outputs": [family_output],
+                    "features": sorted(family_features),
+                }
+            )
+        for feature, modality in (
+            ("vision", "image"),
+            ("image", "image"),
+            ("audio_input", "audio"),
+            ("document_input", "document"),
+        ):
+            if feature in spec.features:
+                inputs.add(modality)
+        return {
+            "capabilities": capabilities,
+            "variants": variants,
+            "features": list(spec.features),
+            "input_modalities": sorted(inputs),
+            "output_modalities": sorted(outputs),
+            "capability_basis": "configured_registry",
+        }
+
+    def model_inventory(self) -> list[dict[str, Any]]:
+        """Content-free instance registry, including models without a configured route."""
+        return [
+            {
+                "provider": provider,
+                "model": model,
+                **self._model_metadata(provider, model),
+                "context_tokens": spec.context_tokens,
+                "max_output_tokens": spec.max_output_tokens,
+                "configured_target_ids": [
+                    target.id
+                    for target in self.targets
+                    if (target.provider, target.model) == (provider, model)
+                ],
+                "model_scope": "configured_gateway_target"
+                if any(
+                    (target.provider, target.model) == (provider, model) for target in self.targets
+                )
+                else "registered_unconfigured",
+                "execution_allowed": False,
+                "paid_allowed": False,
+            }
+            for (provider, model), spec in sorted(self.registry.models.items())
+        ]
 
     def _request_limits(self, target: Target, output: int, input_bound: int = 0) -> dict:
         """Static envelope, separate from current remaining/health/admission."""
@@ -935,14 +1047,47 @@ class Gateway:
             return "unknown"
         return target.capacity.kind
 
-    def _sort_key(self, target: Target) -> tuple[int, int, int, str]:
-        kind = self._capacity_kind(target)
+    def _sort_key(
+        self, target: Target, observations: list[dict[str, Any]] | None = None
+    ) -> tuple[int, int, int, str]:
+        horizon, _ = self._value_loss(target, observations)
         return (
-            CAPACITY_ORDER[kind],
-            (target.capacity.refresh_seconds or 0) if kind == "short_renewable" else 0,
+            0 if horizon is not None else 1,
+            horizon or 0,
             target.priority,
             target.id,
         )
+
+    def _value_loss(
+        self, target: Target, observations: list[dict[str, Any]] | None = None
+    ) -> tuple[int | None, str | None]:
+        """Rank usable evidence by next loss of value, without provider-name rules."""
+        now = self.clock()
+        capacity = target.capacity
+        events = []
+        # A refresh interval is not the time until the next reset. Only exact,
+        # currently verified events participate in deadline ordering.
+        if (
+            self._capacity_kind(target) != "unknown"
+            and capacity.as_of is not None
+            and capacity.as_of <= now
+            and capacity.credit_expires_at is not None
+            and capacity.credit_expires_at > now
+        ):
+            events.append(
+                (max(1, int((capacity.credit_expires_at - now).total_seconds())), "credit_expiry")
+            )
+        for observation in observations or []:
+            if (
+                observation.get("current") is True
+                and observation.get("provenance") in {"official", "observed"}
+                and observation.get("confidence") in {"provider_reported", "administrator_verified"}
+                and observation.get("reset_at") is not None
+            ):
+                reset = datetime.fromisoformat(observation["reset_at"])
+                if reset > now:
+                    events.append((max(1, int((reset - now).total_seconds())), "quota_reset"))
+        return min(events) if events else (None, None)
 
     @staticmethod
     def _validated_usage(raw: object) -> dict[str, int]:
@@ -1002,6 +1147,11 @@ class Gateway:
             reasons.append("credential_scope_missing")
         if not target.available(now):
             reasons.append("eligibility_or_official_capacity")
+            if (
+                target.capacity.credit_expires_at is not None
+                and now >= target.capacity.credit_expires_at
+            ):
+                reasons.append("credit_expired")
             if not target.enabled:
                 reasons.append("disabled")
             if not target.free_eligible:
@@ -1123,6 +1273,7 @@ class Gateway:
         rows: list[dict[str, Any]] = []
         now = self.clock()
         permanent_reasons = {
+            "credit_expired",
             "provider_constraint",
             "model_constraint",
             "capability_mismatch",
@@ -1222,17 +1373,23 @@ class Gateway:
                 if item["current"]
                 and item.get("effective_remaining", item["remaining"]) is not None
             ]
-            headroom = min(
-                (
-                    item.get("effective_remaining", item["remaining"])
-                    / max(1, item["limit"] or item["remaining"])
-                    for item in known
-                ),
-                default=None,
+            headroom = (
+                min(
+                    (
+                        item.get("effective_remaining", item["remaining"]) / item["limit"]
+                        for item in known
+                    ),
+                    default=None,
+                )
+                if known
+                and all(item.get("limit") is not None and item["limit"] > 0 for item in known)
+                else None
             )
             factors = {
                 "capacity_kind": self._capacity_kind(target),
                 "budget_refresh_seconds": target.capacity.refresh_seconds,
+                "value_loss_seconds": self._value_loss(target, observations)[0],
+                "value_loss_basis": self._value_loss(target, observations)[1],
                 "health_failures": health["failures"],
                 "observed_headroom": headroom,
                 "local_pressure": max(pressure, default=0),
@@ -1241,13 +1398,18 @@ class Gateway:
                 "priority": target.priority,
             }
             key = (
-                *self._sort_key(target)[:2],
-                health["failures"],
+                *self._sort_key(target, observations)[:2],
                 1 if headroom is None else 0,
                 -(headroom or 0),
+                health["failures"],
                 factors["local_pressure"],
                 inflight,
                 health["latency_ms"] or 0,
+                # Renewal class/interval only break ties, never pose as an expiry.
+                CAPACITY_ORDER[self._capacity_kind(target)],
+                target.capacity.refresh_seconds
+                if self._capacity_kind(target) == "short_renewable"
+                else 0,
                 target.priority,
                 target.id,
             )
@@ -1456,7 +1618,7 @@ class Gateway:
         return fingerprint.hexdigest()
 
     def _update(self, key: str, values: dict[str, Any]) -> None:
-        allowed = set(COLUMNS) - {"request_key", "created_at"}
+        allowed = set(COLUMNS) - {"request_key", "created_at", "task_type"}
         if not values or set(values) - allowed:
             raise ValueError("invalid gateway update")
         with closing(sqlite3.connect(self.db, timeout=15)) as con, con:
@@ -1468,7 +1630,7 @@ class Gateway:
             )
 
     def _attempt_update(self, key: str, number: int, values: dict[str, Any]) -> None:
-        allowed = set(ATTEMPT_COLUMNS) - {"attempt_no", "reservation_id", "created_at"}
+        allowed = set(ATTEMPT_COLUMNS) - {"attempt_no", "reservation_id", "created_at", "task_type"}
         if not values or set(values) - allowed:
             raise ValueError("invalid attempt update")
         with closing(sqlite3.connect(self.db, timeout=15)) as con, con:
@@ -1511,6 +1673,8 @@ class Gateway:
         resume_preparing: bool = False,
     ) -> dict[str, Any]:
         data = self.validate_task(raw)
+        # Retain only a bounded, validated capability; never custom labels or input.
+        recorded_type = data["capability"] if data["capability"] in RECORDED_TASK_TYPES else None
         key = data["request_key"]
         fingerprint = self._hmac(data)
         created_at = stamp(self.clock())
@@ -1537,8 +1701,9 @@ class Gateway:
                 raise GatewayError("deadline_expired", "task deadline elapsed")
             if row is None:
                 con.execute(
-                    "INSERT INTO gateway_tasks(request_key,payload_hmac,state,created_at) VALUES(?,?,?,?)",
-                    (key, fingerprint, "preparing", created_at),
+                    "INSERT INTO gateway_tasks(request_key,payload_hmac,state,created_at,task_type) "
+                    "VALUES(?,?,?,?,?)",
+                    (key, fingerprint, "preparing", created_at, recorded_type),
                 )
             con.execute("COMMIT")
         execution_deadline = self.clock() + timedelta(seconds=180)
@@ -1666,8 +1831,8 @@ class Gateway:
             with closing(sqlite3.connect(self.db, timeout=15)) as con, con:
                 con.execute(
                     "INSERT INTO gateway_attempts(request_key,attempt_no,reservation_id,"
-                    "target_id,provider,model,state,created_at,estimated_input_tokens,input_bytes) "
-                    "VALUES(?,?,?,?,?,?,?,?,?,?)",
+                    "target_id,provider,model,state,created_at,estimated_input_tokens,input_bytes,task_type) "
+                    "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
                     (
                         key,
                         attempt,
@@ -1683,6 +1848,7 @@ class Gateway:
                         else len(base64.b64decode(data["input"]))
                         if data["capability"] == "ocr"
                         else None,
+                        recorded_type,
                     ),
                 )
             pre_send_phase = "credential"
@@ -2155,11 +2321,17 @@ class Gateway:
         model: str | None = None,
         from_at: str | None = None,
         to_at: str | None = None,
+        task_type: str | None = None,
     ) -> list[dict[str, Any]]:
         if provider is not None and provider not in self.registry.providers:
             raise GatewayError("invalid_request", "invalid provider filter")
         if model is not None and not any(key[1] == model for key in self.registry.models):
             raise GatewayError("invalid_request", "invalid model filter")
+        if task_type is not None and (
+            not isinstance(task_type, str)
+            or task_type not in RECORDED_TASK_TYPES | {"unknown", "all"}
+        ):
+            raise GatewayError("invalid_request", "invalid task filter")
 
         def normalized(value: str | None) -> str | None:
             if value is None:
@@ -2183,6 +2355,7 @@ class Gateway:
             ("g.model", model, "="),
             (dispatch_time, from_at, ">="),
             (dispatch_time, to_at, "<"),
+            ("COALESCE(g.task_type,'unknown')", None if task_type == "all" else task_type, "="),
         ):
             if value is not None:
                 conditions.append(f"{column}{op}?")
@@ -2198,7 +2371,7 @@ class Gateway:
         with closing(sqlite3.connect(self.db)) as con, con:
             con.row_factory = sqlite3.Row
             rows = con.execute(
-                "SELECT g.provider,g.model,count(*) AS requests,"
+                "SELECT g.provider,g.model,COALESCE(g.task_type,'unknown') AS task_type,count(*) AS requests,"
                 + resource_sums
                 + "sum(g.estimated_input_tokens) AS estimated_input_tokens,"
                 "sum(g.reported_input_tokens) AS reported_input_tokens,"
@@ -2223,10 +2396,10 @@ class Gateway:
                 "FROM ("
                 "SELECT request_key,reservation_id,provider,model,dispatched_at,"
                 "estimated_input_tokens,reported_input_tokens,reported_output_tokens,"
-                "reported_neurons,state,input_bytes,response_truncated,reported_resources_json FROM gateway_attempts "
+                "reported_neurons,state,input_bytes,response_truncated,reported_resources_json,task_type FROM gateway_attempts "
                 "UNION ALL SELECT request_key,reservation_id,provider,model,dispatched_at,"
                 "estimated_input_tokens,reported_input_tokens,reported_output_tokens,"
-                "reported_neurons,state,NULL AS input_bytes,response_truncated,reported_resources_json FROM gateway_tasks legacy "
+                "reported_neurons,state,NULL AS input_bytes,response_truncated,reported_resources_json,task_type FROM gateway_tasks legacy "
                 "WHERE NOT EXISTS (SELECT 1 FROM gateway_attempts a "
                 "WHERE a.request_key=legacy.request_key)) g "
                 "LEFT JOIN reservations r ON r.id=g.reservation_id "
@@ -2236,7 +2409,7 @@ class Gateway:
                 "FROM charges GROUP BY reservation_id) c ON c.reservation_id=g.reservation_id "
                 "WHERE "
                 + " AND ".join(conditions)
-                + " GROUP BY g.provider,g.model ORDER BY g.provider,g.model",
+                + " GROUP BY g.provider,g.model,g.task_type ORDER BY g.provider,g.model,task_type",
                 params,
             ).fetchall()
         return [dict(row) for row in rows]
