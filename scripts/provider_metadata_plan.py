@@ -22,8 +22,8 @@ PROVIDERS = tuple(SOURCES)
 KEY_URL = "https://openrouter.ai/api/v1/key"
 CF_URL = "https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/models/search"
 SECRET_PATTERN = re.compile(
-    r"(?:gsk_|sk-[A-Za-z0-9_-]{12}|dp\.st\.|Bearer\s|AIza[A-Za-z0-9_-]{12}"
-    r"|-----BEGIN [A-Z ]*PRIVATE KEY-----)",
+    r"(?:(?<![A-Za-z0-9_-])gsk_|(?<![A-Za-z0-9_-])sk-[A-Za-z0-9_-]{12}|dp\.st\.|Bearer\s|"
+    r"(?<![A-Za-z0-9_-])AIza[A-Za-z0-9_-]{12}|-----BEGIN [A-Z ]*PRIVATE KEY-----)",
     re.IGNORECASE,
 )
 

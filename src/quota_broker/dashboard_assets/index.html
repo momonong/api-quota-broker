@@ -9,7 +9,7 @@
 <a class="skip-link" href="#main">跳到工作台</a>
 <div id="demo-notice" class="demo-notice" role="status" hidden><strong>合成資料預覽</strong><span>所有模型、餘額與用量均為測試範例，不代表真實帳戶。</span></div>
 <header class="brand">
-  <a href="./" aria-label="Momonong Quota 首頁"><svg aria-hidden="true" width="28" height="28" viewBox="0 0 28 28"><path d="M3 23V10a5.5 5.5 0 0 1 11 0v13m0-13a5.5 5.5 0 0 1 11 0v13" fill="none" stroke="currentColor" stroke-width="1.8"/></svg><span class="brand-name">Momonong <span>Quota</span></span></a>
+  <a href="/" aria-label="回到 Momonong 首頁"><svg aria-hidden="true" width="28" height="28" viewBox="0 0 28 28"><path d="M3 23V10a5.5 5.5 0 0 1 11 0v13m0-13a5.5 5.5 0 0 1 11 0v13" fill="none" stroke="currentColor" stroke-width="1.8"/></svg><span class="brand-name">Momonong <span>Quota</span></span></a>
   <span class="brand-scope">私人資源工作台</span><button id="logout" hidden>登出</button>
 </header>
 <main id="main">
@@ -18,12 +18,18 @@
   <div id="error" class="notice" role="alert" hidden><h2>無法取得目前資料</h2><p id="error-message">資料來源無法使用。舊資料已隱藏，請重新讀取。</p></div>
   <div id="workspace" hidden>
     <nav class="tabs" role="tablist" aria-label="配額工作台">
-      <button id="tab-models" role="tab" aria-selected="true" aria-controls="view-models" tabindex="0">供應商與模型</button>
+      <button id="tab-models" role="tab" aria-selected="true" aria-controls="view-models" tabindex="0">額度與模型</button>
       <button id="tab-usage" role="tab" aria-selected="false" aria-controls="view-usage" tabindex="-1">總用量</button>
       <button id="tab-advice" role="tab" aria-selected="false" aria-controls="view-advice" tabindex="-1">任務建議</button>
     </nav>
     <section id="view-models" role="tabpanel" aria-labelledby="tab-models">
-      <div class="view-heading"><div><h2>供應商與模型</h2><p>查各家 API 和模型能力，再核對 Broker 的路由與額度。</p></div><p id="pool-status" class="meta"></p></div>
+      <div class="view-heading"><div><h2>現在還能用多少？</h2><p>集中檢視 11 家供應商的免費額度、贈送 Credits、已核對上限、重置時間與大量工作優先順序。</p></div><button id="quota-to-task" class="primary" type="button">為任務選模型</button></div>
+      <div id="quota-kpi" class="quota-kpi-grid" aria-label="免費資源與額度證據摘要"></div>
+      <section id="quota-priority" class="panel priority-panel" aria-labelledby="priority-title"></section>
+      <div class="quota-toolbar"><div><label for="quota-filter">顯示範圍</label><select id="quota-filter"><option value="all">全部供應商</option><option value="current">有目前餘額讀值</option><option value="attention">餘額待更新</option></select></div><p id="quota-sync" class="meta" aria-live="polite"></p></div>
+      <div id="quota-overview" class="quota-overview" aria-label="各供應商額度與期限"></div>
+      <p class="section-note">「最後觀測」保留查到的真實數字；過時後不當作目前餘額。方案上限、已用量與剩餘各自顯示，無法核對的值保留未知。</p>
+      <details id="model-browser" class="model-browser"><summary>查看模型、任務能力與路由詳情</summary><p id="pool-status" class="meta"></p>
       <div class="model-views" role="group" aria-label="模型清單範圍"><button type="button" id="model-view-broker" aria-pressed="true" aria-controls="broker-models">Broker 路由與額度</button><button type="button" id="model-view-catalog" aria-pressed="false" aria-controls="provider-catalog">供應商 API 與型錄</button></div>
       <section id="provider-catalog" aria-labelledby="provider-catalog-title" hidden>
         <div class="view-heading"><div><h3 id="provider-catalog-title">查 API、模型與任務</h3><p>型錄列出供應商的能力。帳戶證據和 Broker 配置各自標示。</p></div><p id="catalog-summary" class="meta" role="status"></p></div>
@@ -55,11 +61,13 @@
         <section class="panel" aria-labelledby="time-title"><div class="section-head"><h2 id="time-title">期限與重置</h2><span id="time-preview"></span></div><div id="time-overview"></div></section>
       </div>
       </div>
+      </details>
     </section>
     <section id="view-usage" role="tabpanel" aria-labelledby="tab-usage" hidden>
-      <div class="view-heading"><div><h2>這段時間用了多少？</h2><p>依完整本機帳本的生成嘗試統計，非供應商全帳戶帳單。</p></div></div>
+      <div class="view-heading"><div><h2>這段時間用了多少？</h2><p>區分「供應商回報／帳戶核對用量」、「Broker 本機帳本用量」、「未經 Broker 的外部呼叫」與「結果未知呼叫」，不同單位絕不硬加。</p></div></div>
       <form id="usage-form" class="filter-bar"><div><label for="usage-period">時間範圍</label><select id="usage-period"><option value="all">全部紀錄</option><option value="today">今天</option><option value="7">最近 7 天</option><option value="30">最近 30 天</option><option value="custom">自訂日期</option></select></div><div><label for="usage-provider">供應商</label><select id="usage-provider"><option value="">全部供應商</option></select></div><div><label for="usage-model">模型</label><select id="usage-model"><option value="">全部模型</option></select></div><div><label for="usage-task">任務類別</label><select id="usage-task"><option value="">全部類別</option><option value="unknown">類別未記錄</option><option value="text_generation">文字生成</option><option value="translation">翻譯</option><option value="ocr">文字辨識</option></select></div><button type="submit">套用篩選</button><div id="usage-dates" class="date-range" hidden><div><label for="usage-from">開始日期（含）</label><input id="usage-from" type="date"></div><div><label for="usage-to">結束日期（含）</label><input id="usage-to" type="date"></div></div></form>
       <p id="activity-source" class="meta"></p><p id="usage-coverage" class="meta"></p><p id="usage-filter-note" class="section-note">新紀錄依實際任務能力分類；歷史未記錄類別的嘗試保留為「類別未記錄」。</p>
+      <section class="panel provider-usage-panel" aria-labelledby="provider-usage-title"><div class="section-head"><h2 id="provider-usage-title">供應商回報與帳戶核對用量（含外部呼叫範圍說明）</h2><span id="provider-usage-status" aria-live="polite"></span></div><div id="provider-usage"></div><p class="section-note">供應商帳戶／金鑰層級的用量涵蓋所有經該帳戶或金鑰發出的呼叫（含未經 Broker 的外部使用）；未提供唯讀用量 API 的供應商維持「未知」，絕不當作零消耗。</p></section>
       <section class="panel usage-panel" aria-labelledby="usage-title"><div class="section-head"><h2 id="usage-title">本機記錄用量</h2><span id="usage-status" aria-live="polite"></span></div><div id="usage-totals" class="usage-totals"></div><div id="usage"></div><p class="section-note">requests 與各資源單位分開統計。已回報數字不等於完整實際消耗；部分回報或完整性未知會另標示。</p></section>
       <section class="panel recent-panel" aria-labelledby="recent-title"><div class="section-head"><h2 id="recent-title">最近工作</h2><span>僅供活動核對，不作完整統計</span></div><div id="recent"></div><p class="section-note">此處為未套用篩選的最近工作；只顯示狀態與時間。</p></section>
     </section>

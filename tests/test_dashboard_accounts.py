@@ -263,3 +263,40 @@ def test_activity_partial_recent_stays_unknown(tmp_path):
     snapshot = board.snapshot()
     assert snapshot["activity_source"]["state"] == "unavailable"
     assert snapshot["usage"] is snapshot["recent"] is None
+
+
+def test_actual_grant_expiry_supersedes_fresh_observation(tmp_path):
+    from quota_broker.dashboard_accounts import CreditAccounts
+
+    doc = account_document()
+    doc["accounts"][0]["grants"][0]["expires"] = {
+        "precision": "instant",
+        "value": (ANCHOR + timedelta(minutes=1)).isoformat(),
+    }
+    account = CreditAccounts(write_accounts(tmp_path, doc)).snapshot(ANCHOR + timedelta(minutes=2))[
+        0
+    ]
+    assert account["evidence"]["current"] is True
+    assert account["current_balance"] is None
+    assert account["balance"] == "23.45"
+    assert account["balance_state"] == "grant_expired"
+
+
+@pytest.mark.parametrize(
+    "remaining,state", [("23.45", "available"), ("0.0", "available"), ("23.45", "expired")]
+)
+def test_prior_expired_or_zero_grant_does_not_hide_new_balance(tmp_path, remaining, state):
+    from quota_broker.dashboard_accounts import CreditAccounts
+
+    doc = account_document()
+    grant = doc["accounts"][0]["grants"][0]
+    grant["expires"] = {
+        "precision": "instant",
+        "value": (ANCHOR - timedelta(minutes=1)).isoformat(),
+    }
+    grant["remaining"] = remaining
+    grant["state"] = state
+    account = CreditAccounts(write_accounts(tmp_path, doc)).snapshot(ANCHOR + timedelta(minutes=2))[
+        0
+    ]
+    assert account["current_balance"] == "23.45"

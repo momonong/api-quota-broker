@@ -423,7 +423,19 @@ def _provider_report(args: argparse.Namespace, now: datetime) -> dict[str, Any]:
                 "checked_at": account["checked_at"],
                 "daily": counter_fields(account["free_model_daily_requests"]),
             }
-            report["openrouter"] = _latest(report["openrouter"], row)
+            latest = _latest(report["openrouter"], row)
+            if report.get("refresh"):
+                refresh = report["refresh"]
+                refresh["attempted_at"] = max(
+                    _instant(refresh["attempted_at"]), _instant(row["checked_at"])
+                ).isoformat()
+                if _instant(row["checked_at"]) >= _instant(refresh["attempted_at"]):
+                    refresh["providers"]["openrouter"]["status"] = (
+                        "updated" if row["daily"] is not None else "counter_unavailable"
+                    )
+                if row["daily"] is None and report["openrouter"] is not None:
+                    latest = report["openrouter"]
+            report["openrouter"] = latest
     report["models"] = [models[key] for key in sorted(models)]
     encoded = json.dumps(report, indent=2, allow_nan=False).encode() + b"\n"
     validate_report(encoded, now)

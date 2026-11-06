@@ -65,3 +65,15 @@ Home 已核對本次人類授權，將已審首次初始化列為其既有維護
 ## 2026-11-06 任務建議修正
 
 正式版 `quota-matching-20261106-v2` 已核對 complete/current，manifest `3fe3e4eae633b8ba38b9d475094426b356edd257a65dbc68d0e83256ea785394`。修正預設未附提示詞時所有模型被誤標不可推薦，以及快照停用被誤當 live 配置。輸入／輸出選單隨任務調整，候選附官方文件與分開的免費執行條件。114 項受影響離線測試、11 項正式 HTTP 路徑檢查通過，公開 JS/CSS 等於部署包；五份私人 metadata bytes 不變。使用者已確認問題解決。沒有模型呼叫或付費。
+
+## 2026-11-06 額度總覽與按需資料更新
+
+接受的配對修正版已合併 PR #6，`main=063ead242fb038bf6701cb556e7fdde4c65bf3c4`。後續額度 pipeline／介面工作位於 `feat/quota-refresh-experience`，與該 PR 分開。
+
+額度總覽 app release `quota-refresh-20261106-v1`（operation `9d24e609-9ada-4a36-9c78-da2fb9f1f66d`）以現有入口發布成功。再執行 `quota_refresh.py run --base-package ... --publish`，已實際驗證單一流程的 Doppler 取值、OpenRouter GET、資料封包、發布及成功收據讀回。當前資料 release `quota-data-9e52a939-92cc-4f60-8e28-dcb26a08182a`，operation 同 UUID，manifest `f899442e34036af61267fe9e0da46559a0d1cafcebc2c1080d9a4750a98756ee`，`complete` 且 `active=true`。第二次只變動 `metadata/provider-observations.json`，40份 app 檔完全沿用；資格、路由、registry 不變。
+
+351 項相關離線測試通過，最後新增的供應商觀測／模型額度區分另通過19項介面回歸；Ruff、mypy及獨立審查通過。凍結45檔封包以真實metadata驗證，`execution_allowed=false`。1440/768/390視窗檢查及三工作台操作通過，後兩尺寸無水平溢出。正式HTTPS11條既有權限檢查全通過，CSS/JS bytes等於凍結包；正式瀏覽器確認新總覽DOM與登入保護，未聲稱完成正式登入後人工驗收。
+
+OpenAI於本次帳戶頁重新核對200 USD、2026-12-03僅日期到期；OpenRouter日計數於同步時剩50次、已用0／上限50。這是觀測，不保證日後仍相同。過時後歷史數字可見，當前可用值回未知；其他無支援介面／缺權限者明列缺口。0模型呼叫、0付費；76份其他草稿維持原SHA。Home已收到新的baseline與發布完成通知，本次不改其18993 Broker或共用密碼流程。
+
+操作契約與官方來源見 [quota-refresh.md](quota-refresh.md)。私人證據保存於 `.state/quota-refresh-20261106/`，憑證不在封包或Git。

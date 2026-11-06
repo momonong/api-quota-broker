@@ -395,3 +395,62 @@ def test_collect_rejects_non_loopback_and_path_prefix_even_in_dry_run(tmp_path, 
     )
     assert result.returncode == 2
     assert not (tmp_path / "out.json").exists()
+
+
+def test_older_counter_import_cannot_relabel_newer_failed_refresh(tmp_path):
+    from quota_broker.dashboard_provider_metadata import REFRESH_SOURCES
+
+    config, _, _ = write_bundle(tmp_path)
+    start = datetime(2026, 1, 12, 10, tzinfo=UTC)
+    statuses = {
+        p: {
+            "status": "permission_required"
+            if row[0] == "permission_required"
+            else "console_required"
+        }
+        for p, row in REFRESH_SOURCES.items()
+    }
+    statuses["openrouter"] = {"status": "query_failed"}
+    report = private_file(
+        config.parent / "provider-observations.json",
+        {
+            "schema_version": 2,
+            "kind": "provider_metadata_observations",
+            "models": [],
+            "openrouter": {
+                "source": "https://openrouter.ai/api/v1/key",
+                "checked_at": start.isoformat(),
+                "daily": {"used": 0, "limit": 50, "remaining": 50},
+            },
+            "refresh": {
+                "attempted_at": (start + timedelta(minutes=10)).isoformat(),
+                "providers": statuses,
+            },
+        },
+    )
+    imported = private_file(
+        config.parent / "counter.json",
+        {
+            "schema_version": 1,
+            "provider": "openrouter",
+            "source": "https://openrouter.ai/api/v1/key",
+            "checked_at": (start + timedelta(minutes=5)).isoformat(),
+            "daily_counter_semantics": "reported_tier_policy_not_admission",
+            "free_model_daily_requests": {"used": 1, "limit": 50, "remaining": 49},
+        },
+    )
+    result = run_script(
+        "import-provider-metadata",
+        "--input",
+        imported,
+        "--reviewed-config",
+        config,
+        "--destination",
+        report,
+        "--apply",
+    )
+    assert result.returncode == 0, result.stderr
+    saved = json.loads(report.read_bytes())
+    assert saved["refresh"]["providers"]["openrouter"]["status"] == "query_failed"
+    assert saved["refresh"]["attempted_at"] == (start + timedelta(minutes=10)).isoformat()
+    assert saved["openrouter"]["daily"]["remaining"] == 49

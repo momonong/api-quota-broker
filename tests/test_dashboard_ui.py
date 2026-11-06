@@ -373,3 +373,69 @@ def test_changing_task_selects_compatible_modalities_instead_of_empty_matches():
  assert.equal(get('match-input').value,'text');assert.equal(get('match-output').value,'image');
 })().catch(e=>{console.error(e);process.exitCode=1;});
 """)
+
+
+def test_quota_overview_separates_current_zero_history_and_public_limits():
+    run_ui_script(r"""
+(async()=>{
+ await tick();
+ const data=structuredClone(snapshot);
+ data.targets=[{...target,provider:'groq',provider_limits:[{metric:'requests',window:'day',value:500,current:true,reset:'utc_midnight'}],observations:[]}];
+ data.provider_metadata={state:'available',openrouter:{state:'current',daily:{used:50,limit:50,remaining:0},checked_at:stamp,reset_at:stamp},refresh:{attempted_at:stamp,providers:{openrouter:{status:'updated',method:'api'},groq:{status:'console_required',reason:'headers_require_inference'}}}};
+ data.accounts=[{provider:'openai',evidence:{current:false,as_of:stamp,sources:[]},balance:'17',current_balance:null,grants:[],benefit:{},model_limits:[],notes:[]}];
+ context.render(data);
+ const text=get('quota-overview').textContent;
+ assert.match(text,/0 次/);assert.match(text,/最後觀測 17 USD/);assert.match(text,/500 requests/);
+ assert.match(text,/餘額未知/);assert.doesNotMatch(text,/剩餘 500/);
+ get('quota-filter').value='current';get('quota-filter').handlers.change();
+ assert.doesNotMatch(get('quota-overview').textContent,/groq/);
+ assert.match(get('quota-overview').textContent,/0 次/);
+ await get('logout').handlers.click();assert.equal(get('quota-overview').textContent,'');
+})().catch(e=>{console.error(e);process.exitCode=1;});
+""")
+
+
+def test_task_candidate_shows_provider_observation_without_granting_model_quota():
+    run_ui_script(r"""
+(async()=>{
+ await tick();
+ const data=structuredClone(snapshot);
+ data.provider_metadata={openrouter:{daily:{remaining:50,limit:50,used:0},checked_at:stamp}};
+ context.render(data);
+ const row=context.matchCandidate({provider:'openrouter',model:'synthetic-free-model',safe:false,reasons:[],remaining:null},true);
+ assert.match(row.textContent,/日計數最後觀測：50 次/);
+ assert.match(row.textContent,/此模型適用範圍與本次可用額度仍待核對/);
+ assert.match(row.textContent,/本次可用額度：未知/);
+ assert.doesNotMatch(row.textContent,/免費資格與額度已通過/);
+})().catch(e=>{console.error(e);process.exitCode=1;});
+""")
+
+
+def test_quota_kpi_priority_provider_usage_and_match_quota_summary():
+    run_ui_script(r"""
+(async()=>{
+ await tick();
+ assert.match(get('quota-kpi').textContent,/已納管供應商/);
+ assert.match(get('quota-priority').textContent,/大量工作與任務優先順序建議/);
+ assert.match(get('quota-priority').textContent,/2026-12-03/);
+ context.renderUsage({...report,provider_usage:{state:'available',local_ledger_state:'unavailable',providers:[
+   {provider:'openrouter',name:'OpenRouter',state:'reported',as_of:stamp,source:'https://openrouter.ai/api/v1/key',reported_metrics:[{metric:'free_model_daily_requests',label:'免費模型日計數',used:0,limit:50,remaining:50,unit:'requests',window:'day',current:true,window_matched:true}],includes_external_usage:true,external_usage_scope:'金鑰層級統計',local_recorded_generation_attempts:null,ledger_held_count:0}
+ ]}});
+ assert.match(get('provider-usage').textContent,/供應商回報／帳戶核對用量/);
+ assert.match(get('provider-usage').textContent,/OpenRouter/);
+ assert.match(get('provider-usage').textContent,/免費模型日計數：已用 0 \/ 50 requests/);
+ const cand=context.matchCandidate({
+   provider:'openai',model:'gpt-5-mini',safe:false,free_plan_verified:true,free_plan_basis:'credit_grant',
+   access_stage:'account_grant_verified',
+   quota_summary:{state:'observed_credit_grant',headline:'帳戶贈送點數最後觀測：200.00 USD',limits_text:'帳戶模型上限：500 RPM',reset_or_expiry:'實際點數到期：2026-12-03',sharing_scope:'帳戶共用贈送點數池'},
+   reasons:['route_not_configured'],remaining:null
+ });
+ assert.match(cand.textContent,/帳戶贈送 Credits 與專案上限已核對/);
+ assert.match(cand.textContent,/額度依據：帳戶贈送點數最後觀測：200\.00 USD/);
+ assert.match(cand.textContent,/重置／到期：實際點數到期：2026-12-03/);
+ await get('logout').handlers.click();
+ assert.equal(get('quota-kpi').textContent,'');
+ assert.equal(get('quota-priority').textContent,'');
+ assert.equal(get('provider-usage').textContent,'');
+})().catch(e=>{console.error(e);process.exitCode=1;});
+""")

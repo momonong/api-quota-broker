@@ -227,6 +227,32 @@ class CreditAccounts:
                 _instant(evidence["as_of"]) <= now < _instant(evidence["valid_until"])
             )
             evidence["kind"] = "manually_reviewed_credit_account"
-            row["current_balance"] = row["balance"] if evidence["current"] else None
+            row["balance_state"] = "current" if evidence["current"] else "stale"
+            for grant in row["grants"]:
+                expires = grant["expires"]
+                if (
+                    not expires
+                    or grant["state"] != "available"
+                    or grant["remaining"] is None
+                    or Decimal(grant["remaining"]) == 0
+                ):
+                    continue
+                observed = _instant(evidence["as_of"])
+                if (
+                    expires["precision"] == "instant"
+                    and observed < _instant(expires["value"]) <= now
+                ):
+                    row["balance_state"] = "grant_expired"
+                    break
+                if expires["precision"] == "date":
+                    # A date alone provides no exact cutoff. Stop presenting a
+                    # current balance at the earliest possible timezone boundary.
+                    earliest = datetime.fromisoformat(expires["value"]).replace(
+                        tzinfo=UTC
+                    ) - timedelta(hours=14)
+                    latest = earliest + timedelta(hours=50)
+                    if now >= earliest and observed < latest:
+                        row["balance_state"] = "expiry_time_unknown"
+            row["current_balance"] = row["balance"] if row["balance_state"] == "current" else None
             row["execution_allowed"] = row["paid_allowed"] = False
         return rows

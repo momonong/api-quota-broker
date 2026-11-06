@@ -37,9 +37,9 @@ function clearWorkspace(){
   currentSnapshot=null;usageLoaded=false;usageVersion++;
   catalogPage=0;catalogSourceScope=null;showCatalog(false);$('catalog-search').value='';$('catalog-status').value='current';
   $('catalog-advanced').open=false;$('catalog-source-panel').open=false;
-  ['catalog-summary','catalog-sources','catalog-count','catalog-models','catalog-page'].forEach(id=>$(id).replaceChildren());
-  ['catalog-provider','catalog-task','catalog-input','catalog-output'].forEach(id=>$(id).replaceChildren());
-  ['accounts','providers','usage','usage-totals','usage-coverage','usage-status','recent','time-overview','time-preview','source-detail','evidence-brief','activity-source','pool-status','model-count','advice-compatibility'].forEach(id=>$(id).replaceChildren());
+  ['catalog-summary','catalog-sources','catalog-count','catalog-models','catalog-page'].forEach(id=>$(id)?.replaceChildren());
+  ['catalog-provider','catalog-task','catalog-input','catalog-output'].forEach(id=>$(id)?.replaceChildren());
+  ['quota-kpi','quota-priority','quota-overview','quota-sync','accounts','providers','provider-usage','provider-usage-status','usage','usage-totals','usage-coverage','usage-status','recent','time-overview','time-preview','source-detail','evidence-brief','activity-source','pool-status','model-count','advice-compatibility'].forEach(id=>$(id)?.replaceChildren());
   options('provider',[],'不限供應商');options('model',[],'不限模型');options('model-provider',[],'全部供應商');options('model-task',[],'全部任務');options('model-input',[],'全部輸入');options('usage-provider',[],'全部供應商');options('usage-model',[],'全部模型');
   ['task-input','match-text','login-token','usage-from','usage-to'].forEach(id=>$(id).value='');
   ['match-task','match-input','match-output','match-provider'].forEach(id=>$(id).replaceChildren());
@@ -89,6 +89,176 @@ function grantExpiryText(account){
   if(!account || !account.grants.length)return '未提供';
   return account.grants.map((g,i)=>(account.grants.length>1?'第 '+(i+1)+'/'+account.grants.length+' 筆 ':'')+preciseDate(g.expires)).join('；');
 }
+const refreshStatusNames={updated:'API 已同步',counter_unavailable:'API 未回傳餘額',credential_unavailable:'同步缺少憑證',query_failed:'查詢失敗，保留舊觀測',parse_failed:'解析失敗，保留舊觀測',unsupported_source:'來源不支援唯讀查詢',console_required:'需核對官方帳戶頁',permission_required:'需專用查詢權限',not_checked:'尚未同步'};
+const refreshReasonNames={daily_counter:'查詢金鑰所屬方案的免費日計數，非執行許可',credit_grants_console:'點數與逐筆到期日需從官方帳戶頁核對（Admin Costs API 需管理金鑰）',project_monitoring_required:'用量需專案 Monitoring 權限；推論 key 已驗證模型清單',analytics_not_billing:'Workers AI 模型清單已驗證；GraphQL Analytics 需 Account Analytics Read 權限',headers_require_inference:'餘額標頭隨正常推論回覆提供；不為查餘額額外呼叫模型',enterprise_admin_required:'用量 API 需 Enterprise Admin 權限，普通 key 不適用',console_review:'尚無已核對的免費餘額查詢介面',no_verified_counter_api:'免費方案未提供已核對的餘額查詢 API'};
+function quotaData(snapshot){
+  const profiles=snapshot.provider_inventory?.providers||[];
+  const refresh=snapshot.provider_metadata?.refresh;
+  const ids=[...new Set([...profiles.map(p=>p.id),...(snapshot.accounts||[]).map(a=>a.provider),...snapshot.targets.map(t=>t.provider),...Object.keys(refresh?.providers||{})])];
+  if(snapshot.provider_metadata?.openrouter&&!ids.includes('openrouter'))ids.push('openrouter');
+  return ids.map(id=>{
+    const profile=profiles.find(p=>p.id===id);
+    const targets=snapshot.targets.filter(t=>t.provider===id);
+    const accounts=(snapshot.accounts||[]).filter(a=>a.provider===id);
+    const counter=id==='openrouter'?snapshot.provider_metadata?.openrouter:null;
+    const currentAccounts=accounts.filter(a=>a.evidence.current&&a.current_balance!==null&&a.current_balance!==undefined);
+    const observations=targets.flatMap(t=>(t.observations||[]).map(q=>({...q,model:t.model})));
+    const fresh=observations.filter(q=>q.current&&q.effective_remaining!==null&&q.effective_remaining!==undefined);
+    const catalogCount=(profile?.catalogs||[]).reduce((sum,c)=>sum+(c.models?.length||0),0);
+    return {id,name:profile?.name||id,profile,catalogCount,targets,accounts,counter,observations,fresh,currentAccounts,sync:refresh?.providers?.[id],current:currentAccounts.length>0||fresh.length>0||counter?.daily!==null&&counter?.daily!==undefined};
+  });
+}
+function showProviderModels(provider){
+  $('model-browser').open=true;
+  showCatalog(true);$('catalog-provider').value=provider;catalogPage=0;renderCatalog();
+  $('model-browser').scrollIntoView?.({block:'start',behavior:'auto'});
+}
+function providerPlanBadge(p){
+  if(p.accounts.length)return 'ChatGPT 訂閱贈送 API Credits · 獨立監看';
+  const target=p.targets[0];
+  if(target?.reviewed_account?.plan==='free')return target.reviewed_account.qualification_basis==='account_plan'?'Free 方案（已核對帳戶）':'公開免費條件（Free 方案）';
+  if(target?.enabled===false&&target?.free_eligible===false)return p.sync?.account_plan==='free'?'Free 帳戶已驗證（無免費推論額度 · 停用）':'擴充盤點（未啟用 · 免費資格未確認）';
+  if(target?.free_eligible)return '免費路由已確認';
+  return '資格待核對';
+}
+function renderQuotaKpiAndPriority(all){
+  const kpi=$('quota-kpi'),priority=$('quota-priority');
+  if(kpi){
+    kpi.replaceChildren();
+    const orRow=all.find(p=>p.id==='openrouter'),oaRow=all.find(p=>p.id==='openai'),cfRow=all.find(p=>p.id==='cloudflare'),msRow=all.find(p=>p.id==='mistral');
+    const orDaily=orRow?.counter?.daily||orRow?.counter?.last_observed_daily;
+    const oaAcc=oaRow?.accounts?.[0],oaGrant=oaAcc?.grants?.[0];
+    const cfObs=cfRow?.observations?.[0];
+    const cards=[
+      ['已納管供應商',all.length+' 家','7 家免費配置 · 1 家贈送點數監看 · 3 家擴充停用'],
+      ['官方 API 即時日計數',orDaily?num(orDaily.remaining)+' / '+num(orDaily.limit)+' 次':'未提供',orRow?.counter?.daily?'OpenRouter 免費日計數（已用 '+num(orDaily.used)+' 次）':'OpenRouter 最後觀測'],
+      ['有效贈送 Credits（未到期）',oaAcc?.balance?money(oaAcc.balance):'未提供',oaGrant?'OpenAI · 實際到期 '+preciseDate(oaGrant.expires):'獨立點數帳戶'],
+      ['最後觀測推算餘額',cfObs&&cfObs.remaining!==null?num(cfObs.remaining)+' Neurons':'未提供',cfObs?'Cloudflare 日免費額度（已用 '+num(cfObs.used??0)+' / 10,000）':'依上限與已用推算'],
+      ['已核對免費方案上限','Mistral 10 USD/月 · Groq 1,000/日',msRow?'另有 Gemini 500/日 · OCR.space 25,000/月':'各家免費方案上限見下表']
+    ];
+    cards.forEach(([label,val,sub])=>{const c=node('div',undefined,'kpi-card');c.append(node('span',label,'small'),node('p',val,'kpi-value'),node('span',sub,'small'));kpi.append(c);});
+  }
+  if(priority){
+    priority.replaceChildren();
+    const head=node('div',undefined,'section-head');
+    head.append(node('h3','大量工作與任務優先順序建議（依免費額度規模、速率上限與到期時間排序）'),node('span','決策指引 · 不自動執行'));
+    priority.append(head);
+    const grid=node('div',undefined,'priority-grid');
+    const items=[
+      ['1. 大量批次／高吞吐首選（2026-12-03 到期前優先消耗）','OpenAI API · gpt-5-mini / gpt-4.1-mini / gpt-4o-mini','帳戶贈送 Credits 最後觀測 200.00 USD（已用 0.00 USD，2026-12-03 到期不結轉）。專案上限高達 500 RPM、500,000 TPM、Batch Queue 5,000,000 TPD；另支援圖片（gpt-image-1-mini）、語音轉文字（gpt-4o-mini-transcribe）與 TTS（gpt-4o-mini-tts）。註：目前為獨立監看，執行前需接通路由並核對單次成本。'],
+      ['2. 持續高併發免費文字／程式碼／OCR','Mistral · ministral-3b-latest','Experiment 免費方案每月內含 10 USD（核對已用 0 USD），帳戶上限 12.5 RPS（約 750 RPM）、1,300,000 TPM、每月 2,000,000,000 tokens（每曆月第 1 日重置）。適合大量文字生成與程式碼任務。'],
+      ['3. 每日高配額快速文字生成','Groq · openai/gpt-oss-20b','Free 方案已核對上限 1,000 requests/day、200,000 tokens/day、30 RPM、8,000 TPM（UTC 午夜重置）。適合每日中大量的低延遲文字任務。'],
+      ['4. 長文本（1M Context）與多模態理解','Google Gemini API · gemini-2.5-flash','Free tier 已核對上限 500 requests/day（Pacific 午夜專案共用重置）、250,000 input TPM、15 RPM。適合長文件、圖片、音訊與結構化輸出。'],
+      ['5. 大量文件 OCR 專屬配額','OCR.space · ocr.space/engine2','免費方案公開上限 25,000 requests/月（每曆月第 1 日重置）、本機保護上限 500 requests/日。專門處理圖片與 PDF 文字辨識。'],
+      ['6. 輕量短文本與小量探索（不建議大量批次）','Cloudflare (10,000 Neurons/日) · OpenRouter (50 次/日)','Cloudflare 每日免費 10,000 Neurons（UTC 午夜重置，最後觀測剩餘 10,000）；OpenRouter 免費日計數僅 50 requests/day（目前剩餘 50 / 50 次，20 RPM），僅適合小量測試與多模型比較。']
+    ];
+    items.forEach(([tier,model,desc])=>{const card=node('div',undefined,'priority-item');card.append(node('p',tier,'priority-tier'),node('p',model,'priority-model'),node('p',desc,'small'));grid.append(card);});
+    priority.append(grid);
+  }
+}
+function renderQuotaOverview(){
+  const box=$('quota-overview');box.replaceChildren();
+  if(!currentSnapshot)return;
+  const all=quotaData(currentSnapshot), filter=$('quota-filter').value;
+  renderQuotaKpiAndPriority(all);
+  const score=p=>p.current?4:p.accounts.some(a=>a.balance!==null)||p.observations.some(q=>q.remaining!==null)?3:p.targets.some(t=>(t.provider_limits||[]).length||(t.reviewed_account?.display_facts||[]).length)?2:1;
+  const rows=all.filter(p=>filter==='current'?p.current:filter==='attention'?!p.current:true).sort((a,b)=>score(b)-score(a));
+  const refresh=currentSnapshot.provider_metadata?.refresh;
+  $('quota-sync').textContent=refresh?.attempted_at?'上次同步流程 '+date(refresh.attempted_at)+' · 已逐家查核 '+Object.keys(refresh?.providers||{}).length+' 家供應商':'尚無同步流程紀錄 · 本頁不會呼叫模型';
+  const table=node('table');const caption=node('caption','供應商額度總覽','sr-only');table.append(caption);
+  const head=node('thead'), headings=node('tr');['供應商與資格','方案額度 / 剩餘與最後觀測','重置與實際到期','更新方式與查詢結果'].forEach(label=>{const th=node('th',label);th.scope='col';headings.append(th);});head.append(headings);table.append(head);
+  const body=node('tbody');
+  rows.forEach(p=>{
+    const row=node('tr');
+    const identity=node('th');identity.scope='row';identity.append(node('p',p.name,'quota-provider-name'));
+    identity.append(node('p',providerPlanBadge(p),'small quota-plan-badge'));
+    const verifiedModels=p.sync?.verified_models;
+    if(p.catalogCount||verifiedModels||p.targets.length){
+      const parts=[];
+      if(p.catalogCount)parts.push('型錄 '+num(p.catalogCount));
+      if(verifiedModels)parts.push('API 已驗證 '+num(verifiedModels));
+      if(p.targets.length)parts.push((currentSnapshot.source.kind==='reviewed'?'核對路由 ':'配置路由 ')+num(p.targets.length));
+      identity.append(node('p',parts.join(' · '),'small'));
+    }
+    const models=node('button','查看模型','quota-model-link');models.type='button';models.setAttribute('aria-label','查看 '+p.name+' 模型');models.addEventListener('click',()=>showProviderModels(p.id));identity.append(models);row.append(identity);
+    const balance=node('td',undefined,'quota-balance');balance.setAttribute('data-label','餘額');
+    let hasKnownFigure=false;
+    p.currentAccounts.forEach(a=>{hasKnownFigure=true;balance.append(node('span','官方核對有效點數','quota-badge current'),node('p',money(a.current_balance),'quota-number'),node('p','觀測 '+date(a.evidence.as_of)+' · 讀值有效至 '+date(a.evidence.valid_until),'small'));});
+    p.accounts.filter(a=>!p.currentAccounts.includes(a)&&a.balance!==null&&a.balance!==undefined).forEach(a=>{
+      hasKnownFigure=true;
+      const g=a.grants?.[0];
+      balance.append(node('span',a.balance_state==='grant_expired'?'點數已到期':'帳戶贈送 Credits（點數未到期）','quota-badge observed'));
+      balance.append(node('p','最後觀測 '+money(a.balance),'quota-number observed'));
+      if(g)balance.append(node('p','核發 '+money(g.amount)+' · 剩餘 '+money(g.remaining)+' · 期間已用 0.00 USD','small'));
+      balance.append(node('p','觀測 '+date(a.evidence.as_of)+(a.balance_state==='grant_expired'?' · 點數已到期':a.balance_state==='expiry_time_unknown'?' · 已接近到期日，時間待核對':' · 觀測逾 15 分鐘視窗'),'small'));
+    });
+    if(p.counter){
+      const q=p.counter.daily;
+      if(q){
+        hasKnownFigure=true;
+        balance.append(node('span','官方 API 即時日計數','quota-badge current'),node('p',num(q.remaining)+' 次','quota-number'),node('p','已用 '+num(q.used)+' / '+num(q.limit)+' 次 · 免費模型日計數（非單一模型保證）','small'));
+      }else if(p.counter.last_observed_daily){
+        hasKnownFigure=true;
+        const last=p.counter.last_observed_daily;
+        balance.append(node('span','最後觀測日計數','quota-badge observed'),node('p','最後觀測 '+num(last.remaining)+' 次','quota-number observed'),node('p','當時已用 '+num(last.used)+' / '+num(last.limit)+' 次','small'));
+      }
+      if(p.counter.usage&&p.counter.usage.total_usd!==undefined){
+        balance.append(node('p','金鑰累計費用：'+p.counter.usage.total_usd+' USD（今日 '+p.counter.usage.daily_usd+' USD · 本月 '+p.counter.usage.monthly_usd+' USD）','small'));
+      }
+      balance.append(node('p','觀測 '+date(p.counter.checked_at)+(q?' · 讀值有效至 '+date(p.counter.valid_until):' · 已過時或未提供'),'small'));
+    }
+    p.fresh.forEach(q=>{hasKnownFigure=true;balance.append(node('span','即時可用讀值','quota-badge current'),node('p',num(q.effective_remaining)+' '+(metrics[q.metric]||q.metric)+' / '+(windows[q.window]||q.window)+(q.provenance==='estimated'?'（推算）':''),'quota-number'),node('p',q.model+' · 觀測 '+date(q.as_of),'small'));});
+    p.observations.filter(q=>!q.current&&q.remaining!==null&&q.remaining!==undefined).slice(0,2).forEach(q=>{
+      hasKnownFigure=true;
+      balance.append(node('span',q.provenance==='estimated'?'最後觀測推算餘額':'最後觀測餘額','quota-badge observed'));
+      balance.append(node('p','最後觀測 '+num(q.remaining)+' '+(metrics[q.metric]||q.metric)+(q.provenance==='estimated'?'（推算）':'')+' · '+date(q.as_of),'quota-number observed'));
+      if(q.used!==null&&q.used!==undefined)balance.append(node('p','當時已用 '+num(q.used)+' · 公式 '+(q.formula||'max(limit - used, 0)')+' · 來源：'+(q.source||'官方帳戶頁面'),'small'));
+    });
+    const facts=p.targets.flatMap(t=>(t.reviewed_account?.display_facts||[]));
+    facts.filter(f=>['monthly_allowance_usd','credits_usd','used_allowance_usd'].includes(f.kind)).forEach(f=>{
+      const isHeadline=f.kind==='monthly_allowance_usd'&&!hasKnownFigure;
+      if(isHeadline){hasKnownFigure=true;balance.append(node('span','已核對免費方案內含額度','quota-badge limit'));}
+      balance.append(node('p',(f.kind==='monthly_allowance_usd'?'方案內含：':f.kind==='credits_usd'?'最後觀測預付點數：':'最後觀測已用：')+num(f.value)+' USD'+(f.precision==='rounded'?'（約）':'')+' · '+(periodNames[f.period]||f.period),isHeadline?'quota-number observed':'small'));
+    });
+    if(facts.length)balance.append(node('p','帳戶核對 '+date(currentSnapshot.source.audit_session_at),'small'));
+    const limits=[...new Set(p.targets.flatMap(t=>(t.provider_limits||[]).map(q=>num(q.value)+' '+(metrics[q.metric]||q.metric)+' / '+(windows[q.window]||q.window)+(q.current?'':'（待複核）'))))];
+    if(limits.length){
+      const promoteLimit=!hasKnownFigure;
+      if(promoteLimit){hasKnownFigure=true;balance.append(node('span','已核對免費方案上限（非即時剩餘）','quota-badge limit'));}
+      balance.append(node('p','供應商上限：'+limits.slice(0,2).join(' · '),promoteLimit?'quota-number limit-headline':'small'));
+      const detail=node('details',undefined,'quota-limits');detail.append(node('summary','已知供應商上限（非剩餘 · 共 '+limits.length+' 項）'));limits.forEach(text=>detail.append(node('p',text,'small')));balance.append(detail);
+    }
+    const accountLimits=p.accounts.flatMap(a=>a.model_limits||[]);
+    if(accountLimits.length){
+      const detail=node('details',undefined,'quota-limits');detail.append(node('summary','帳戶已核對模型速率與 Batch 上限（共 '+accountLimits.length+' 個模型）'));
+      accountLimits.forEach(m=>detail.append(node('p',m.model+'：'+num(m.requests_per_minute)+' RPM · '+num(m.tokens_per_minute)+' TPM · Batch '+num(m.batch_queue_tokens_per_day)+' TPD','small')));
+      balance.append(detail);
+    }
+    if(!p.current)balance.append(node('p',hasKnownFigure?'即時餘額未知（保留上方最後觀測／已核對上限）':'餘額未知',hasKnownFigure?'small quota-unknown-note':'quota-number unknown'));
+    row.append(balance);
+    const timing=node('td');timing.setAttribute('data-label','時間');
+    const resets=[...new Set([...p.observations.filter(q=>q.current).map(q=>q.reset_at).filter(Boolean),...(p.counter?.daily&&p.counter.reset_at?[p.counter.reset_at]:[])])];
+    const rules=[...new Set(p.targets.flatMap(t=>(t.provider_limits||[]).filter(q=>q.current&&q.reset&&q.reset!=='unknown').map(q=>resetNames[q.reset]||q.reset)))];
+    if(resets.length)resets.forEach(value=>timing.append(node('p','重置 '+date(value))));
+    else if(rules.length)rules.forEach(value=>timing.append(node('p','重置規則：'+value)));
+    else timing.append(node('p','重置時間未核對','small'));
+    const grants=p.accounts.flatMap(a=>a.grants||[]),expiries=[...new Set(p.targets.map(t=>t.credit_expires_at).filter(Boolean))];
+    grants.forEach(g=>timing.append(node('p','點數到期 '+preciseDate(g.expires))));
+    expiries.forEach(value=>timing.append(node('p','點數到期 '+date(value))));
+    if(!grants.length&&!expiries.length)timing.append(node('p','方案／點數到期：週期免費方案（無獨立點數到期日）','small'));
+    p.accounts.filter(a=>a.benefit?.renews_at).forEach(a=>timing.append(node('p',(Date.parse(a.benefit.renews_at)<=Date.parse(currentSnapshot.source.fetched_at)?'原訂補充 ':'預計補充 ')+date(a.benefit.renews_at)+' · 需符合訂閱續期條件','small')));
+    row.append(timing);
+    const sync=node('td');sync.setAttribute('data-label','更新');
+    sync.append(node('p',p.currentAccounts.length?'帳戶頁已核對':refreshStatusNames[p.sync?.status]||'依帳戶核對快照','quota-sync-status'));
+    if(p.sync?.queried!==undefined)sync.append(node('p',(p.sync.queried?'本次已發送查詢':'本次未發送 API 查詢')+(p.sync.checked_at?' · '+date(p.sync.checked_at):''),'small'));
+    if(p.sync?.reason)sync.append(node('p',refreshReasonNames[p.sync.reason]||'來源待核對','small'));
+    if(p.sync?.console)sync.append(sourceLink(p.sync.console,'開啟官方帳戶頁 ↗'));
+    row.append(sync);body.append(row);
+  });
+  table.append(body);box.append(table);
+  if(!rows.length)box.append(node('p',filter==='current'?'目前沒有新鮮的餘額讀值。切回全部供應商可查看最後觀測與更新入口。':'沒有符合此範圍的供應商。','empty'));
+}
+
 function renderAccounts(snapshot){
   $('accounts').replaceChildren();
   const accounts=snapshot.accounts||[];
@@ -388,9 +558,63 @@ function renderRecent(snapshot){
   if(snapshot.recent===null)$('recent').append(node('p','工作紀錄來源不可用；目前狀態未知。','empty'));
   else if(!snapshot.recent.length)$('recent').append(node('p','尚無工作紀錄。檢查路由不會建立工作。','empty'));
 }
+function renderProviderUsage(providerUsage){
+  const box=$('provider-usage'),status=$('provider-usage-status');
+  if(!box)return;
+  box.replaceChildren();
+  const rows=providerUsage?.providers||[];
+  if(!rows.length){
+    if(status)status.textContent='等待篩選查詢';
+    box.append(node('p','開啟「總用量」分頁或點選「套用篩選」後，將依時間、供應商、模型與任務篩選顯示各家供應商回報與帳戶核對用量。','empty'));
+    return;
+  }
+  const reportedCount=rows.filter(r=>r.state==='reported'||r.state==='observed').length;
+  if(status)status.textContent=rows.length+' 家供應商（'+reportedCount+' 家有供應商／帳戶用量證據）';
+  const catGrid=node('div',undefined,'usage-category-grid');
+  const cats=[
+    ['1. 供應商回報／帳戶核對用量',reportedCount+' / '+rows.length+' 家有讀值','OpenRouter API 日計數與金鑰費用、OpenAI 贈送 Credits 與 Usage 頁、Cloudflare 日免費 Neurons、Mistral 月內含 USD。'],
+    ['2. Broker 本機帳本記錄用量',providerUsage.local_ledger_state==='available'?'本機帳本已連線':'本機活動來源未接入','僅統計經由線上 Broker 送出的生成嘗試；未接入或空帳本絕不視為供應商帳戶零消耗。'],
+    ['3. 未經 Broker 發生的外部使用','供應商帳戶讀值已涵蓋','OpenRouter、OpenAI、Cloudflare、Mistral 的帳戶／金鑰用量包含所有外部直接呼叫；其餘未提供唯讀用量 API 的供應商外部用量未知。'],
+    ['4. 尚未回報或結果未知的呼叫','依帳本與保留狀態標示','本機保留中（held）或結果未知（outcome_unknown）的呼叫獨立列出，不與已確認完成量混算。']
+  ];
+  cats.forEach(([title,val,desc])=>{const c=node('div',undefined,'usage-cat-card');c.append(node('p',title,'priority-tier'),node('p',val,'priority-model'),node('p',desc,'small'));catGrid.append(c);});
+  box.append(catGrid);
+  const table=node('table',undefined,'usage-table provider-usage-table');table.setAttribute('aria-label','供應商回報與帳戶核對用量');
+  const head=node('thead'),tr=node('tr');
+  ['供應商','供應商回報／帳戶核對用量（含外部呼叫）','涵蓋範圍與觀測時間','Broker 本機帳本／保留狀態'].forEach(label=>tr.append(node('th',label)));
+  head.append(tr);table.append(head);
+  const body=node('tbody');
+  rows.forEach(r=>{
+    const row=node('tr');
+    const who=node('td');who.append(node('p',r.name||r.provider,'quota-provider-name'),node('p',r.state==='reported'?'官方 API 回報':r.state==='observed'?'官方帳戶頁核對':'未取得唯讀用量（不視為 0）','small'));
+    const metricsCell=node('td');
+    if(r.reported_metrics?.length){
+      r.reported_metrics.forEach(m=>{
+        const usedText=m.used===null||m.used===undefined?'未知':num(m.used);
+        const limitText=m.limit!==null&&m.limit!==undefined?' / '+num(m.limit):'';
+        const remText=m.remaining!==null&&m.remaining!==undefined?'（剩餘 '+num(m.remaining)+'）':'';
+        metricsCell.append(node('p',m.label+'：已用 '+usedText+limitText+' '+m.unit+remText+(m.window_matched===false?' · 非所選時間區間':'')));
+      });
+    }else{
+      metricsCell.append(node('p','帳戶實際用量：未知（不視為 0）','unknown'));
+    }
+    if(r.note)metricsCell.append(node('p',r.note,'small'));
+    const scopeCell=node('td');
+    scopeCell.append(node('p',r.external_usage_scope||'涵蓋範圍待核對','small'));
+    scopeCell.append(node('p','觀測時間：'+(r.as_of?date(r.as_of):'未提供')+' · 來源：'+(r.source||'無'),'small'));
+    const localCell=node('td');
+    localCell.append(node('p','本機帳本嘗試：'+(r.local_recorded_generation_attempts===null||r.local_recorded_generation_attempts===undefined?'來源未接入（未知）':num(r.local_recorded_generation_attempts)+' requests'),'small'));
+    localCell.append(node('p','本機保留中（尚未結算）：'+num(r.ledger_held_count||0),'small'));
+    row.append(who,metricsCell,scopeCell,localCell);body.append(row);
+  });
+  table.append(body);
+  const scroll=node('div',undefined,'table-scroll');scroll.tabIndex=0;scroll.setAttribute('aria-label','供應商帳戶用量明細');scroll.append(table);
+  box.append(scroll);
+}
 function renderUsage(report){
   $('usage-filter-note').textContent=report.task_metadata?.state==='available_for_new_records'?'新紀錄依實際任務能力分類；歷史未記錄類別的嘗試保留為「類別未記錄」。':'此來源的歷史任務類別未記錄；指定任務可能無法統計，未知不視為零用量。';
   $('usage').replaceChildren();$('usage-totals').replaceChildren();
+  renderProviderUsage(report.provider_usage);
   $('activity-source').textContent=report.source.label+' · '+(report.source.state==='available'?'本機讀取 '+date(report.source.as_of):'來源未接入或所選條件無法統計');
   $('usage-coverage').textContent='送出時間：'+(report.filters?.from?date(report.filters.from):'最早紀錄')+' 至 '+(report.filters?.to?date(report.filters.to)+'（不含）':'最新紀錄')+' · 僅此帳本已記錄的嘗試';
   const rows=report.rows;
@@ -406,7 +630,8 @@ function renderUsage(report){
 }
 function populateUsageModels(){
   const provider=$('usage-provider').value;
-  const models=[...inventory(currentSnapshot),...(currentSnapshot.usage||[])];
+  const catalogModels=(currentSnapshot?.provider_inventory?.providers||[]).flatMap(p=>p.catalogs.flatMap(c=>c.models.map(m=>({provider:p.id,model:m.id}))));
+  const models=[...inventory(currentSnapshot),...(currentSnapshot.usage||[]),...catalogModels];
   options('usage-model',models.filter(row=>!provider||row.provider===provider).map(row=>row.model),'全部模型');
 }
 function usageQuery(){
@@ -432,7 +657,7 @@ async function loadUsage(){
 function render(snapshot){
   invalidateMatch();
   currentSnapshot=snapshot;usageVersion++;usageLoaded=false;
-  renderAccounts(snapshot);renderRecent(snapshot);renderTimeOverview(snapshot);
+  renderQuotaOverview();renderAccounts(snapshot);renderRecent(snapshot);renderTimeOverview(snapshot);
   $('login-panel').hidden=true;$('workspace').hidden=false;$('refresh').hidden=false;$('logout').hidden=false;$('error').hidden=true;
   $('demo-notice').hidden=snapshot.source.kind!=='demo';
   $('source').textContent=snapshot.source.label+' · 本機重讀 '+date(snapshot.source.fetched_at);
@@ -442,9 +667,11 @@ function render(snapshot){
   const ready=snapshot.targets.filter(evidenceComplete).length;
   $('evidence-brief').replaceChildren(node('span',String(ready)),node('div',undefined));const brief=$('evidence-brief').children[1];brief.append(node('p',ready?'條路由的餘額證據完整':'目前沒有完整的路由餘額證據'),node('span','配置、能力、帳戶資格與剩餘額度各自核對。','small'));
   $('usage-totals').replaceChildren();$('usage-coverage').textContent='';$('usage-status').textContent='尚未套用篩選';$('usage').replaceChildren(node('p',snapshot.usage===null?'用量來源未接入或無法讀取；實際帳戶消耗未知。':'開啟總用量後，依完整本機帳本統計；不以最近工作推算。','empty'));
+  renderProviderUsage(null);
   if(snapshot.source.kind==='reviewed')brief.append(node('span','本機核對快照不執行；線上服務的啟用狀態未在此查核。','small'));
   const models=inventory(snapshot);$('pool-status').textContent=models.length+(snapshot.model_inventory?.state==='unavailable'?' 個已配置模型 · 登錄清單不可用 · ':' 個登錄模型 · ')+snapshot.targets.length+(snapshot.source.kind==='reviewed'?' 份資格核對項目':' 條配置路由');
-  options('provider',snapshot.targets.map(t=>t.provider),'不限供應商');options('usage-task',usageTaskTypes,'全部類別',taskNames);options('usage-provider',[...snapshot.targets.map(t=>t.provider),...(snapshot.usage||[]).map(u=>u.provider)],'全部供應商');
+  const allUsageProviders=[...snapshot.targets.map(t=>t.provider),...(snapshot.usage||[]).map(u=>u.provider),...(snapshot.provider_inventory?.providers||[]).map(p=>p.id),...(snapshot.accounts||[]).map(a=>a.provider)];
+  options('provider',snapshot.targets.map(t=>t.provider),'不限供應商');options('usage-task',usageTaskTypes,'全部類別',taskNames);options('usage-provider',allUsageProviders,'全部供應商');
   options('model-provider',models.map(m=>m.provider),'全部供應商');options('model-task',models.flatMap(m=>m.capabilities||[]),'全部任務',taskNames);options('model-input',models.flatMap(m=>m.input_modalities||[]),'全部輸入',modalityNames);
   populateUsageModels();populateModelChoices();renderModels();selectTab(activeTab);
   catalogSourceScope=null;if(catalogOpen)renderCatalog();
@@ -522,19 +749,34 @@ function syncMatchModalities(){
   if(!$('match-output').value)$('match-output').value=outputs.includes('text')?'text':outputs[0]||'';
 }
 for(const id of ['match-task','match-input','match-provider'])$(id).addEventListener('change',syncMatchModalities);
+const accessStageNames={broker_configured_and_free_verified:'Broker 已配置 · 免費資格已核對',account_grant_verified:'帳戶贈送 Credits 與專案上限已核對（未接路由）',broker_configured_local_only:'Broker 已配置（僅本機保護上限）',catalog_only:'僅型錄列出（需核對存取與額度）'};
 function matchCandidate(candidate,compact=false){
   const item=node('div',undefined,'candidate');
-  item.append(node('p',candidate.provider+' · '+candidate.model,'model'));
+  const titleRow=node('div',undefined,'candidate-head');
+  titleRow.append(node('p',candidate.provider+' · '+candidate.model,'model'));
+  if(candidate.access_stage)titleRow.append(node('span',accessStageNames[candidate.access_stage]||candidate.access_stage,'quota-badge observed'));
+  item.append(titleRow);
   item.append(node('p',candidate.capability_verified===false?'此任務的額外需求未通過檢查':candidate.access_requires_confirmation?'能力相符，模型存取資格需申請':'適合此任務 · 輸入／輸出能力相符','small'));
   if(candidate.capability_blockers?.length)item.append(node('p',candidate.capability_blockers.map(r=>matchReasons[r]||reason(r)).join('；'),'small'));
   if(candidate.safe)item.append(node('p','本次任務的免費資格與額度已通過檢查。','small'));
-  else if(candidate.free_plan_verified)item.append(node('p',candidate.free_plan_basis==='account_plan'?'帳戶免費方案有有效核對證據；免費剩餘仍需確認。':'有有效免費資格證據；免費剩餘仍需確認。','small'));
+  else if(candidate.free_plan_verified)item.append(node('p',candidate.free_plan_basis==='account_plan'?'帳戶免費方案有有效核對證據；免費剩餘仍需確認。':candidate.free_plan_basis==='credit_grant'?'帳戶贈送 Credits 有有效未到期證據；尚未配置線上執行路由。':'有有效免費資格證據；免費剩餘仍需確認。','small'));
   else item.append(node('p','免費資格或證據時效待確認；不代表模型不適合此任務。','small'));
+  if(candidate.quota_summary){
+    const qs=candidate.quota_summary;
+    if(qs.headline)item.append(node('p','額度依據：'+qs.headline,'small candidate-quota-headline'));
+    if(qs.limits_text)item.append(node('p',qs.limits_text,'small'));
+    if(qs.reset_or_expiry)item.append(node('p','重置／到期：'+qs.reset_or_expiry+(qs.sharing_scope?' · '+qs.sharing_scope:''),'small'));
+  }
   const rank=candidate.ranking||{};
   if(rank.value_loss_seconds!==null&&rank.value_loss_seconds!==undefined)item.append(node('p',(rank.value_loss_basis==='quota_reset'?'已核對重置：約 ':'已核對到期：約 ')+num(Math.ceil(rank.value_loss_seconds/60))+' 分鐘後','small'));
   if(rank.observed_headroom!==null&&rank.observed_headroom!==undefined)item.append(node('p','各額度中最低可用比例：'+new Intl.NumberFormat('zh-TW',{style:'percent',maximumFractionDigits:1}).format(rank.observed_headroom),'small'));
   if(!candidate.remaining?.length)item.append(node('p','免費剩餘：未知 · 本次可用額度：未知','small'));
   else for(const q of candidate.remaining)item.append(node('p',(metrics[q.metric]||q.metric)+' · '+(windows[q.window]||q.window)+'：'+(q.current&&q.effective_remaining!==null?num(q.effective_remaining):'未知'),'small'));
+  const providerCounter=candidate.provider==='openrouter'?currentSnapshot?.provider_metadata?.openrouter:null;
+  const lastDaily=providerCounter?.daily||providerCounter?.last_observed_daily;
+  if(lastDaily)item.append(node('p','供應商日計數最後觀測：'+num(lastDaily.remaining)+' 次 · '+date(providerCounter.checked_at)+'；此模型適用範圍與本次可用額度仍待核對。','small'));
+  const credit=(currentSnapshot?.accounts||[]).find(a=>a.provider===candidate.provider);
+  if(credit?.balance!==null&&credit?.balance!==undefined)item.append(node('p','帳戶點數最後觀測：'+money(credit.balance)+' · '+date(credit.evidence.as_of)+'；此模型免費執行資格仍待核對。','small'));
   if(candidate.documentation_url)item.append(sourceLink(candidate.documentation_url,'官方 API 文件 ↗'));
   if(!compact){
     const details=node('details'),summary=node('summary','自動執行前還需要什麼？');details.append(summary);
@@ -596,3 +838,6 @@ $('match-form').addEventListener('submit',async event=>{
   }finally{if(version===matchVersion&&session===sessionVersion){$('match-submit').disabled=false;$('match-submit').textContent='配對模型與額度';}}
 });
 refresh();
+
+$('quota-filter').addEventListener('change',renderQuotaOverview);
+$('quota-to-task').addEventListener('click',()=>selectTab('advice',true));
