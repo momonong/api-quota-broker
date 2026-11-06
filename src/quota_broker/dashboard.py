@@ -12,7 +12,12 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 
 from .core import stamp, utcnow
 from .dashboard_accounts import CreditAccounts
-from .dashboard_provider_metadata import MODEL_TTL, quota_projection, read_metadata
+from .dashboard_provider_metadata import (
+    MODEL_TTL,
+    quota_projection,
+    read_metadata,
+    refresh_projection,
+)
 from .gateway import RECORDED_TASK_TYPES, Gateway, GatewayError, validate_task
 from .gateway_server import _bounded_json, _json_depth
 
@@ -439,7 +444,11 @@ class Dashboard:
                         "current": now < checked + MODEL_TTL,
                     }
         return {
-            "provider_metadata": {"state": "available", "openrouter": quota_projection(report, now)}
+            "provider_metadata": {
+                "state": "available",
+                "openrouter": quota_projection(report, now),
+                "refresh": refresh_projection(report),
+            }
         }
 
     def _metadata(self) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]], str]:
@@ -605,17 +614,20 @@ class Dashboard:
                             "provenance",
                             "confidence",
                             "remaining_basis",
+                            "formula",
                         )
                     },
                     **{
                         k: _number(q.get(k))
                         for k in (
+                            "used",
                             "remaining",
                             "limit",
                             "effective_remaining",
                             "local_observation_hold",
                         )
                     },
+                    "source": _text(q.get("source")) if reviewed else None,
                     "effective_remaining": _number(q.get("effective_remaining"))
                     if _current(q.get("as_of"), q.get("valid_until"), self.clock())
                     else None,
@@ -842,8 +854,359 @@ class Dashboard:
         except Exception:  # noqa: BLE001 - old/unavailable inventories preserve account evidence
             return metadata, []
 
+    def _provider_usage_report(self, filters: dict[str, str | None]) -> dict[str, Any]:
+        now = self.clock()
+        from_dt = _time(filters.get("from"))
+        to_dt = _time(filters.get("to"))
+
+        def in_window(as_of_str: str | None) -> bool:
+            if from_dt is None and to_dt is None:
+                return True
+            t = _time(as_of_str)
+            if t is None:
+                return True
+            if from_dt is not None and t < from_dt:
+                return False
+            return not (to_dt is not None and t >= to_dt)
+
+        rows: list[dict[str, Any]] = []
+        try:
+            accounts = self.accounts.snapshot(now) if self.accounts else []
+            meta_file = getattr(self, "provider_metadata_file", None) or getattr(
+                self, "provider_metadata", None
+            )
+            meta_report = read_metadata(Path(meta_file), now) if meta_file else None
+            or_proj = quota_projection(meta_report, now) if meta_report else None
+            if self.source.kind == "reviewed":
+                catalog, diag, _ = self._metadata()
+                targets = [self._target(item, diag[item["target_id"]]) for item in catalog]
+            else:
+                catalog, targets = [], []
+            inv = self._provider_inventory() or {}
+        except Exception:  # noqa: BLE001
+            return {
+                "state": "unavailable",
+                "local_ledger_state": "unavailable",
+                "rows": [],
+                "providers": [],
+            }
+
+        inv_names: dict[str, str] = {}
+        inv_tasks: dict[str, set[str]] = {}
+        inv_models: dict[str, set[str]] = {}
+        for p in inv.get("providers") or []:
+            pid = p.get("id")
+            if not isinstance(pid, str):
+                continue
+            inv_names[pid] = p.get("name") or pid
+            for api_row in p.get("apis") or []:
+                inv_tasks.setdefault(pid, set()).update(api_row.get("tasks") or [])
+            for cat in p.get("catalogs") or []:
+                for m in cat.get("models") or []:
+                    if isinstance(m.get("id"), str):
+                        inv_models.setdefault(pid, set()).add(m["id"])
+                    for v in m.get("variants") or []:
+                        if isinstance(v.get("task"), str):
+                            inv_tasks.setdefault(pid, set()).add(v["task"])
+
+        # 1. OpenRouter key/account usage
+        if or_proj is not None:
+            daily = or_proj.get("daily") or or_proj.get("last_observed_daily")
+            usage = or_proj.get("usage") or {}
+            metrics = []
+            win_ok = in_window(or_proj.get("checked_at"))
+            if isinstance(daily, dict):
+                metrics.append(
+                    {
+                        "metric": "free_model_daily_requests",
+                        "label": "免費模型日計數",
+                        "unit": "requests",
+                        "window": "day",
+                        "used": daily.get("used"),
+                        "limit": daily.get("limit"),
+                        "remaining": daily.get("remaining"),
+                        "as_of": or_proj.get("checked_at"),
+                        "current": or_proj.get("state") == "current",
+                        "window_matched": win_ok,
+                    }
+                )
+            for key, label, win in (
+                ("daily_usd", "今日金鑰費用", "day"),
+                ("weekly_usd", "本週金鑰費用", "week"),
+                ("monthly_usd", "本月金鑰費用", "month"),
+                ("total_usd", "累計金鑰費用", "all_time"),
+            ):
+                if usage.get(key) is not None:
+                    metrics.append(
+                        {
+                            "metric": key,
+                            "label": label,
+                            "unit": "USD",
+                            "window": win,
+                            "used": usage.get(key),
+                            "limit": None,
+                            "remaining": None,
+                            "as_of": or_proj.get("checked_at"),
+                            "current": or_proj.get("state") == "current",
+                            "window_matched": win_ok,
+                        }
+                    )
+            scope_note = "涵蓋此 OpenRouter API Key 所有呼叫（含未經 Broker 外部呼叫）；不依單一模型或任務拆分。"
+            rows.append(
+                {
+                    "provider": "openrouter",
+                    "name": inv_names.get("openrouter", "OpenRouter"),
+                    "state": "reported",
+                    "usage_state": "observed_current"
+                    if or_proj.get("state") == "current"
+                    else "observed_historical",
+                    "scope_kind": "key_or_account_shared",
+                    "includes_external_usage": True,
+                    "as_of": or_proj.get("checked_at"),
+                    "source": or_proj.get("source"),
+                    "in_time_window": win_ok,
+                    "models": sorted(inv_models.get("openrouter", set()) | {"openrouter/free"}),
+                    "tasks": sorted(
+                        inv_tasks.get("openrouter", set()) | {"text_generation", "vision"}
+                    ),
+                    "metrics": metrics,
+                    "reported_metrics": metrics,
+                    "scope_note": scope_note,
+                    "external_usage_scope": scope_note,
+                    "note": scope_note,
+                    "local_recorded_generation_attempts": None,
+                    "ledger_held_count": 0,
+                }
+            )
+
+        # 2. OpenAI credit grant & usage page
+        for acc in accounts:
+            prov = acc.get("provider")
+            if not isinstance(prov, str):
+                continue
+            ev = acc.get("evidence") or {}
+            as_of = ev.get("as_of")
+            current = bool(ev.get("current"))
+            win_ok = in_window(as_of)
+            metrics = []
+            for g in acc.get("grants") or []:
+                try:
+                    amt = float(g.get("amount", "0"))
+                    rem = float(g.get("remaining", "0"))
+                    used_val = f"{max(0.0, amt - rem):.2f}"
+                except (ValueError, TypeError):
+                    used_val = None
+                metrics.append(
+                    {
+                        "metric": "credit_grant_spend",
+                        "label": "贈送 Credits 已用金額",
+                        "unit": acc.get("currency", "USD"),
+                        "window": f"{(g.get('received') or {}).get('value', '?')}..{(g.get('expires') or {}).get('value', '?')}",
+                        "used": used_val,
+                        "limit": g.get("amount"),
+                        "remaining": g.get("remaining"),
+                        "as_of": as_of,
+                        "current": current,
+                        "window_matched": win_ok,
+                    }
+                )
+            up = acc.get("usage_page") or {}
+            if up.get("state"):
+                metrics.append(
+                    {
+                        "metric": "usage_page_audit",
+                        "label": f"官方 Usage 頁核對（{up.get('from_date', '?')} 至 {up.get('through_date', '?')}）",
+                        "unit": acc.get("currency", "USD"),
+                        "window": f"{up.get('from_date', '?')}..{up.get('through_date', '?')}",
+                        "used": "0.00 (no_data)"
+                        if up.get("state") == "no_data"
+                        else up.get("state"),
+                        "limit": None,
+                        "remaining": acc.get("balance"),
+                        "as_of": as_of,
+                        "current": current,
+                        "window_matched": win_ok,
+                    }
+                )
+            acc_models = {
+                m.get("model")
+                for m in (acc.get("model_limits") or [])
+                if isinstance(m, dict) and isinstance(m.get("model"), str)
+            } | inv_models.get(prov, set())
+            scope_note = "涵蓋組織／專案所有金鑰與來源（含未經 Broker 外部呼叫）；已核對模型共用同一筆贈送點數池。"
+            rows.append(
+                {
+                    "provider": prov,
+                    "name": inv_names.get(prov, prov),
+                    "state": "observed",
+                    "usage_state": "observed_current" if current else "observed_historical",
+                    "scope_kind": "key_or_account_shared",
+                    "includes_external_usage": True,
+                    "as_of": as_of,
+                    "source": (ev.get("sources") or [None])[0],
+                    "in_time_window": win_ok,
+                    "models": sorted(acc_models),
+                    "tasks": sorted(
+                        inv_tasks.get(prov, set())
+                        | {
+                            "text_generation",
+                            "vision",
+                            "image_generation",
+                            "tts",
+                            "audio_transcription",
+                        }
+                    ),
+                    "metrics": metrics,
+                    "reported_metrics": metrics,
+                    "scope_note": scope_note,
+                    "external_usage_scope": scope_note,
+                    "note": scope_note,
+                    "local_recorded_generation_attempts": None,
+                    "ledger_held_count": 0,
+                }
+            )
+
+        # 3. Reviewed target providers (Cloudflare, Mistral, Google, Groq, NVIDIA, OCR.space, HF, Cerebras, SambaNova)
+        seen_providers = {r["provider"] for r in rows}
+        for t in targets:
+            prov = t.get("provider")
+            model = t.get("model")
+            if not isinstance(prov, str) or prov in seen_providers:
+                continue
+            seen_providers.add(prov)
+            rev = t.get("reviewed_account") or {}
+            raw_facts = rev.get("display_facts") or []
+            facts_map: dict[str, Any] = {}
+            if isinstance(raw_facts, dict):
+                facts_map = dict(raw_facts)
+            elif isinstance(raw_facts, list):
+                for f in raw_facts:
+                    if isinstance(f, dict) and isinstance(f.get("kind"), str):
+                        facts_map[f["kind"]] = f.get("value")
+            obs_list = t.get("observations") or []
+            metrics = []
+            as_of = t.get("free_verified_at")
+            source_url = (rev.get("sources") or [None])[0]
+            state_short = "unknown"
+            usage_state = "usage_unobserved"
+            scope_note = "尚未接通唯讀已用量查詢；不將未知已用量視為 0。"
+            if obs_list and obs_list[0].get("remaining") is not None:
+                q0 = obs_list[0]
+                as_of = q0.get("as_of") or as_of
+                source_url = q0.get("source") or source_url
+                is_curr = bool(q0.get("current"))
+                state_short = "observed"
+                usage_state = "observed_current" if is_curr else "observed_historical"
+                win_ok = in_window(as_of)
+                metrics.append(
+                    {
+                        "metric": q0.get("metric", "neurons"),
+                        "label": "每日免費 Neurons（帳戶推算）",
+                        "unit": q0.get("metric", "neurons"),
+                        "window": q0.get("window", "day"),
+                        "used": q0.get("used"),
+                        "limit": q0.get("limit"),
+                        "remaining": q0.get("remaining"),
+                        "formula": q0.get("formula"),
+                        "as_of": as_of,
+                        "current": is_curr,
+                        "window_matched": win_ok,
+                    }
+                )
+                scope_note = "帳戶級 Workers AI 每日免費 Neurons（含未經 Broker 外部呼叫），由已核對已用量與每日上限推算。"
+            elif "used_allowance_usd" in facts_map or "monthly_used_usd" in facts_map:
+                state_short = "observed"
+                usage_state = "observed_historical"
+                used_usd = facts_map.get("used_allowance_usd", facts_map.get("monthly_used_usd"))
+                lim_usd = facts_map.get("monthly_allowance_usd")
+                win_ok = in_window(as_of)
+                metrics.append(
+                    {
+                        "metric": "monthly_allowance_usd",
+                        "label": "免費方案月度內含額度（畫面四捨五入）",
+                        "unit": "USD",
+                        "window": "month",
+                        "used": used_usd,
+                        "limit": lim_usd,
+                        "remaining": None,
+                        "as_of": as_of,
+                        "current": False,
+                        "window_matched": win_ok,
+                    }
+                )
+                scope_note = "Mistral Console 月度內含額度已用量（含未經 Broker 外部呼叫；畫面四捨五入不直接倒算精確剩餘）。"
+            prov_models = set(inv_models.get(prov, set()))
+            if isinstance(model, str):
+                prov_models.add(model)
+            prov_tasks = set(inv_tasks.get(prov, set())) | set(t.get("capabilities") or [])
+            rows.append(
+                {
+                    "provider": prov,
+                    "name": inv_names.get(prov, prov),
+                    "state": state_short,
+                    "usage_state": usage_state,
+                    "scope_kind": "key_or_account_shared"
+                    if metrics
+                    else "organization_or_project"
+                    if rev.get("qualification_basis") in {"account_plan", "public_conditions"}
+                    else "unverified",
+                    "includes_external_usage": True if metrics else None,
+                    "as_of": as_of,
+                    "source": source_url,
+                    "in_time_window": in_window(as_of),
+                    "models": sorted(prov_models),
+                    "tasks": sorted(prov_tasks),
+                    "metrics": metrics,
+                    "reported_metrics": metrics,
+                    "scope_note": scope_note,
+                    "external_usage_scope": scope_note,
+                    "note": scope_note,
+                    "local_recorded_generation_attempts": None,
+                    "ledger_held_count": 0,
+                }
+            )
+
+        filtered = []
+        for r in rows:
+            if filters["provider"] is not None and r["provider"] != filters["provider"]:
+                continue
+            if filters["model"] is not None and filters["model"] not in r.get("models", []):
+                continue
+            if (
+                filters["task"] is not None
+                and filters["task"] != "unknown"
+                and filters["task"] not in r.get("tasks", [])
+            ):
+                continue
+            if not r.get("in_time_window", True):
+                continue
+            row_copy = dict(r)
+            notes = [r.get("scope_note") or ""]
+            if filters["model"] is not None:
+                row_copy["model_filter_note"] = (
+                    f"篩選模型 {filters['model']}：此供應商用量為帳戶／金鑰共享計數，非單一模型獨立計數。"
+                )
+                notes.append(row_copy["model_filter_note"])
+            if filters["task"] is not None:
+                row_copy["task_filter_note"] = (
+                    f"篩選任務 {filters['task']}：供應商帳戶計數涵蓋所有任務類型，未依單一任務分拆。"
+                )
+                notes.append(row_copy["task_filter_note"])
+            row_copy["note"] = " ".join(n for n in notes if n)
+            filtered.append(row_copy)
+
+        local_source = self.activity or (self.source if self.source.kind != "reviewed" else None)
+        return {
+            "state": "available",
+            "local_ledger_state": "available" if local_source is not None else "unavailable",
+            "basis": "provider_reported_or_audited_account_usage_distinct_from_broker_ledger",
+            "rows": filtered,
+            "providers": filtered,
+        }
+
     def usage_report(self, raw: dict[str, Any]) -> dict[str, Any]:
         filters = _usage_filters(raw)
+        provider_usage = self._provider_usage_report(filters)
         source = self.activity or (self.source if self.source.kind != "reviewed" else None)
         metadata: dict[str, Any] = {
             "kind": "gateway" if self.activity else self.source.kind,
@@ -862,6 +1225,7 @@ class Dashboard:
             "source": metadata,
             "filters": filters,
             "rows": None,
+            "provider_usage": provider_usage,
             "task_metadata": {
                 "state": "unavailable",
                 "basis": "historical_task_labels_not_recorded",

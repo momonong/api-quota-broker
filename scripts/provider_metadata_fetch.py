@@ -376,29 +376,55 @@ def run_batch(
                         seen_tokens.add(token)
                     elif name == "cloudflare":
                         info = data.get("result_info")
-                        if not isinstance(info, dict) or any(
-                            type(info.get(key)) is not int
-                            for key in ("page", "total_pages", "total_count")
-                        ):
+                        if not isinstance(info, dict):
                             raise FetchError("normalize", "pagination")
-                        total = (info["total_pages"], info["total_count"])
-                        if (
-                            info["page"] != page
-                            or not page <= total[0]
-                            or total[1] < 0
-                            or (cf_total is not None and cf_total != total)
-                            or len(data["result"]) > 100
-                        ):
-                            raise FetchError("normalize", "pagination")
-                        cf_total = total
-                        item_count += len(data["result"])
-                        if item_count > total[1]:
-                            raise FetchError("normalize", "pagination")
-                        if page == total[0]:
-                            if item_count != total[1]:
+                        if "total_pages" in info:
+                            if any(
+                                type(info.get(key)) is not int
+                                for key in ("page", "total_pages", "total_count")
+                            ):
                                 raise FetchError("normalize", "pagination")
-                            complete = bool(rows)
-                            break
+                            total = (info["total_pages"], info["total_count"])
+                            if (
+                                info["page"] != page
+                                or not page <= total[0]
+                                or total[1] < 0
+                                or (cf_total is not None and cf_total != total)
+                                or len(data["result"]) > 100
+                            ):
+                                raise FetchError("normalize", "pagination")
+                            cf_total = total
+                            item_count += len(data["result"])
+                            if item_count > total[1]:
+                                raise FetchError("normalize", "pagination")
+                            if page == total[0]:
+                                if item_count != total[1]:
+                                    raise FetchError("normalize", "pagination")
+                                complete = bool(rows)
+                                break
+                        else:
+                            if any(
+                                type(info.get(key)) is not int
+                                for key in ("page", "per_page", "count", "total_count")
+                            ):
+                                raise FetchError("normalize", "pagination")
+                            total = (0, info["total_count"])
+                            if (
+                                info["page"] != page
+                                or not 0 < info["per_page"] <= 100
+                                or info["count"] != len(data["result"])
+                                or len(data["result"]) > info["per_page"]
+                                or total[1] < 0
+                                or (cf_total is not None and cf_total != total)
+                            ):
+                                raise FetchError("normalize", "pagination")
+                            cf_total = total
+                            item_count += len(data["result"])
+                            if item_count > total[1]:
+                                raise FetchError("normalize", "pagination")
+                            if len(data["result"]) < info["per_page"] or item_count == total[1]:
+                                complete = bool(rows) and item_count == total[1]
+                                break
                     else:
                         complete = snapshot["complete"]
                         break

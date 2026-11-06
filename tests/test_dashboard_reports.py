@@ -296,3 +296,50 @@ def test_old_upstream_task_filter_is_unavailable_even_when_unfiltered_usage_is_e
         server.shutdown()
         server.server_close()
         thread.join(2)
+
+
+def test_usage_report_includes_provider_usage_with_filters_and_external_scope(tmp_path):
+    from test_dashboard_accounts import account_document, write_accounts
+    from test_dashboard_reviewed import ANCHOR, load_board
+
+    from quota_broker.dashboard_accounts import CreditAccounts
+
+    board, *_ = load_board(tmp_path)
+    board.accounts = CreditAccounts(write_accounts(tmp_path, account_document()))
+    obs = tmp_path / "provider-observations.json"
+    obs.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "kind": "provider_metadata_observations",
+                "models": [],
+                "openrouter": {
+                    "source": "https://openrouter.ai/api/v1/key",
+                    "checked_at": ANCHOR.isoformat(),
+                    "daily": {"used": 0, "limit": 50, "remaining": 50},
+                    "usage": {"total_usd": "0", "daily_usd": "0", "monthly_usd": "0"},
+                },
+            }
+        )
+    )
+    obs.chmod(0o600)
+    board.provider_metadata = obs
+    full = board.usage_report({})
+    pu = full["provider_usage"]
+    assert pu["state"] == "available"
+    by_id = {row["provider"]: row for row in pu["providers"]}
+    assert by_id["openrouter"]["state"] == "reported"
+    assert by_id["openrouter"]["includes_external_usage"] is True
+    assert by_id["openai"]["state"] == "observed"
+    assert by_id["openai"]["includes_external_usage"] is True
+    assert by_id["cloudflare"]["state"] == "observed"
+    assert by_id["mistral"]["state"] == "observed"
+    assert by_id["groq"]["state"] == "unknown"
+    assert by_id["groq"]["reported_metrics"] == []
+
+    only_openai = board.usage_report({"provider": "openai"})["provider_usage"]["providers"]
+    assert [r["provider"] for r in only_openai] == ["openai"]
+
+    ocr_filtered = board.usage_report({"task": "ocr"})["provider_usage"]["providers"]
+    ocr_providers = {r["provider"] for r in ocr_filtered}
+    assert "ocrspace" in ocr_providers and "mistral" in ocr_providers

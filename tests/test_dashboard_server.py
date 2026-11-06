@@ -340,7 +340,7 @@ def test_public_prefix_redirect_assets_login_cookie_snapshot_and_logout(tmp_path
         status, headers, _ = public_request(server, "/quota")
         assert status == 308 and headers["Location"] == "/quota/"
         status, _, raw = public_request(server, "/quota/")
-        assert status == 200 and b'href="./dashboard.css"' in raw and b'href="./"' in raw
+        assert status == 200 and b'href="./dashboard.css"' in raw and b'href="/"' in raw
         assert public_request(server, "/quota/dashboard.js")[0] == 200
         assert public_request(server, "/quota/api/snapshot")[0] == 401
         for path in (

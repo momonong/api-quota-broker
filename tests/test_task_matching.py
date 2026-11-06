@@ -443,3 +443,42 @@ def test_match_uses_same_advice_evidence_for_balance_and_source(tmp_path):
     original = next(row for row in route["candidates"] if row["target_id"] == selected["target_id"])
     assert selected["remaining"] == original["remaining"]
     assert result["source"] == route["source"]
+
+
+def test_account_grant_verified_and_quota_summary_ranking(tmp_path):
+    from test_dashboard_accounts import account_document, write_accounts
+    from test_dashboard_reviewed import load_board
+
+    from quota_broker.dashboard_accounts import CreditAccounts
+
+    board, *_ = load_board(tmp_path)
+    doc = account_document()
+    doc["accounts"][0]["balance"] = "200.00"
+    doc["accounts"][0]["grants"][0]["amount"] = "200.00"
+    doc["accounts"][0]["grants"][0]["remaining"] = "200.00"
+    doc["accounts"][0]["grants"][0]["expires"] = {"value": "2026-12-03", "precision": "date"}
+    doc["accounts"][0]["model_limits"] = [
+        {
+            "model": "gpt-5.4-mini",
+            "requests_per_minute": 500,
+            "tokens_per_minute": 500000,
+            "images_per_minute": None,
+            "batch_queue_tokens_per_day": 5000000,
+        }
+    ]
+    board.accounts = CreditAccounts(write_accounts(tmp_path, doc))
+    res = board.advice(
+        {"mode": "match", "task": "text_generation", "inputs": ["text"], "outputs": ["text"]}
+    )
+    assert res["execution_allowed"] is False and res["paid_allowed"] is False
+    openai_cand = next(
+        c for c in res["candidates"] if c["provider"] == "openai" and c["model"] == "gpt-5.4-mini"
+    )
+    assert openai_cand["access_stage"] == "account_grant_verified"
+    assert openai_cand["free_plan_verified"] is True
+    assert openai_cand["free_plan_basis"] == "credit_grant"
+    assert openai_cand["safe"] is False
+    assert "200.00 USD" in openai_cand["quota_summary"]["headline"]
+    assert "2026-12-03" in openai_cand["quota_summary"]["reset_or_expiry"]
+    catalog_only = next(c for c in res["candidates"] if c["access_stage"] == "catalog_only")
+    assert res["candidates"].index(openai_cand) < res["candidates"].index(catalog_only)

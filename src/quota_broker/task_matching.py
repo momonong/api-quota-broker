@@ -103,6 +103,8 @@ def _rank(row: dict[str, Any]) -> tuple[Any, ...]:
         not row["safe"],
         not (row["safe"] or row["free_plan_verified"]),
         not (row["safe"] or row["free_plan_basis"] == "account_plan"),
+        not row.get("account_grant_verified", False),
+        not row.get("configured_free_allocation", False),
         seconds is None,
         seconds or 0,
         headroom is None,
@@ -137,6 +139,153 @@ def _current_free_plan(target: dict[str, Any], now: Any) -> bool:
         )
     except (TypeError, ValueError, AttributeError):
         return False
+
+
+def _account_grant_info(
+    provider: str,
+    model: str,
+    accounts_by_provider: dict[str, dict[str, Any]],
+    now_str: Any,
+) -> tuple[bool, dict[str, Any] | None]:
+    acc = accounts_by_provider.get(provider)
+    if not isinstance(acc, dict):
+        return False, None
+    if acc.get("auto_recharge_enabled") is True or acc.get("balance_state") == "grant_expired":
+        return False, None
+    model_limit = next(
+        (
+            m
+            for m in (acc.get("model_limits") or [])
+            if isinstance(m, dict) and m.get("model") == model
+        ),
+        None,
+    )
+    active_grants = [
+        g
+        for g in (acc.get("grants") or [])
+        if isinstance(g, dict) and g.get("state") == "available"
+    ]
+    if not active_grants:
+        return False, None
+    try:
+        bal = float(acc.get("balance") or "0")
+    except (ValueError, TypeError):
+        bal = 0.0
+    if bal <= 0:
+        return False, None
+    if isinstance(now_str, str) and len(now_str) >= 10:
+        today_str = now_str[:10]
+        for g in active_grants:
+            exp = (g.get("expires") or {}).get("value")
+            if isinstance(exp, str) and len(exp) == 10 and exp < today_str:
+                return False, None
+    return True, {"account": acc, "model_limit": model_limit, "grant": active_grants[0]}
+
+
+def _build_quota_summary(
+    provider: str,
+    model: str,
+    configured: list[dict[str, Any]],
+    grant_info: dict[str, Any] | None,
+    provider_metadata: dict[str, Any] | None,
+) -> dict[str, Any]:
+    if grant_info is not None:
+        acc = grant_info["account"]
+        lim = grant_info["model_limit"]
+        grant = grant_info["grant"]
+        exp = (grant.get("expires") or {}).get("value") or "未知"
+        bal = acc.get("current_balance") or acc.get("balance") or "未知"
+        curr = bool((acc.get("evidence") or {}).get("current"))
+        parts = []
+        if isinstance(lim, dict):
+            if lim.get("requests_per_minute"):
+                parts.append(f"{lim['requests_per_minute']} RPM")
+            if lim.get("tokens_per_minute"):
+                parts.append(f"{lim['tokens_per_minute']} TPM")
+            if lim.get("images_per_minute"):
+                parts.append(f"{lim['images_per_minute']} IPM")
+            if lim.get("batch_queue_tokens_per_day"):
+                parts.append(f"Batch {lim['batch_queue_tokens_per_day']} TPD")
+        return {
+            "state": "current_remaining" if curr else "last_observed",
+            "headline": f"{'目前餘額' if curr else '最後觀測餘額'} {bal} {acc.get('currency', 'USD')}（到期日 {exp}）",
+            "limits_text": " · ".join(parts)
+            if parts
+            else "共用專案速率上限（已核對模型上限如 500 RPM · 500,000 TPM · Batch 5,000,000 TPD；此模型個別上限待核對）",
+            "reset_or_expiry": f"贈送額度 {exp} 到期（僅提供日期，不展延）",
+            "sharing_scope": f"帳戶級共享贈送 Credits（所有可用模型共用同一筆 {bal} {acc.get('currency', 'USD')} grant）",
+        }
+    if configured:
+        t = configured[0]
+        rev = t.get("reviewed_account") or {}
+        p_limits = t.get("provider_limits") or []
+        lim_parts = [
+            f"{pl.get('value')} {pl.get('metric')}/{pl.get('window')}"
+            for pl in p_limits
+            if pl.get("value") is not None
+        ]
+        if provider == "openrouter" and isinstance(provider_metadata, dict):
+            or_meta = provider_metadata.get("openrouter") or {}
+            daily = or_meta.get("daily") or or_meta.get("last_observed_daily")
+            if isinstance(daily, dict):
+                is_curr = or_meta.get("state") == "current"
+                return {
+                    "state": "current_remaining" if is_curr else "last_observed",
+                    "headline": f"免費日額度{'剩餘' if is_curr else '最後觀測剩餘'} {daily.get('remaining')} / {daily.get('limit')} requests（已用 {daily.get('used')}）",
+                    "limits_text": " · ".join(lim_parts) or "20 RPM · 50 RPD",
+                    "reset_or_expiry": f"每日 UTC 00:00 重置（下次重置 {or_meta.get('reset_at') or '00:00 UTC'}）",
+                    "sharing_scope": "金鑰級共享免費日計數（所有 :free 模型共用 50 RPD）",
+                }
+        derived = rev.get("derived_remaining")
+        if isinstance(derived, dict):
+            obs = (t.get("observations") or [{}])[0]
+            rem_val = obs.get("remaining", derived.get("remaining", derived.get("limit")))
+            return {
+                "state": "current_remaining" if obs.get("current") else "last_observed",
+                "headline": f"每日免費額度推算剩餘 {rem_val} / {derived.get('limit')} {derived.get('metric')}（已用 {derived.get('used')}）",
+                "limits_text": " · ".join(lim_parts) or "10,000 Neurons/day",
+                "reset_or_expiry": "每日 UTC 00:00 重置",
+                "sharing_scope": "帳戶級共享每日免費 Neurons（所有 Workers AI 模型共用）",
+            }
+        raw_facts = rev.get("display_facts") or []
+        facts: dict[str, Any] = {}
+        if isinstance(raw_facts, dict):
+            facts = dict(raw_facts)
+        elif isinstance(raw_facts, list):
+            for f in raw_facts:
+                if isinstance(f, dict) and isinstance(f.get("kind"), str):
+                    facts[f["kind"]] = f.get("value")
+        if "monthly_allowance_usd" in facts:
+            used_val = facts.get("used_allowance_usd", facts.get("monthly_used_usd", 0))
+            return {
+                "state": "verified_limit",
+                "headline": f"免費月度額度 {facts.get('monthly_allowance_usd')} USD（最後核對已用 {used_val} USD）",
+                "limits_text": " · ".join(lim_parts),
+                "reset_or_expiry": "依月度帳單週期重置（每月第 1 日）",
+                "sharing_scope": "Workspace 共享月度額度與 1,300,000 TPM 上限",
+            }
+        if lim_parts:
+            resets = [
+                pl.get("reset")
+                for pl in p_limits
+                if pl.get("reset") and pl.get("reset") not in {"unknown", "unspecified"}
+            ]
+            return {
+                "state": "verified_limit",
+                "headline": f"已核對免費上限：{' · '.join(lim_parts[:3])}",
+                "limits_text": " · ".join(lim_parts),
+                "reset_or_expiry": f"重置規則：{', '.join(dict.fromkeys(resets))}"
+                if resets
+                else "滾動視窗／日額度重置",
+                "sharing_scope": "專案／組織模型上限（即時剩餘未由唯讀 API 提供）",
+            }
+    return {
+        "state": "catalog_unverified",
+        "headline": "僅型錄列出（免費額度與模型專屬上限未綁定）",
+        "limits_text": "未核對",
+        "reset_or_expiry": "未知",
+        "sharing_scope": "不可直接繼承帳戶或其他模型額度",
+    }
 
 
 def _documentation(value: Any) -> str | None:
@@ -204,6 +353,13 @@ def match_models(
     targets: dict[tuple[str, str], list[dict[str, Any]]] = {}
     for row in snapshot.get("targets", []):
         targets.setdefault((row["provider"], row["model"]), []).append(row)
+    accounts_by_provider = {
+        a["provider"]: a
+        for a in (snapshot.get("accounts") or [])
+        if isinstance(a, dict) and isinstance(a.get("provider"), str)
+    }
+    provider_metadata = snapshot.get("provider_metadata")
+    now_str = (snapshot.get("source") or {}).get("fetched_at")
     candidates = []
     for (provider, model), entry in models.items():
         if (
@@ -239,6 +395,26 @@ def match_models(
             for v in variants
         )
         configured = targets.get((provider, model), [])
+        has_grant, grant_info = _account_grant_info(provider, model, accounts_by_provider, now_str)
+        has_free_alloc = bool(
+            configured
+            and any(
+                t.get("free_eligible") is True and bool(t.get("provider_limits"))
+                for t in configured
+            )
+        )
+        quota_summary = _build_quota_summary(
+            provider, model, configured, grant_info, provider_metadata
+        )
+        access_stage = (
+            "broker_configured_verified"
+            if configured and any(t.get("free_eligible") is True for t in configured)
+            else "account_grant_verified"
+            if has_grant
+            else "broker_configured_cap_only"
+            if configured
+            else "catalog_only"
+        )
         choices: list[dict[str, Any] | None] = list(routes.get((provider, model), [])) or [None]
         for route in choices:
             reasons = list(route["reasons"]) if route else ["task_cost_not_checked"]
@@ -287,12 +463,18 @@ def match_models(
                     "capability_basis": entry["basis"],
                     "capability_verified": not capability_blockers,
                     "capability_blockers": capability_blockers,
-                    "free_plan_verified": bool(free_plans),
+                    "free_plan_verified": bool(free_plans) or has_grant,
                     "free_plan_basis": "account_plan"
                     if "account_plan" in plan_bases
                     else "public_conditions"
                     if "public_conditions" in plan_bases
+                    else "credit_grant"
+                    if has_grant
                     else None,
+                    "account_grant_verified": has_grant,
+                    "configured_free_allocation": has_free_alloc,
+                    "access_stage": access_stage,
+                    "quota_summary": quota_summary,
                     "documentation_url": entry.get("documentation_url"),
                     "access_requires_confirmation": entry.get("restricted", False),
                     "execution_status": "verified_free_route"

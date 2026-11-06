@@ -3,8 +3,8 @@
 import re
 
 _MODEL_SECRET = re.compile(
-    r"(?:gsk_|sk-[A-Za-z0-9_-]{12}|dp\.st\.|Bearer\s|AIza[A-Za-z0-9_-]{12}|"
-    r"-----BEGIN (?:[A-Z ]+ )?PRIVATE KEY-----)",
+    r"(?:(?<![A-Za-z0-9_-])gsk_|(?<![A-Za-z0-9_-])sk-[A-Za-z0-9_-]{12}|dp\.st\.|Bearer\s|"
+    r"(?<![A-Za-z0-9_-])AIza[A-Za-z0-9_-]{12}|-----BEGIN (?:[A-Z ]+ )?PRIVATE KEY-----)",
     re.IGNORECASE,
 )
 
