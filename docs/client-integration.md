@@ -26,12 +26,13 @@ ASUS 已驗收的入口為該主機的 `http://127.0.0.1:18084`。只有相同�
 | 方法與路徑 | 回傳／用途 |
 | --- | --- |
 | `GET /v1/catalog` | JSON array；配置、能力、features、配額證據及 request limits |
+| `GET /v1/model-inventory` | JSON array；instance Registry 多模型能力與已配置 target 關聯，含未配置模型；不是全部官方模型或帳戶授權 |
 | `GET /v1/diagnostics` | JSON object；路由與 queue worker 狀態，無 provider／secret I/O |
 | `POST /v1/routes/explain` | 以完整 Task JSON 檢查路由，不呼叫 provider、不保留額度 |
 | `POST /v1/tasks` | 同步執行；正常回傳 HTTP 200，須再判讀 body.state |
 | `GET /v1/tasks/{request_key}` | 同步 task 的持久化 metadata，沒有 answer／result |
 | `GET /v1/tasks?limit=20&state=unknown` | 最近 task；另支援 before、provider、model |
-| `GET /v1/usage` | JSON array；可帶 provider、model、from、to |
+| `GET /v1/usage` | JSON array；依 provider/model/task_type 分組，可帶 provider、model、from、to、task；task 為內建 capability、unknown 或 all |
 | `POST /v1/queue` | 非同步提交完整 Task JSON；HTTP 200 回傳 job metadata |
 | `GET /v1/queue/{request_key}` | job 狀態、execution_key、result_available 等 metadata |
 | `GET /v1/queue/{request_key}/result` | 解密後的完整 Gateway outcome，可在保留期限內重取 |
@@ -40,6 +41,8 @@ ASUS 已驗收的入口為該主機的 `http://127.0.0.1:18084`。只有相同�
 `GET /v1/queue` 回傳 `{"tasks": [...]}`，預設最多 100 筆；queue 路由不接受 query parameters。`POST /v1/queue/tick` 會推進工作並可能呼叫真實 provider，屬於 worker 操作，業務端正常接入不應自行驅動它。確認服務已啟用 queue 與 worker；HTTP 可連線不表示 worker 正常。沒有可供此指南使用的免認證 `/health` 路由。
 
 Catalog 的 available／diagnostics 的 ready 是快照，不保證實際輸入可通過 admission，也不保證供應商會成功。用 explain 核對這一次完整 payload，送出時仍會重驗。usage 是本地帳本與 provider 回報的聚合，不是供應商即時餘額或帳單；unknown／null 不能解讀為零。from／to 須帶時區，範圍為 from 含、to 不含。
+
+新工作與生成 attempt 只保存通過驗證的內建 capability 作為 `task_type`，不保存自訂任務標籤或內容。既有資料的 NULL 保持未知，usage 回傳 `task_type: unknown`；同一模型不同任務分組，不根據模型能力補寫歷史類型。`task=all` 與省略 task 都查所有類型；舊版若拒絕 task 參數，呼叫端必須將任務篩選標為不可用，不能將失敗或未分維度的舊聚合視為該任務零用量。
 
 ## 3. 同步文字範例
 
@@ -50,7 +53,7 @@ Catalog 的 available／diagnostics 的 ready 是快照，不保證實際輸入�
   "request_key": "orderflow-demo-sync-001",
   "capability": "text_generation",
   "provider": "google",
-  "model": "gemini-2.5-flash-lite",
+  "model": "gemini-3.5-flash-lite",
   "input": "Reply with OK.",
   "max_output_tokens": 128,
   "max_attempts": 1
@@ -64,7 +67,7 @@ Catalog 的 available／diagnostics 的 ready 是快照，不保證實際輸入�
   "request_key": "orderflow-demo-sync-001",
   "state": "completed",
   "provider": "google",
-  "model": "gemini-2.5-flash-lite",
+  "model": "gemini-3.5-flash-lite",
   "answer": "OK",
   "ledger_basis": "settled_provider_usage"
 }
@@ -83,7 +86,7 @@ Catalog 的 available／diagnostics 的 ready 是快照，不保證實際輸入�
   "request_key": "orderflow-demo-queue-001",
   "capability": "text_generation",
   "provider": "google",
-  "model": "gemini-2.5-flash-lite",
+  "model": "gemini-3.5-flash-lite",
   "input": "Reply with OK.",
   "max_output_tokens": 128,
   "priority": 0,
@@ -220,3 +223,14 @@ PDF 使用 typed `text_generation`，要求 `document_input`／`structured_outpu
 2026-10-11 文件驗證解析全部 6 個 JSON 區塊，並以本機 loopback Gateway、暫存資料庫及注入的 provider fixture 執行 3 個請求範例。核對同步／queue／typed response 節錄、同 key 不重播與衝突、pending／TTL 錯誤、結果重取、priority 邊界及 schema 轉換；本地文件連結也已核對。驗證使用既有 [HTTP fixture helpers](../tests/test_framework.py) 與 [typed registry helpers](../tests/test_family_gateway.py)，socket guard 僅允許 loopback 連線。該次文件驗證未重跑完整測試套件、不消耗 provider 配額，也不能單獨證明 live 模型行為或 OrderFlow 接入。
 
 2026-10-09 的七家代表性驗證與限制保留於[原始維運紀錄](asus-broker-ops.md)。2026-10-12 新增的 PDF backend 證據只涵蓋上述單一合成工作，不擴張成全部模型、帳號、瀏覽器流程或人工驗收。本次版本收尾未連 ASUS，未刷新主機健康、部署 revision 或官方餘額；引用時須保留證據日期與範圍。
+## 可選專案隔離模式（2026-11-03，本機實作）
+
+`gateway-serve --access-policy-file <private-policy>` 另支援 server-owned principal 與 `read`／`plan`／`execute`／`admin` scope。Policy 只存高熵 bearer 的 SHA256 摘要；0600、服務 UID 所有，以受控目錄內 atomic rename 撤銷。每請求及 project dispatch 重讀；不能由 body 或 forwarding headers 指定專案身分。
+
+另給 `--private-api-port <獨立 loopback port>` 才啟動私有 `/quota/api/v1/tasks`、`/quota/api/v1/jobs`（狀態、結果、取消）入口；不接受 legacy token、raw `/v1`、admin 或 queue tick。公網 Caddy 不代理這些路由。跨主機接入仍須固定加密私有通道及專案憑證，LAN 來源不是認證。
+
+不同專案可使用相同外部 request key，服務端先持久 claim owner 與內部 opaque key，再進入原 Gateway／queue。各專案只可讀取、取消自己的工作；歷史無 owner 的工作不可冒領。未知結果保留原 key 對帳，不以換 key／provider 解決。一般 project 暫不開放全域聚合 usage；網站 read/plan 可看經去識別的全域 metadata。
+
+Scoped 執行在真正 dispatch 前重新查免費資格、current known quota、觀測保留與 token 權限；缺失／過時／不足停止，不從上限倒算餘額。Google PDF countTokens preflight 暫拒絕 scoped execution，避免在該 gate 之前做 provider I/O。Output token 限制按 project；結果 bytes 沿用 instance `MediaLimits.result_bytes`。日常維護不走這個 API。
+
+既有 legacy client/admin token 合約仍適用前述的可信後端限制，不能將 legacy 共用憑證當成專案隔離。新模式的正式啟用與部署驗收另記收據；本段不是部署完成聲明。

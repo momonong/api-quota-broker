@@ -541,17 +541,18 @@ def test_parser_errors_offer_fixed_phase_reason_without_raw_values(raw, reason):
     assert str(caught.value) == "invalid official model metadata"
 
 
-def test_contradictory_limits_refuse_snapshot_without_rewriting_or_dropping_model():
+def test_contradictory_limits_stay_unknown_without_rewriting_or_dropping_model():
     model = openrouter_model("vendor/private-fixture")
     model["context_length"] = 1024
     model["top_provider"]["max_completion_tokens"] = 2048
     raw = {"data": [model]}
     before = copy.deepcopy(raw)
-    with pytest.raises(ParserError) as caught:
-        parse_models("openrouter", raw, NOW, output_modalities="all")
-    assert caught.value.reason == "context_bound"
+    snapshot = parse_models("openrouter", raw, NOW, output_modalities="all")
+    row = snapshot["models"][0]
+    assert snapshot["complete"] and row["model"] == "vendor/private-fixture"
+    assert row["context_tokens"] is None and row["max_output_tokens"] is None
+    assert "token_limits_conflicting" in row["features"]
     assert raw == before
-    assert "private-fixture" not in str(caught.value)
 
 
 def test_unknown_parser_error_reason_cannot_reflect_raw_values():

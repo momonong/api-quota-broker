@@ -18,6 +18,7 @@ from typing import Any, cast
 from urllib.parse import urlencode, urlsplit
 
 from . import __version__
+from .access import AccessPolicyFile
 from .client import ClientError, DirectClient, _json_http
 from .client_credentials import ClientCredentialError, read_runtime_client
 from .config import Quota, Target, load_config, load_gateway_config, load_secret_inventory
@@ -657,6 +658,12 @@ def main() -> None:
     gateway_serve.add_argument("--config", required=True)
     gateway_serve.add_argument("--db", required=True)
     gateway_serve.add_argument("--port", type=int, default=18084)
+    gateway_serve.add_argument(
+        "--access-policy-file", help="owner-private scoped credential digest policy"
+    )
+    gateway_serve.add_argument(
+        "--private-api-port", type=int, help="opt-in separate loopback task/job alias listener"
+    )
     gateway_serve.add_argument("--digest-key-file", required=True)
     gateway_serve.add_argument("--client-token-file", required=True)
     gateway_serve.add_argument("--doppler-token-file", required=True)
@@ -767,25 +774,66 @@ def main() -> None:
     mode = dashboard.add_mutually_exclusive_group()
     mode.add_argument("--demo", action="store_true", help="synthetic offline mode (default)")
     mode.add_argument("--upstream", metavar="URL", help="explicit local Gateway mode")
+    mode.add_argument(
+        "--reviewed-config", metavar="PATH", help="private manually reviewed snapshot"
+    )
     dashboard.add_argument("--upstream-token-file")
-    dashboard.add_argument("--dashboard-token-file", required=True)
+    dashboard.add_argument("--accounts-file", help="private schema-1 credit account observations")
+    dashboard.add_argument(
+        "--provider-metadata-file", help="private read-only provider observations"
+    )
+    dashboard.add_argument("--activity-upstream", help="loopback activity-only Gateway URL")
+    dashboard.add_argument("--activity-token-file")
+    dashboard.add_argument("--public-base-url", help="explicit HTTPS public URL ending /quota/")
+    browser_auth = dashboard.add_mutually_exclusive_group(required=True)
+    browser_auth.add_argument("--dashboard-token-file")
+    browser_auth.add_argument(
+        "--dashboard-password-file", help="root-owned canonical browser verifier JSON"
+    )
     dashboard.add_argument("--port", type=int, default=18086)
     args = parser.parse_args()
     if args.command == "dashboard-serve":
-        from .dashboard import Dashboard, UpstreamSource
+        from .dashboard import ActivitySource, Dashboard, UpstreamSource
+        from .dashboard_accounts import CreditAccounts
         from .dashboard_demo import create_demo
+        from .dashboard_reviewed import create_reviewed
         from .dashboard_server import make_dashboard_server, read_private_token
 
         if bool(args.upstream) != bool(args.upstream_token_file):
             parser.error("--upstream and --upstream-token-file must be provided together")
-        dashboard_token = read_private_token(args.dashboard_token_file)
+        if bool(args.activity_upstream) != bool(args.activity_token_file):
+            parser.error("--activity-upstream and --activity-token-file must be provided together")
+        if args.activity_upstream and not args.reviewed_config:
+            parser.error("--activity-upstream requires --reviewed-config")
+        accounts = CreditAccounts(args.accounts_file) if args.accounts_file else None
+        activity = (
+            ActivitySource(args.activity_upstream, read_private_token(args.activity_token_file))
+            if args.activity_upstream
+            else None
+        )
+        dashboard_token = (
+            read_private_token(args.dashboard_token_file) if args.dashboard_token_file else None
+        )
         with tempfile.TemporaryDirectory(prefix="quota-dashboard-demo-") as directory:
             source = (
                 UpstreamSource(args.upstream, read_private_token(args.upstream_token_file))
                 if args.upstream
+                else create_reviewed(directory, args.reviewed_config)
+                if args.reviewed_config
                 else create_demo(directory)
             )
-            server = make_dashboard_server(Dashboard(source), dashboard_token, port=args.port)
+            server = make_dashboard_server(
+                Dashboard(
+                    source,
+                    accounts=accounts,
+                    activity=activity,
+                    provider_metadata_file=args.provider_metadata_file,
+                ),
+                dashboard_token,
+                password_file=args.dashboard_password_file,
+                port=args.port,
+                public_base_url=args.public_base_url,
+            )
             print(
                 f"Quota Broker dashboard: http://127.0.0.1:{server.server_port} ({source.kind}; advice only)",
                 flush=True,
@@ -839,6 +887,17 @@ def main() -> None:
             raise SystemExit(1) from None
         return
     if args.command == "gateway-serve":
+        if args.private_api_port is not None and (
+            not args.access_policy_file
+            or args.private_api_port == args.port
+            or not 1 <= args.private_api_port <= 65535
+        ):
+            parser.error("--private-api-port requires an access policy and a separate port")
+        access_policy = (
+            AccessPolicyFile(args.access_policy_file) if args.access_policy_file else None
+        )
+        if access_policy is not None:
+            access_policy.read()
         registry = Registry.load(args.registry_file) if args.registry_file else Registry.builtin()
         if args.queue_key_file:
             prepare_queue_storage(args.db, args.queue_key_file)
@@ -875,15 +934,35 @@ def main() -> None:
             queue=queue,
             worker=queue is not None and not args.no_queue_worker,
             serialize_work=args.serialize_work,
+            access_policy=access_policy,
             admin_token=Path(args.admin_token_file).read_text().strip()
             if args.admin_token_file
             else None,
         )
+        private_server = None
+        private_thread = None
         try:
+            if args.private_api_port is not None:
+                private_server = make_gateway_server(
+                    gateway_instance,
+                    client_token,
+                    port=args.private_api_port,
+                    queue=queue,
+                    access_policy=access_policy,
+                    private_api=True,
+                    serialize_work=args.serialize_work,
+                )
+                private_thread = threading.Thread(target=private_server.serve_forever, daemon=True)
+                private_thread.start()
             server.serve_forever()
         except KeyboardInterrupt:
             pass
         finally:
+            if private_server is not None:
+                if private_thread is not None:
+                    private_server.shutdown()
+                    private_thread.join(timeout=2)
+                private_server.server_close()
             server.server_close()
         return
     if args.command == "demo":

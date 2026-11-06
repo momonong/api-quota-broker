@@ -133,9 +133,11 @@ class Capacity:
     source: str | None = None
     scope: str | None = None
     expires_at: datetime | None = None
+    # A separately verified credit deadline. expires_at above is evidence TTL.
+    credit_expires_at: datetime | None = None
 
     def view(self) -> dict:
-        return {
+        result = {
             "kind": self.kind,
             "refresh_seconds": self.refresh_seconds,
             "as_of": self.as_of.isoformat() if self.as_of else None,
@@ -143,6 +145,10 @@ class Capacity:
             "scope": self.scope,
             "expires_at": self.expires_at.isoformat() if self.expires_at else None,
         }
+        # Preserve historical snapshots and active-reservation fingerprints.
+        if self.credit_expires_at is not None:
+            result["credit_expires_at"] = self.credit_expires_at.isoformat()
+        return result
 
 
 @dataclass(frozen=True)
@@ -259,6 +265,7 @@ class Target:
             and self.verified_at
             and self.expires_at
             and self.verified_at <= now < self.expires_at
+            and (self.capacity.credit_expires_at is None or now < self.capacity.credit_expires_at)
             and self.quotas
             and all(
                 not (
@@ -360,7 +367,7 @@ def parse_quota_facts(raw: list) -> tuple[QuotaFact, ...]:
 
 
 def parse_capacity(raw: dict) -> Capacity:
-    if not isinstance(raw, dict) or set(raw) != {
+    if not isinstance(raw, dict) or set(raw) - {"credit_expires_at"} != {
         "kind",
         "refresh_seconds",
         "as_of",
@@ -374,6 +381,10 @@ def parse_capacity(raw: dict) -> Capacity:
     as_of = _instant(raw["as_of"])
     expires = _instant(raw["expires_at"])
     source, scope = raw["source"], raw["scope"]
+    credit_raw = raw.get("credit_expires_at")
+    if credit_raw is not None and not isinstance(credit_raw, str):
+        raise ConfigError("invalid credit expiry")
+    credit_expires = _instant(credit_raw)
     if kind not in {"short_renewable", "unknown", "one_time_gift"}:
         raise ConfigError("invalid capacity kind")
     if kind == "short_renewable":
@@ -391,7 +402,9 @@ def parse_capacity(raw: dict) -> Capacity:
         raise ConfigError("known capacity requires time, source and scope")
     if kind == "unknown" and (as_of is not None or source is not None or scope is not None):
         raise ConfigError("unknown capacity cannot claim a source")
-    return Capacity(kind, seconds, as_of, source, scope, expires)
+    if credit_expires is not None and (kind == "unknown" or expires is None):
+        raise ConfigError("credit expiry requires current, sourced capacity evidence")
+    return Capacity(kind, seconds, as_of, source, scope, expires, credit_expires)
 
 
 CF_NEURON_FORMULA = "cloudflare_llama_3_2_1b_formula"

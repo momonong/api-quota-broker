@@ -609,6 +609,12 @@ class Registry:
                     raise RegistryError("unapproved family endpoint schema")
             else:
                 url = _protocol_endpoint(adapter_name, origin, value["endpoint"])
+            if provider_id == "openai" and (adapter_name, origin, url) != (
+                "openai_chat",
+                "https://api.openai.com",
+                "https://api.openai.com/v1/chat/completions",
+            ):
+                raise RegistryError("unapproved OpenAI endpoint")
             if (urlsplit(url).scheme, urlsplit(url).netloc) != (
                 urlsplit(origin).scheme,
                 urlsplit(origin).netloc,
@@ -1017,16 +1023,16 @@ class OpenAIChatAdapter:
             or target_language is not None
         ):
             raise RegistryError("unsupported adapter request")
-        return (
-            spec.endpoint_template,
-            {"Authorization": "Bearer " + secret},
-            {
-                "model": spec.model,
-                "messages": [{"role": "user", "content": content}],
-                "max_tokens": max_output_tokens,
-                "stream": False,
-            },
-        )
+        output_key = "max_completion_tokens" if spec.provider == "openai" else "max_tokens"
+        payload: dict[str, object] = {
+            "model": spec.model,
+            "messages": [{"role": "user", "content": content}],
+            output_key: max_output_tokens,
+            "stream": False,
+        }
+        if spec.provider == "openai":
+            payload["store"] = False
+        return spec.endpoint_template, {"Authorization": "Bearer " + secret}, payload
 
     def transport(
         self,
@@ -1036,9 +1042,12 @@ class OpenAIChatAdapter:
         payload: dict[str, object],
         timeout: float,
     ) -> tuple[int, dict[str, str], bytes]:
-        required = {"model", "messages", "max_tokens", "stream"}
+        output_key = "max_completion_tokens" if spec.provider == "openai" else "max_tokens"
+        required = {"model", "messages", output_key, "stream"}
+        if spec.provider == "openai":
+            required.add("store")
         messages = payload.get("messages")
-        output = payload.get("max_tokens")
+        output = payload.get(output_key)
         response_format = payload.get("response_format")
         if (
             spec.adapter != "openai_chat"
@@ -1048,6 +1057,7 @@ class OpenAIChatAdapter:
             or any(ord(c) <= 31 or ord(c) >= 127 for c in headers["Authorization"])
             or payload.get("model") != spec.model
             or payload.get("stream") is not False
+            or (spec.provider == "openai" and payload.get("store") is not False)
             or not required <= payload.keys()
             or payload.keys() - required - {"response_format"}
             or type(output) is not int

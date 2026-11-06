@@ -21,6 +21,7 @@ from typing import Any, NamedTuple, NoReturn
 
 SOURCE_FILES = (
     "src/quota_broker/__init__.py",
+    "src/quota_broker/access.py",
     "src/quota_broker/bounded_curl.py",
     "src/quota_broker/catalog.py",
     "src/quota_broker/cli.py",
@@ -29,7 +30,12 @@ SOURCE_FILES = (
     "src/quota_broker/config.py",
     "src/quota_broker/core.py",
     "src/quota_broker/dashboard.py",
+    "src/quota_broker/dashboard_accounts.py",
+    "src/quota_broker/dashboard_auth.py",
     "src/quota_broker/dashboard_demo.py",
+    "src/quota_broker/dashboard_provider_metadata.py",
+    "src/quota_broker/task_matching.py",
+    "src/quota_broker/dashboard_reviewed.py",
     "src/quota_broker/dashboard_server.py",
     "src/quota_broker/discovery.py",
     "src/quota_broker/discovery_parsers.py",
@@ -55,6 +61,7 @@ ASSET_FILES = (
     "src/quota_broker/dashboard_assets/index.html",
     "src/quota_broker/dashboard_assets/dashboard.css",
     "src/quota_broker/dashboard_assets/dashboard.js",
+    "src/quota_broker/dashboard_assets/provider-inventory.json",
 )
 DEPLOY_FILES = (
     "deploy/asus/acceptance.py",

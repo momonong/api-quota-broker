@@ -80,9 +80,9 @@ MODELS = {
             "gemini-2.5-flash-lite:generateContent"
         ),
         free_kind="free_tier_for_eligible_projects",
-        use_restrictions="Google currently limits 2.5 model access for some new projects; verify access.",
+        use_restrictions="Legacy access is limited to past active users; verify the API key project.",
         source="https://ai.google.dev/gemini-api/docs/models/gemini-2.5-flash-lite",
-        verified_at="2026-09-25",
+        verified_at="2026-11-05",
     ),
     "gemini-3.5-flash-lite": Model(
         provider="google",
@@ -166,7 +166,7 @@ MODELS = {
         origin="https://api.mistral.ai",
         endpoint_template="https://api.mistral.ai/v1/chat/completions",
         free_kind="free_mode_subject_to_verified_organization_access",
-        use_restrictions="Included Free-mode usage only; model access and billing must be verified.",
+        use_restrictions="Account UI and public Free mode terms can differ; verify API access and billing.",
         source="https://docs.mistral.ai/models/ministral-3-3b-25-12",
         verified_at="2026-10-02",
     ),

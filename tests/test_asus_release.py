@@ -197,8 +197,11 @@ def test_r4_install_helpers_are_explicit_required_regular_644_payload(source, pa
     assert path in release.DEPLOY_FILES
     assert "deploy/asus/operator.py" not in release._paths()
     artifact = build(source)
-    assert len(release._paths()) == len(artifact.manifest["release"]["files"]) == 51
+    assert len(release._paths()) == len(artifact.manifest["release"]["files"]) == 58
+    assert "src/quota_broker/access.py" in release.SOURCE_FILES
     assert "src/quota_broker/token_preflight.py" in release.SOURCE_FILES
+    assert "src/quota_broker/dashboard_reviewed.py" in release.SOURCE_FILES
+    assert "src/quota_broker/dashboard_auth.py" in release.SOURCE_FILES
     assert unpack(artifact)[path] == ("# fixture payload: " + path + "\n").encode()
     record = next(row for row in artifact.manifest["release"]["files"] if row["path"] == path)
     assert record["mode"] == 0o644
@@ -504,11 +507,14 @@ def test_dashboard_modules_and_exact_static_assets_are_release_payload(source):
     members = unpack(artifact)
     for path in (
         "src/quota_broker/dashboard.py",
+        "src/quota_broker/dashboard_accounts.py",
         "src/quota_broker/dashboard_server.py",
         "src/quota_broker/dashboard_demo.py",
+        "src/quota_broker/dashboard_provider_metadata.py",
         "src/quota_broker/dashboard_assets/index.html",
         "src/quota_broker/dashboard_assets/dashboard.css",
         "src/quota_broker/dashboard_assets/dashboard.js",
+        "src/quota_broker/dashboard_assets/provider-inventory.json",
     ):
         assert members[path] == (source / path).read_bytes()
 

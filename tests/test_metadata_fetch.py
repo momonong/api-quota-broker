@@ -6,7 +6,7 @@ import json
 import os
 import subprocess
 import sys
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -107,6 +107,81 @@ class BatchFixture:
             clock=lambda: NOW,
             **kwargs,
         )
+
+
+def test_openrouter_standalone_reads_only_fixed_counter(monkeypatch, capsys):
+    fixture = BatchFixture()
+    monkeypatch.setattr(fetch, "metadata_get", fixture.get)
+    monkeypatch.setattr(fetch.sys, "stdin", io.TextIOWrapper(io.BytesIO(b"fixture-value-123\r\n")))
+    assert fetch.main(["--openrouter-key-stdin"]) == 0
+    assert fixture.calls == [
+        (fetch.plan.KEY_URL, {"Authorization": "Bearer fixture-value-123"}, 20)
+    ]
+    output = capsys.readouterr().out
+    assert "fixture-value-123" not in output
+    assert "discard-private-label" not in output
+    assert json.loads(output)["free_model_daily_requests"] == {
+        "used": 1,
+        "limit": 50,
+        "remaining": 49,
+    }
+
+
+def test_conflicting_token_bounds_do_not_stop_later_provider_reads():
+    fixture = BatchFixture()
+
+    def get(url, headers, timeout):
+        response = fixture.get(url, headers, timeout)
+        if url == fetch.plan.SOURCES["groq"]:
+            return json.dumps(
+                {
+                    "data": [
+                        {
+                            "id": "openai/gpt-oss-20b",
+                            "context_window": 256,
+                            "max_completion_tokens": 1024,
+                        }
+                    ]
+                }
+            ).encode()
+        if url.startswith(fetch.plan.SOURCES["google"] + "?"):
+            payload = json.loads(response)
+            payload["models"][0].update(inputTokenLimit=256, outputTokenLimit=1024)
+            return json.dumps(payload).encode()
+        return response
+
+    result = fixture.run(get=get)
+    assert result["state"] == "completed"
+    groq = next(s for s in result["snapshots"] if s["provider"] == "groq")
+    row = groq["models"][0]
+    assert row["model"] == "openai/gpt-oss-20b"
+    assert row["context_tokens"] is None and row["max_output_tokens"] is None
+    assert "token_limits_conflicting" in row["features"]
+    google = next(s for s in result["snapshots"] if s["provider"] == "google")
+    assert google["complete"] and len(google["models"]) == 2
+    for row in google["models"]:
+        assert row["capability"] == "text_generation"
+        assert row["context_tokens"] is None and row["max_output_tokens"] is None
+        assert "token_limits_conflicting" in row["features"]
+    assert result["account_metadata"][0]["free_model_daily_requests"]["remaining"] == 49
+
+
+def test_openrouter_daily_counter_is_unknown_across_utc_midnight():
+    fixture = BatchFixture()
+    raw = json.loads(fixture.get(fetch.plan.KEY_URL, {}, 20))
+    value = fetch._key_observation(raw, NOW - timedelta(seconds=1), NOW)
+    assert value["free_model_daily_requests"] is None
+
+
+def test_openrouter_standalone_rejects_multiline_secret(monkeypatch, capsys):
+    fixture = BatchFixture()
+    monkeypatch.setattr(fetch, "metadata_get", fixture.get)
+    monkeypatch.setattr(
+        fetch.sys, "stdin", io.TextIOWrapper(io.BytesIO(b"fixture-value-123\nextra\n"))
+    )
+    assert fetch.main(["--openrouter-key-stdin"]) == 2
+    assert not fixture.calls
+    assert "fixture-value-123" not in capsys.readouterr().out
 
 
 def test_default_dry_run_has_no_credential_process_file_or_network(monkeypatch, capsys):

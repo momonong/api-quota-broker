@@ -4,6 +4,8 @@ Local control plane for trusted, cooperative clients using an extensible resourc
 
 The instance-local trusted Registry adds compatible providers/models by manifest; registered adapters supply protocol admission, error, usage and quota semantics. Persistent routing health and an explicitly enabled encrypted durable queue support bounded waiting and restart. See the [core acceptance contract](docs/v1-core-contract.md).
 
+Disabled, locally verified expansion profiles for SambaNova, Hugging Face routed inference, and a Cerebras trial candidate are provided separately in `registry.expansion.example.json` and `gateway.expansion.example.json`. They reuse `openai_chat` for string text input. Account eligibility, real inference and deployment are separate gates; see the [expansion profiles and offline evidence](docs/provider-expansion-offline.md).
+
 For another project's backend, start with the [client integration guide](docs/client-integration.md): authentication, synchronous and queued requests, result retention, error handling, and the verified OrderFlow backend integration and remaining acceptance scope. The `gateway-serve` / `gateway` interface is the primary v1 path; it has its own JSON contract and is not a Gemini/OpenAI SDK drop-in endpoint.
 
 See also the [ASUS operations and acceptance record](docs/asus-broker-ops.md), [capability and discovery contracts](docs/provider-capability-expansion.md), [v1.0 local usage guide](docs/v1-local-guide.md), and [representative live evidence](docs/v1-seven-provider-readiness.md). The older `serve`, `DirectClient`, and separate NVIDIA executor sections below describe compatible historical interfaces, not the recommended client integration path.
@@ -11,6 +13,8 @@ See also the [ASUS operations and acceptance record](docs/asus-broker-ops.md), [
 ## Version 1.2.0
 
 This compatible release adds an offline-first [Traditional Chinese quota dashboard](docs/dashboard.md) and a session-authenticated, advice-only API. It separates provider-reported remaining from current-window local ledger usage and caps, preserves unknown values, and recommends a route only when its task constraints, credentials inventory, free eligibility and authoritative quota evidence are current and sufficient. Advice never executes or queues work and always disallows paid execution.
+
+The dashboard also supports an independent root-owned browser password verifier via `--dashboard-password-file`, mutually exclusive with the compatible local demo token option. The homepage's restricted password worker can rotate that verifier without restarting Quota; revision checks revoke old Quota sessions. This is a source capability, separate from deployment and owner acceptance; see the [password-mode contract](docs/dashboard.md).
 
 The default demo uses synthetic evidence with the actual Gateway routing engine and forbidden provider/credential transports. Connecting the facade to a real local Gateway requires explicit upstream mode and separate server-side credentials. Version `1.2.0` records the Git/package release and offline verification; it does not deploy services, renew account evidence or claim current real-provider allowance.
 

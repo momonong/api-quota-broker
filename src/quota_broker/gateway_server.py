@@ -1,5 +1,6 @@
 """Required-auth loopback HTTP facade for the unified gateway."""
 
+import hashlib
 import hmac
 import json
 import threading
@@ -10,6 +11,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
+from .access import AccessPolicyFile, Principal, ProjectAccess, metadata, task_metadata
 from .core import stamp
 from .discovery import DiscoveryError
 from .families import MediaLimits
@@ -17,6 +19,7 @@ from .gateway import Gateway, GatewayError
 from .queue import DurableQueue
 
 BODY_READ_TIMEOUT = 30.0
+_SERVER_SETUP_LOCK = threading.Lock()
 
 
 def _json_depth(raw: bytes, maximum: int = 32) -> None:
@@ -63,6 +66,8 @@ def make_gateway_server(
     worker: bool = False,
     admin_token: str | None = None,
     serialize_work: bool = False,
+    access_policy: AccessPolicyFile | None = None,
+    private_api: bool = False,
 ) -> ThreadingHTTPServer:
     if host not in {"127.0.0.1", "::1", "localhost"}:
         raise ValueError("gateway binds loopback only")
@@ -72,8 +77,27 @@ def make_gateway_server(
         len(admin_token) < 32 or hmac.compare_digest(admin_token, token)
     ):
         raise ValueError("separate administrator token required")
+    if private_api and access_policy is None:
+        raise ValueError("private API requires scoped access policy")
+    if access_policy is not None:
+        reserved_digests = {
+            hashlib.sha256(value.encode()).hexdigest()
+            for value in (token, admin_token)
+            if value is not None
+        }
+        if any(principal.token_sha256 in reserved_digests for principal in access_policy.read()):
+            raise ValueError("scoped credentials must differ from legacy client/admin credentials")
     media_limits = getattr(gateway, "media_limits", MediaLimits())
-    work_gate = threading.Lock() if serialize_work else None
+    with _SERVER_SETUP_LOCK:
+        project_access = (
+            ProjectAccess(gateway, access_policy) if access_policy is not None else None
+        )
+        work_gate = None
+        if serialize_work:
+            work_gate = getattr(gateway, "_http_work_gate", None)
+            if work_gate is None:
+                work_gate = threading.Lock()
+                gateway._http_work_gate = work_gate
     worker_state: dict[str, Any] = {
         "enabled": queue is not None and worker,
         "running": False,
@@ -134,12 +158,130 @@ def make_gateway_server(
             return bytes(raw)
 
         def _authorized(self) -> bool:
+            self.principal: Principal | None = None
+            parsed = urlsplit(self.path)
+            path = parsed.path
+            if private_api:
+                parts = path.split("/")
+                allowed = (
+                    len(parts) >= 5
+                    and parts[1:4] == ["quota", "api", "v1"]
+                    and parts[4] in {"tasks", "jobs"}
+                )
+                tail = parts[5:]
+                allowed = allowed and (
+                    (not tail and self.command in {"GET", "POST"})
+                    or (len(tail) == 1 and tail[0] != "tick" and self.command == "GET")
+                    or (
+                        parts[4] == "jobs"
+                        and len(tail) == 2
+                        and (
+                            (tail[1] == "result" and self.command == "GET")
+                            or (tail[1] == "cancel" and self.command == "POST")
+                        )
+                    )
+                )
+                if not allowed or parsed.fragment:
+                    self._send(404, {"error": "not_found"})
+                    return False
+                path = "/v1/" + ("queue" if parts[4] == "jobs" else "tasks")
+                if tail:
+                    path += "/" + "/".join(tail)
+                self.path = path + ("?" + parsed.query if parsed.query else "")
             supplied = self.headers.get("Authorization", "")
-            expected = admin_token if urlsplit(self.path).path.startswith("/v1/admin/") else token
-            if expected is None or not hmac.compare_digest(supplied, "Bearer " + expected):
+            if (
+                len(self.headers.get_all("Authorization", [])) != 1
+                or not supplied.isascii()
+                or len(supplied) > 4103
+            ):
                 self._send(401, {"error": "unauthorized"})
                 return False
+            if not private_api:
+                expected = admin_token if path.startswith("/v1/admin/") else token
+                if expected is not None and hmac.compare_digest(supplied, "Bearer " + expected):
+                    return True
+            if access_policy is not None and supplied.startswith("Bearer "):
+                try:
+                    self.principal = access_policy.authenticate(supplied[7:])
+                except ValueError:
+                    self.principal = None
+            principal = self.principal
+            if principal is None:
+                self._send(401, {"error": "unauthorized"})
+                return False
+            if "admin" in principal.scopes and not private_api:
+                return True
+            scope = None
+            if self.command == "GET" and path in {"/v1/catalog", "/v1/model-inventory"}:
+                scope = "read"
+            elif self.command == "GET" and path in {"/v1/usage", "/v1/diagnostics"}:
+                scope = "read" if principal.project_id is None else None
+            elif self.command == "POST" and path == "/v1/routes/explain":
+                scope = "plan"
+            elif path == "/v1/tasks" or path.startswith("/v1/tasks/"):
+                if self.command == "GET":
+                    scope = (
+                        "read" if principal.project_id is not None or path == "/v1/tasks" else None
+                    )
+                elif (
+                    self.command == "POST"
+                    and path == "/v1/tasks"
+                    and principal.project_id is not None
+                ):
+                    scope = "execute"
+            elif (
+                (path == "/v1/queue" or path.startswith("/v1/queue/"))
+                and principal.project_id is not None
+                and path != "/v1/queue/tick"
+            ):
+                scope = "read" if self.command == "GET" else "execute"
+            if scope is None or scope not in principal.scopes:
+                self._send(403, {"error": "forbidden"})
+                return False
             return True
+
+        def _project(self, parsed: Any, body: dict[str, Any] | None) -> object:
+            assert project_access is not None and self.principal is not None
+            principal = self.principal
+            kind = "jobs" if parsed.path.startswith("/v1/queue") else "tasks"
+            prefix = "/v1/queue" if kind == "jobs" else "/v1/tasks"
+            tail = (
+                parsed.path.removeprefix(prefix).removeprefix("/").split("/")
+                if parsed.path != prefix
+                else []
+            )
+            engine = queue if kind == "jobs" else gateway
+            if engine is None:
+                raise GatewayError("queue_disabled", "queue is not enabled")
+            if not tail and self.command == "GET":
+                return project_access.recent(
+                    principal, kind, engine.status, parse_qs(parsed.query, keep_blank_values=True)
+                )
+            if parsed.query:
+                raise GatewayError("invalid_request", "query is not supported")
+            if not tail and self.command == "POST" and body is not None:
+                internal, data = project_access.claim(principal, kind, body)
+                result = (
+                    queue.submit(data)
+                    if kind == "jobs" and queue is not None
+                    else gateway.run(data)
+                )
+                return project_access.external(result, internal, body["request_key"])
+            if not tail or len(tail) > 2:
+                raise GatewayError("not_found", "task endpoint not found")
+            internal = project_access.lookup(principal, kind, tail[0])
+            if len(tail) == 1 and self.command == "GET":
+                result = engine.status(internal)
+            elif kind == "jobs" and queue is not None and len(tail) == 2:
+                if tail[1] == "result" and self.command == "GET":
+                    result = queue.result(internal)
+                elif tail[1] == "cancel" and self.command == "POST" and body == {}:
+                    result = queue.cancel(internal)
+                else:
+                    raise GatewayError("not_found", "task endpoint not found")
+            else:
+                raise GatewayError("not_found", "task endpoint not found")
+            return project_access.external(result, internal, tail[0])
 
         def _handle(self, body: dict[str, Any] | None = None) -> None:
             try:
@@ -147,6 +289,20 @@ def make_gateway_server(
                 if parsed.fragment:
                     raise GatewayError("invalid_request", "invalid path")
                 result: object
+                principal = self.principal
+                if (
+                    principal is not None
+                    and principal.project_id is not None
+                    and "admin" not in principal.scopes
+                    and (
+                        parsed.path == "/v1/tasks"
+                        or parsed.path.startswith("/v1/tasks/")
+                        or parsed.path == "/v1/queue"
+                        or parsed.path.startswith("/v1/queue/")
+                    )
+                ):
+                    self._send(200, self._project(parsed, body))
+                    return
                 if (
                     parsed.path.startswith("/v1/admin/targets/")
                     and self.command == "POST"
@@ -223,6 +379,12 @@ def make_gateway_server(
                 elif self.command == "GET" and parsed.path == "/v1/catalog" and not parsed.query:
                     result = gateway.catalog()
                 elif (
+                    self.command == "GET"
+                    and parsed.path == "/v1/model-inventory"
+                    and not parsed.query
+                ):
+                    result = gateway.model_inventory()
+                elif (
                     self.command == "GET" and parsed.path == "/v1/diagnostics" and not parsed.query
                 ):
                     result = gateway.diagnostics()
@@ -245,6 +407,14 @@ def make_gateway_server(
                         len(values) != 1 for values in query.values()
                     ):
                         raise GatewayError("invalid_request", "invalid task filters")
+                    if (
+                        principal is not None
+                        and "admin" not in principal.scopes
+                        and "before" in query
+                    ):
+                        raise GatewayError(
+                            "invalid_request", "global metadata cursors are disabled"
+                        )
                     raw_limit = query.get("limit", ["20"])[0]
                     if not raw_limit.isascii() or not raw_limit.isdigit() or len(raw_limit) > 3:
                         raise GatewayError("invalid_request", "invalid task limit")
@@ -263,7 +433,7 @@ def make_gateway_server(
                     result = gateway.status(parsed.path.removeprefix("/v1/tasks/"))
                 elif self.command == "GET" and parsed.path == "/v1/usage":
                     query = parse_qs(parsed.query, keep_blank_values=True)
-                    if set(query) - {"provider", "model", "from", "to"} or any(
+                    if set(query) - {"provider", "model", "from", "to", "task"} or any(
                         len(values) != 1 for values in query.values()
                     ):
                         raise GatewayError("invalid_request", "invalid usage filters")
@@ -272,6 +442,7 @@ def make_gateway_server(
                         model=query.get("model", [None])[0],
                         from_at=query.get("from", [None])[0],
                         to_at=query.get("to", [None])[0],
+                        task_type=query.get("task", [None])[0],
                     )
                 elif self.command == "POST" and parsed.path == "/v1/tasks" and not parsed.query:
                     if body is None:
@@ -284,10 +455,17 @@ def make_gateway_server(
                 ):
                     if body is None:
                         raise GatewayError("invalid_request", "missing body")
+                    if principal is not None and project_access is not None:
+                        project_access.bounds(principal, body)
                     result = gateway.explain(body)
                 else:
                     self._send(404, {"error": "not_found"})
                     return
+                if principal is not None and "admin" not in principal.scopes:
+                    if parsed.path == "/v1/tasks":
+                        result = task_metadata(result)
+                    else:
+                        result = metadata(result)
                 self._send(200, result)
             except Exception as exc:  # noqa: BLE001 - never log provider or secret errors
                 if not isinstance(exc, (GatewayError, DiscoveryError)):
@@ -295,6 +473,8 @@ def make_gateway_server(
                     return
                 status = {
                     "invalid_request": 400,
+                    "forbidden": 403,
+                    "project_limit": 429,
                     "not_found": 404,
                     "conflict": 409,
                     "unavailable": 503,

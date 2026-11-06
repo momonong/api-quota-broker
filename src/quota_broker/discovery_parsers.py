@@ -61,7 +61,6 @@ class ParserError(DiscoveryError):
                 "model_id_url",
                 "model_id_secret_pattern",
                 "model_id_provider_format",
-                "context_bound",
                 "collection_schema",
                 "item_schema",
                 "options",
@@ -123,7 +122,10 @@ def _row(
 ) -> dict[str, Any]:
     context_tokens, output_tokens = _tokens(context), _tokens(output)
     if context_tokens is not None and output_tokens is not None and output_tokens > context_tokens:
-        raise _invalid("context_bound")
+        # The listing still establishes the identity. The pair cannot be used
+        # as comparable context and completion bounds by the broker.
+        context_tokens = output_tokens = None
+        features = (features or set()) | {"token_limits_conflicting"}
     return {
         "model": model,
         "capability": capability,

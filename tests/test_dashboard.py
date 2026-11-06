@@ -33,6 +33,29 @@ def test_current_complete_evidence_recommends_without_any_execution(tmp_path):
 
 
 @pytest.mark.parametrize(
+    "value,expected",
+    [
+        (0.6, 0.6),
+        (0.0, 0.0),
+        (1.0, 1.0),
+        (None, None),
+        (True, None),
+        (float("nan"), None),
+        (float("inf"), None),
+    ],
+)
+def test_advice_preserves_finite_headroom_fraction_without_widening_counters(
+    tmp_path, value, expected
+):
+    board, source = dashboard(tmp_path)
+    plan = source.explain(task())
+    plan["candidates"][0]["ranking_factors"]["observed_headroom"] = value
+    source.explain = lambda _: plan
+    result = board.advice(task())
+    assert result["candidates"][0]["ranking"]["observed_headroom"] == expected
+
+
+@pytest.mark.parametrize(
     "change", ["unknown", "stale", "partial", "insufficient", "paid", "inventory"]
 )
 def test_uncertain_or_paid_evidence_requires_user(tmp_path, change):
@@ -275,3 +298,21 @@ def test_instance_registry_constraints_use_actual_gateway_authority(tmp_path, pr
     raw = task(provider=provider, model="registered-fixture-model")
     assert source.gateway.explain(raw)["selected_target_id"] == "custom-fixture"
     assert board.advice(raw)["selected_target"]["target_id"] == "custom-fixture"
+
+
+def test_unreviewed_limit_sources_and_scopes_never_leak_to_dashboard(tmp_path):
+    board, source = dashboard(tmp_path)
+    source.kind = "gateway"
+    original = source.catalog
+
+    def catalog():
+        rows = original()
+        for fact in rows[0]["provider_quota_facts"]:
+            fact["limit"]["source"] = "https://example.invalid/?token=synthetic-marker"
+            fact["limit"]["scope"] = "private-project-123"
+        return rows
+
+    source.catalog = catalog
+    encoded = json.dumps(board.snapshot())
+    assert "synthetic-marker" not in encoded
+    assert "private-project-123" not in encoded

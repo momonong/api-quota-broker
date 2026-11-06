@@ -64,6 +64,39 @@ def test_session_required_upstream_bearer_cannot_authenticate(tmp_path):
         assert TOKEN.encode() not in raw
 
 
+def test_provider_inventory_is_available_only_in_authenticated_snapshot(tmp_path):
+    with running(tmp_path) as (server, board):
+        # Use the offline Gateway fixture with the real-data presentation branch.
+        board.source.kind = "upstream"
+        assert request(server, "/provider-inventory.json")[0] == 404
+        assert request(server, "/api/snapshot")[0] == 401
+        status, _, raw = request(server, "/api/snapshot", cookie=login(server))
+        assert status == 200
+        snapshot = json.loads(raw)
+        assert len(snapshot["provider_inventory"]["providers"]) == 11
+        assert snapshot["execution_allowed"] is snapshot["paid_allowed"] is False
+
+
+def test_match_mode_keeps_session_origin_and_nonexecuting_boundary(tmp_path):
+    with running(tmp_path) as (server, _):
+        body = {"mode": "match", "task": "text_generation", "inputs": ["text"], "outputs": ["text"]}
+        assert request(server, "/api/advice", method="POST", payload=body)[0] == 401
+        cookie = login(server)
+        assert (
+            request(
+                server, "/api/advice", method="POST", payload=body, cookie=cookie, origin=False
+            )[0]
+            == 403
+        )
+        status, _, raw = request(server, "/api/advice", method="POST", payload=body, cookie=cookie)
+        result = json.loads(raw)
+        assert status == 200 and result["decision"] == "ask_user"
+        assert result["execution_allowed"] is result["paid_allowed"] is False
+        body["route_task"] = {"mode": "match", "input": "never echo this text"}
+        status, _, raw = request(server, "/api/advice", method="POST", payload=body, cookie=cookie)
+        assert status == 400 and b"never echo" not in raw
+
+
 def test_origin_route_input_and_logout_boundaries(tmp_path):
     with running(tmp_path) as (server, _):
         cookie = login(server)
@@ -277,3 +310,118 @@ def test_duplicate_origin_and_body_framing_are_rejected(tmp_path):
         assert response.status == 403
         response.read()
         con.close()
+
+
+@contextmanager
+def public_running(tmp_path):
+    from quota_broker.dashboard_server import make_dashboard_server
+
+    board = Dashboard(create_demo(tmp_path))
+    server = make_dashboard_server(
+        board, TOKEN, port=0, public_base_url="https://momonong.me/quota/"
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield server, board
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(2)
+
+
+def public_request(server, path, **kwargs):
+    headers = {"Host": "momonong.me", "Origin": "https://momonong.me", **kwargs.pop("headers", {})}
+    return request(server, path, headers=headers, **kwargs)
+
+
+def test_public_prefix_redirect_assets_login_cookie_snapshot_and_logout(tmp_path):
+    with public_running(tmp_path) as (server, _):
+        status, headers, _ = public_request(server, "/quota")
+        assert status == 308 and headers["Location"] == "/quota/"
+        status, _, raw = public_request(server, "/quota/")
+        assert status == 200 and b'href="./dashboard.css"' in raw and b'href="./"' in raw
+        assert public_request(server, "/quota/dashboard.js")[0] == 200
+        assert public_request(server, "/quota/api/snapshot")[0] == 401
+        for path in (
+            "/",
+            "/api/snapshot",
+            "/dashboard.js",
+            "/quota//api/snapshot",
+            "/quota/../api/snapshot",
+        ):
+            assert public_request(server, path)[0] == 404
+        status, headers, _ = public_request(
+            server, "/quota/api/login", method="POST", payload={"token": TOKEN}
+        )
+        assert status == 200
+        cookie = headers["Set-Cookie"]
+        assert cookie.startswith("__Secure-aqb_quota=")
+        assert "Path=/quota/" in cookie and "; Secure;" in cookie
+        cookie = cookie.split(";")[0]
+        assert public_request(server, "/quota/api/snapshot", cookie=cookie)[0] == 200
+        status, headers, _ = public_request(
+            server, "/quota/api/logout", method="POST", payload={}, cookie=cookie
+        )
+        assert (
+            status == 200
+            and "Path=/quota/" in headers["Set-Cookie"]
+            and "Max-Age=0" in headers["Set-Cookie"]
+        )
+        assert public_request(server, "/quota/api/snapshot", cookie=cookie)[0] == 401
+
+
+def test_public_exact_host_origin_and_no_forwarded_inference(tmp_path):
+    with public_running(tmp_path) as (server, _):
+        for headers in (
+            {"Host": "evil.invalid"},
+            {"Host": "momonong.me:443"},
+            {"Origin": "http://momonong.me"},
+            {"Origin": "https://evil.invalid"},
+        ):
+            assert public_request(server, "/quota/", headers=headers)[0] == 403
+        assert (
+            request(
+                server,
+                "/quota/",
+                headers={"X-Forwarded-Host": "momonong.me", "X-Forwarded-Proto": "https"},
+            )[0]
+            == 403
+        )
+        assert (
+            public_request(
+                server,
+                "/quota/api/login",
+                method="POST",
+                payload={"token": TOKEN},
+                headers={"Origin": "null"},
+            )[0]
+            == 403
+        )
+        status, headers, _ = public_request(
+            server, "/quota/api/login", method="POST", payload={"token": TOKEN}
+        )
+        assert status == 200
+        cookie = (
+            headers["Set-Cookie"].split(";")[0].replace("__Secure-aqb_quota=", "aqb_dashboard=")
+        )
+        assert public_request(server, "/quota/api/snapshot", cookie=cookie)[0] == 401
+
+
+@pytest.mark.parametrize(
+    "base",
+    [
+        "http://momonong.me/quota/",
+        "https://momonong.me/",
+        "https://momonong.me/quota",
+        "https://momonong.me/other/",
+        "https://user@momonong.me/quota/",
+        "https://momonong.me/quota/?x=1",
+        "https://momonong.me:443/quota/",
+    ],
+)
+def test_public_base_validation(tmp_path, base):
+    from quota_broker.dashboard_server import make_dashboard_server
+
+    with pytest.raises(ValueError, match="public base"):
+        make_dashboard_server(Dashboard(create_demo(tmp_path)), TOKEN, port=0, public_base_url=base)
