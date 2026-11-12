@@ -416,8 +416,10 @@ def test_quota_kpi_priority_provider_usage_and_match_quota_summary():
 (async()=>{
  await tick();
  assert.match(get('quota-kpi').textContent,/已納管供應商/);
- assert.match(get('quota-priority').textContent,/大量工作與任務優先順序建議/);
- assert.match(get('quota-priority').textContent,/2026-12-03/);
+ assert.match(get('quota-priority').textContent,/目前可檢查的免費路由/);
+ assert.match(get('quota-priority').textContent,/text-fixture/);
+ assert.ok(!get('quota-priority').textContent.includes('200.00 USD'));
+ assert.ok(!get('quota-priority').textContent.includes('gemini-2.5'));
  context.renderUsage({...report,provider_usage:{state:'available',local_ledger_state:'unavailable',providers:[
    {provider:'openrouter',name:'OpenRouter',state:'reported',as_of:stamp,source:'https://openrouter.ai/api/v1/key',reported_metrics:[{metric:'free_model_daily_requests',label:'免費模型日計數',used:0,limit:50,remaining:50,unit:'requests',window:'day',current:true,window_matched:true}],includes_external_usage:true,external_usage_scope:'金鑰層級統計',local_recorded_generation_attempts:null,ledger_held_count:0}
  ]}});
@@ -437,5 +439,130 @@ def test_quota_kpi_priority_provider_usage_and_match_quota_summary():
  assert.equal(get('quota-kpi').textContent,'');
  assert.equal(get('quota-priority').textContent,'');
  assert.equal(get('provider-usage').textContent,'');
+})().catch(e=>{console.error(e);process.exitCode=1;});
+""")
+
+
+def test_credit_route_uses_explicit_capacity_and_formats_micros_as_usd():
+    run_ui_script(r"""
+(async()=>{
+ await tick();
+ const t={...target,provider:'openai',required_capacity:[{metric:'credits_usd_micros',window:'budget'}],
+ observations:[{metric:'credits_usd_micros',window:'budget',remaining:200000000,effective_remaining:199999900,local_observation_hold:100,current:true,as_of:stamp,valid_until:stamp}]};
+ assert.equal(context.evidenceComplete(t),true);
+ const row=context.providerRow(t);
+ assert.match(row.textContent,/199\.9999\s+USD/);
+ assert.match(row.textContent,/觀測 200/);
+ assert.ok(!row.textContent.includes('199,999,900'));
+ snapshot.targets=[t];snapshot.accounts=[{provider:'openai',qualification:'free_trial',billing:'not_started_no_payment_method',balance:'200.00',current_balance:'200.00',grants:[],benefit:{},model_limits:[],notes:[],evidence:{current:true,kind:'owner_reported_credit_account',sources:[],as_of:stamp,valid_until:stamp}}];
+ context.renderAccounts(snapshot);
+ assert.match(get('accounts').textContent,/Free trial/);
+ assert.match(get('accounts').textContent,/使用者回報/);
+ assert.match(get('accounts').textContent,/已接入 Broker/);
+ assert.ok(!get('accounts').textContent.includes('沒有 OpenAI 可執行路由'));
+})().catch(e=>{console.error(e);process.exitCode=1;});
+""")
+
+
+def test_historical_grant_never_fabricates_zero_period_spending_or_fixed_ttl():
+    run_ui_script(r"""
+(async()=>{
+ await tick();
+ const data=structuredClone(snapshot);
+ data.accounts=[{provider:'openai',balance:'200.00',current_balance:null,balance_state:'stale',
+   evidence:{current:false,as_of:stamp,valid_until:stamp,sources:[]},
+   grants:[{amount:'200.00',remaining:'197.50',expires:{value:'2026-12-03',precision:'date'}}],
+   benefit:{},model_limits:[],notes:[]}];
+ context.render(data);
+ const text=get('quota-overview').textContent;
+ assert.match(text,/最後觀測剩餘 197\.5(?:0)? USD/);
+ assert.match(text,/實際期間扣款未回報/);
+ assert.match(text,/讀值已過時/);
+ assert.doesNotMatch(text,/期間已用 0\.00 USD|逾 15 分鐘/);
+})().catch(e=>{console.error(e);process.exitCode=1;});
+""")
+
+
+def test_provider_cost_and_counter_show_their_own_observation_times():
+    run_ui_script(r"""
+(async()=>{
+ await tick();
+ context.renderProviderUsage({state:'available',providers:[{provider:'openrouter',name:'OpenRouter',
+  state:'reported',as_of:stamp,source:'https://openrouter.ai/api/v1/key',reported_metrics:[
+   {metric:'free_model_daily_requests',label:'免費模型日計數',used:1,limit:50,remaining:49,
+    unit:'requests',as_of:stamp,current:true},
+   {metric:'total_usd',label:'累計金鑰費用',used:'1.23',unit:'USD',
+    as_of:'2026-10-30T00:00:00Z',current:false}]}]});
+ const text=get('provider-usage').textContent;
+ assert.match(text,/此讀值觀測：/);
+ assert.match(text,/2026\/10\/30/);
+ assert.match(text,/讀值已過時/);
+})().catch(e=>{console.error(e);process.exitCode=1;});
+""")
+
+
+def test_known_zero_account_credits_has_a_headline_and_missing_value_stays_unknown():
+    run_ui_script(r"""
+(async()=>{
+ await tick();
+ const walk=n=>[n,...(n.children||[]).filter(x=>typeof x!=='string').flatMap(walk)];
+ const data=structuredClone(snapshot);data.source.kind='reviewed';data.source.audit_session_at=stamp;
+ data.targets=[{...target,provider:'huggingface',enabled:false,free_eligible:false,observations:[],
+   provider_limits:[],reviewed_account:{display_facts:[{kind:'credits_usd',value:0,period:'account',precision:'exact'}]}},
+  {...target,provider:'sambanova',enabled:false,free_eligible:false,observations:[],provider_limits:[],
+   reviewed_account:{display_facts:[]}}];
+ context.render(data);
+ const tableRows=walk(get('quota-overview')).filter(n=>n.tagName==='tr');
+ const hf=tableRows.find(n=>n.textContent.includes('huggingface'));
+ const samba=tableRows.find(n=>n.textContent.includes('sambanova'));
+ assert.match(hf.textContent,/最後觀測帳戶點數 0 USD/);
+ assert.match(hf.textContent,/帳戶核對/);
+ assert.equal(walk(hf).some(n=>n.className==='quota-number unknown'),false);
+ assert.equal(walk(samba).some(n=>n.className==='quota-number unknown'),true);
+ assert.doesNotMatch(samba.textContent,/帳戶點數 0 USD/);
+ assert.doesNotMatch(hf.textContent,/即時點數 0|剩餘 10 USD/);
+ data.targets[0].reviewed_account.display_facts=[{kind:'credits_usd',value:null,period:'account'}];
+ context.render(data);
+ const missing=walk(get('quota-overview')).filter(n=>n.tagName==='tr').find(n=>n.textContent.includes('huggingface'));
+ assert.equal(walk(missing).some(n=>n.className==='quota-number unknown'),true);
+ assert.doesNotMatch(missing.textContent,/帳戶點數 0 USD/);
+})().catch(e=>{console.error(e);process.exitCode=1;});
+""")
+
+
+def test_mistral_monthly_allowance_is_separate_from_rounded_usage_and_zero_prepaid():
+    run_ui_script(r"""
+(async()=>{
+ await tick();
+ const data=structuredClone(snapshot);data.source.kind='reviewed';data.source.audit_session_at=stamp;
+ data.targets=[{...target,provider:'mistral',observations:[],provider_limits:[],
+  reviewed_account:{display_facts:[
+   {kind:'monthly_allowance_usd',value:10,period:'calendar_month',precision:'exact'},
+   {kind:'used_allowance_usd',value:0,period:'calendar_month',precision:'rounded'},
+   {kind:'credits_usd',value:0,period:'account',precision:'exact'}]}}];
+ context.render(data);
+ const text=get('quota-overview').textContent;
+ assert.match(text,/方案內含：10 USD/);
+ assert.match(text,/每曆月1日（時區未提供）/);
+ assert.match(text,/最後觀測已用：0 USD（約）/);
+ assert.match(text,/最後觀測帳戶點數 0 USD/);
+ assert.doesNotMatch(text,/剩餘 10 USD|即時.*10 USD/);
+})().catch(e=>{console.error(e);process.exitCode=1;});
+""")
+
+
+def test_live_overlay_facts_show_their_own_audit_time_instead_of_runtime_asof():
+    run_ui_script(r"""
+(async()=>{
+ await tick();
+ const data=structuredClone(snapshot);data.source.kind='gateway';data.source.as_of=stamp;
+ data.targets=[{...target,provider:'huggingface',observations:[],provider_limits:[],
+  reviewed_account:{audit_session_at:'2026-10-12T00:00:00Z',display_only:true,
+   display_facts:[{kind:'credits_usd',value:0,period:'account',precision:'exact'}]}}];
+ context.render(data);
+ const text=get('quota-overview').textContent;
+ assert.match(text,/帳戶核對 2026\/10\/12/);
+ assert.doesNotMatch(text,/帳戶核對 2026\/11\/1/);
+ assert.match(text,/最後觀測帳戶點數 0 USD/);
 })().catch(e=>{console.error(e);process.exitCode=1;});
 """)

@@ -300,3 +300,19 @@ def test_prior_expired_or_zero_grant_does_not_hide_new_balance(tmp_path, remaini
         0
     ]
     assert account["current_balance"] == "23.45"
+
+
+def test_owner_reported_free_trial_preserves_balance_date_and_unknown_renewal(tmp_path):
+    from quota_broker.dashboard_accounts import CreditAccounts
+
+    doc = account_document()
+    account = doc["accounts"][0]
+    account["qualification"] = "free_trial"
+    account["evidence"]["time_precision"] = "owner_report_received_during_same_audit_session"
+    account["benefit"].update(recurrence="unknown", rollover=None)
+    observed = CreditAccounts(write_accounts(tmp_path, doc)).snapshot(ANCHOR)[0]
+    assert observed["qualification"] == "free_trial"
+    assert observed["evidence"]["kind"] == "owner_reported_credit_account"
+    assert observed["current_balance"] == "23.45"
+    assert observed["grants"][0]["expires"] == {"value": "2026-01-08", "precision": "date"}
+    assert observed["benefit"]["recurrence"] == "unknown"

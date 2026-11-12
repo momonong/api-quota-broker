@@ -25,6 +25,7 @@ RESOURCE_METRICS = frozenset(
         "pages",
         "conversions",
         "neurons",
+        "credits_usd_micros",
     }
 )
 QUOTA_WINDOWS = frozenset({"rolling_minute", "rolling_hour", "day", "month"})
@@ -220,6 +221,12 @@ class Target:
     secret_ref: str | None = None
     account_id_ref: str | None = None
     model_info: Model | None = field(default=None, compare=False, repr=False)
+    # Explicit external capacity gates, independent of local safety caps.
+    # Empty preserves historical strict project-scoped admission.
+    required_capacity: tuple[tuple[str, str], ...] = ()
+    # Display evidence only. The existing conservative billing_enabled flag
+    # continues to govern admission, including unknown-account placeholders.
+    billing_evidence_state: str | None = None
 
     def neurons(
         self, input_bound: int, output: int, now: datetime, explicit: int | None = None
@@ -347,6 +354,7 @@ def parse_quota_facts(raw: list) -> tuple[QuotaFact, ...]:
             "day",
             "month",
             "one_time",
+            "budget",
             "unknown",
         }:
             raise ConfigError("invalid provider quota dimension")
@@ -512,6 +520,25 @@ def model_has_no_output_tokens(registry: "Registry", model: "ModelSpec") -> bool
         return False
 
 
+def parse_required_capacity(raw: object) -> tuple[tuple[str, str], ...]:
+    if not isinstance(raw, list) or len(raw) > 32:
+        raise ConfigError("invalid required capacity")
+    result = []
+    for item in raw:
+        if (
+            not isinstance(item, dict)
+            or set(item) != {"metric", "window"}
+            or item["metric"] not in RESOURCE_METRICS
+            or item["window"] not in QUOTA_WINDOWS | {"budget"}
+        ):
+            raise ConfigError("invalid required capacity dimension")
+        dimension = (item["metric"], item["window"])
+        if dimension in result:
+            raise ConfigError("duplicate required capacity dimension")
+        result.append(dimension)
+    return tuple(result)
+
+
 def load_config(
     path: str | Path, *, allow_nvidia: bool = False, registry: "Registry | None" = None
 ) -> tuple[Target, ...]:
@@ -525,6 +552,12 @@ def load_config(
     ids = set()
     for item in raw["targets"]:
         try:
+            billing_evidence_state = item.get("billing_evidence_state")
+            if billing_evidence_state is not None and (
+                not isinstance(billing_evidence_state, str)
+                or billing_evidence_state not in {"enabled", "disabled", "unknown"}
+            ):
+                raise ConfigError("invalid billing evidence state")
             model = registry.resolve(item["model"], item["provider"])
             if item["provider"] != model.provider:
                 raise ConfigError("provider/model mismatch")
@@ -561,6 +594,8 @@ def load_config(
                 model_info=model,
                 neuron_estimate=parse_neuron_estimate(item.get("neuron_estimate")),
                 resource_estimates=parse_resource_estimates(item.get("resource_estimates", [])),
+                required_capacity=parse_required_capacity(item.get("required_capacity", [])),
+                billing_evidence_state=billing_evidence_state,
             )
         except (KeyError, TypeError, RegistryError) as exc:
             raise ConfigError(f"invalid target: {exc}") from exc
@@ -568,6 +603,14 @@ def load_config(
             q.metric == "neurons" for q in target.quotas
         ):
             raise ConfigError("Neurons estimate requires a Neurons cap")
+        if target.required_capacity and legacy:
+            raise ConfigError("explicit capacity requires separate local safety caps")
+        if any(metric == "credits_usd_micros" for metric, _ in target.required_capacity) and (
+            not any(e.metric == "credits_usd_micros" for e in target.resource_estimates)
+            or ("credits_usd_micros", "budget") not in target.required_capacity
+            or target.capacity.credit_expires_at is None
+        ):
+            raise ConfigError("credit capacity requires an expiring budget and cost bound")
         estimate = target.neuron_estimate
         if (
             estimate is not None

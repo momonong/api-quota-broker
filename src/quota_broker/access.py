@@ -318,7 +318,15 @@ class ProjectAccess:
                         "quota_exhausted",
                         "pre_send_failed",
                     }
-                    if row is None or row[0] not in terminal:
+                    if row is None or (
+                        row[0] not in terminal
+                        and not (
+                            row[0] == "unknown"
+                            and self.gateway.broker.object_unknown_slots_acknowledged(
+                                con, object_kind, object_key
+                            )
+                        )
+                    ):
                         active += 1
                 if active >= principal.max_inflight:
                     raise GatewayError("project_limit", "project inflight limit reached")
@@ -472,7 +480,11 @@ class ProjectAccess:
         observations = self.gateway._quota_observations(
             con, target, self.gateway.clock(), reservation_id
         )
-        required = {(q.metric, q.window) for q in target.quotas}
+        required = (
+            set(target.required_capacity)
+            if target.required_capacity
+            else {(q.metric, q.window) for q in target.quotas}
+        )
         required.update((o["metric"], o["window"]) for o in observations)
         if (
             not target.available(self.gateway.clock())

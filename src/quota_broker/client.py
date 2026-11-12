@@ -1,12 +1,13 @@
 """Direct official API client: one provider attempt per dispatch authorization."""
 
 import json
+import re
 import urllib.error
 import urllib.request
 import uuid
 from collections.abc import Callable
 from datetime import UTC, datetime
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 from .catalog import MODELS, endpoint
 from .retry import parse_retry_after
@@ -91,6 +92,109 @@ def _check_official(plan: dict) -> str:
 ProviderTransport = Callable[
     [str, dict[str, str], dict[str, object], float], tuple[int, dict[str, str], bytes]
 ]
+
+
+class ProjectClient:
+    """Private project API. Submit once; query the same job after any uncertainty.
+
+    Remote projects use an authenticated SSH tunnel to this loopback destination.
+    Provider credentials and routing decisions stay inside the Broker.
+    """
+
+    def __init__(self, base_url: str, token: str, *, timeout: float = 15):
+        try:
+            url = urlsplit(base_url)
+            valid = (
+                url.scheme == "http"
+                and url.hostname == "127.0.0.1"
+                and url.port is not None
+                and url.path in {"", "/"}
+                and not url.username
+                and not url.password
+                and not url.query
+                and not url.fragment
+            )
+        except ValueError:
+            valid = False
+        if (
+            not valid
+            or not isinstance(token, str)
+            or not 32 <= len(token) <= 1024
+            or not token.isascii()
+            or any(c.isspace() for c in token)
+        ):
+            raise ClientError("private loopback endpoint and project token required")
+        if type(timeout) not in {int, float} or not 0 < timeout <= 185:
+            raise ClientError("timeout must be bounded")
+        self._base = base_url.rstrip("/") + "/quota/api/v1/jobs"
+        self._token, self._timeout = token, timeout
+
+    @staticmethod
+    def _key(value: str) -> str:
+        if not isinstance(value, str) or not re.fullmatch(
+            r"[A-Za-z0-9._~-]{1,120}", value
+        ):
+            raise ClientError("stable request key required")
+        return quote(value, safe="")
+
+    def _request(
+        self, key: str, suffix: str = "", body: dict | None = None, *, submit: bool = False
+    ) -> dict:
+        escaped = self._key(key)
+        url = self._base if submit else self._base + "/" + escaped + suffix
+        try:
+            return _json_http(url, body, {"Authorization": "Bearer " + self._token}, self._timeout)
+        except (OSError, TimeoutError, ValueError):
+            # No second POST, new request key, provider fallback, or silent retry.
+            raise ClientError(
+                "broker transport outcome unknown",
+                detail={
+                    "error": "transport_unknown",
+                    "request_key": key,
+                    "action": "query_original_job",
+                },
+            ) from None
+
+    def submit(self, task: dict) -> dict:
+        if not isinstance(task, dict):
+            raise ClientError("task must be an object")
+        key = task.get("request_key")
+        if not isinstance(key, str):
+            raise ClientError("stable request key required")
+        self._key(key)
+        return self._request(key, body=task, submit=True)
+
+    def submit_text(
+        self,
+        request_key: str,
+        text: str,
+        *,
+        max_output_tokens: int = 256,
+        provider: str | None = None,
+        model: str | None = None,
+    ) -> dict:
+        if not isinstance(text, str) or not text.strip():
+            raise ClientError("text input required")
+        task = {
+            "request_key": request_key,
+            "capability": "text_generation",
+            "input": {"messages": [{"role": "user", "content": text}]},
+            "max_output_tokens": max_output_tokens,
+        }
+        if provider is not None:
+            task["provider"] = provider
+        if model is not None:
+            task["model"] = model
+        return self.submit(task)
+
+    def status(self, request_key: str) -> dict:
+        return self._request(request_key)
+
+    def result(self, request_key: str) -> dict:
+        return self._request(request_key, "/result")
+
+    def cancel(self, request_key: str) -> dict:
+        return self._request(request_key, "/cancel", {})
 
 
 class DirectClient:
@@ -207,3 +311,50 @@ class DirectClient:
         self._broker("/v1/reports", report)
         result["state"] = report["state"]
         return result
+
+
+def call_free_api(
+    prompt_or_input: str | dict[str, object],
+    *,
+    token: str,
+    base_url: str = "http://127.0.0.1:18588",
+    request_key: str | None = None,
+    capability: str = "text_generation",
+    provider: str | None = None,
+    model: str | None = None,
+    max_output_tokens: int = 256,
+    options: dict[str, object] | None = None,
+    timeout: float = 30.0,
+) -> dict[str, object]:
+    """Unified one-call helper for invoking free providers via the Shared Broker.
+
+    If `provider` / `model` are omitted, the Broker automatically selects the
+    best eligible free route with available capacity.
+    """
+    client = ProjectClient(base_url, token, timeout=timeout)
+    key = request_key or f"req-{uuid.uuid4().hex}"
+    if isinstance(prompt_or_input, str) and capability == "text_generation":
+        return client.submit_text(
+            key,
+            prompt_or_input,
+            max_output_tokens=max_output_tokens,
+            provider=provider,
+            model=model,
+        )
+    task: dict[str, object] = {
+        "request_key": key,
+        "capability": capability,
+        "input": prompt_or_input,
+    }
+    if capability in {"text_generation", "translation", "vision"}:
+        task["max_output_tokens"] = max_output_tokens
+    elif capability == "ocr" and isinstance(prompt_or_input, str):
+        task["max_output_tokens"] = 1
+    if provider is not None:
+        task["provider"] = provider
+    if model is not None:
+        task["model"] = model
+    if options is not None:
+        task["options"] = options
+    return client.submit(task)
+

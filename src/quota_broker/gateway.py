@@ -503,9 +503,20 @@ class Gateway:
                 "resource_bounds": prepared.resources,
                 "input_bytes": prepared.input_bytes,
             }, prepared.resources.get("input_tokens", 0)
-        return data, 1 if data["capability"] == "ocr" else 4 * len(
-            data["input"].encode("utf-8")
-        ) + 256
+        size = len(data["input"].encode("utf-8"))
+        bound = 1 if data["capability"] == "ocr" else 4 * size + 256
+        if data["capability"] != "ocr" and any(t.resource_estimates for t in self.targets):
+            return {
+                **data,
+                "input_bytes": size,
+                "resource_bounds": {
+                    "requests": 1,
+                    "input_tokens": bound,
+                    "output_tokens": data["max_output_tokens"],
+                    "total_tokens": bound + data["max_output_tokens"],
+                },
+            }, bound
+        return data, bound
 
     @staticmethod
     def _content_strings(value: object) -> tuple[str, ...]:
@@ -552,9 +563,15 @@ class Gateway:
         resources = self._resource_bounds(data)
         if resources is None:
             return None
-        return target.resource_costs(
+        costs = target.resource_costs(
             resources, data.get("input_bytes", 0), data["max_output_tokens"], self.clock()
         )
+        neurons = target.neurons(
+            bound, data["max_output_tokens"], self.clock(), data.get("neuron_bound")
+        )
+        if neurons is not None and "neurons" not in costs:
+            costs["neurons"] = neurons
+        return costs
 
     def _hold_observations(
         self, con: sqlite3.Connection, target: Target, reservation_id: str, data: dict[str, Any]
@@ -566,6 +583,10 @@ class Gateway:
             self.clock(),
             data.get("neuron_bound"),
         )
+        observations = self._quota_observations(con, target, self.clock())
+        resources = self._target_resources(target, data, data["input_token_bound"])
+        if self._capacity_reasons(target, observations, resources):
+            raise BrokerError("unavailable", "current known free capacity required")
         self.routing.hold(
             con,
             scope,
@@ -574,9 +595,50 @@ class Gateway:
             data["max_output_tokens"],
             neurons,
             self.clock(),
-            self._quota_observations(con, target, self.clock()),
-            self._target_resources(target, data, data["input_token_bound"]),
+            observations,
+            resources,
         )
+
+    @staticmethod
+    def _capacity_reasons(
+        target: Target, observations: list[dict[str, Any]], resources: dict[str, int] | None
+    ) -> list[str]:
+        """Explicit account capacity gates shared by plan/reserve/dispatch.
+
+        Local request caps are enforced by charges. They are not evidence of a
+        provider remaining balance. Every configured external dimension still
+        fails closed, including observations that are unknown or stale.
+        """
+        if not target.required_capacity:
+            return []
+        required = set(target.required_capacity) | {
+            (o["metric"], o["window"])
+            for o in observations
+            if o.get("current")
+        }
+        reasons = []
+        for metric, window in sorted(required):
+            matches = [o for o in observations if (o["metric"], o["window"]) == (metric, window)]
+            cost = (
+                1
+                if metric == "requests"
+                else (resources or {}).get("total_tokens" if metric == "tokens" else metric)
+            )
+            if (
+                not matches
+                or cost is None
+                or any(
+                    not o["current"]
+                    or o["provenance"] not in {"official", "observed"}
+                    or o["confidence"]
+                    not in {"provider_reported", "administrator_verified", "configured_evidence"}
+                    or o["effective_remaining"] is None
+                    or o["effective_remaining"] < cost
+                    for o in matches
+                )
+            ):
+                reasons.append("required_capacity:" + metric + ":" + window)
+        return reasons
 
     def _quota_observations(
         self,
@@ -617,6 +679,31 @@ class Gateway:
     ) -> None:
         if not self.routing.permit(con, target.id, reservation_id, self.clock()):
             raise BrokerError("unavailable", "provider circuit blocks dispatch")
+        if target.required_capacity:
+            row = con.execute(
+                "SELECT reserve_request FROM reservations WHERE id=?", (reservation_id,)
+            ).fetchone()
+            prepared = json.loads(row[0]) if row and row[0] else {}
+            observations = self._quota_observations(con, target, self.clock(), reservation_id)
+            if self._capacity_reasons(target, observations, prepared.get("resource_bounds")):
+                raise BrokerError("unavailable", "current known free capacity required")
+            # Evidence may change after reserve; require the original hold for
+            # every currently required dimension, never create one at dispatch.
+            held = {
+                (r[0], r[1])
+                for r in con.execute(
+                    "SELECT metric,window FROM observed_holds WHERE reservation_id=?",
+                    (reservation_id,),
+                )
+            }
+            if (
+                not (
+                    set(target.required_capacity)
+                    | {(o["metric"], o["window"]) for o in observations if o.get("current")}
+                )
+                <= held
+            ):
+                raise BrokerError("unavailable", "capacity hold missing")
 
     def observe_quota(self, target_id: str, observation: dict[str, Any]) -> None:
         target = next((t for t in self.targets if t.id == target_id), None)
@@ -922,9 +1009,23 @@ class Gateway:
                     "max_output_tokens": 1,
                     "neuron_bound": None,
                 }
+                bound = 1
+                if target.required_capacity and model.capability == "text_generation":
+                    # A real minimal text envelope is required to estimate credit
+                    # cost. Missing costs must not make every credit route look
+                    # permanently blocked, nor bypass actual task admission.
+                    data = self.validate_task(
+                        {
+                            "request_key": "diagnostic-read-only",
+                            "capability": "text_generation",
+                            "input": {"messages": [{"role": "user", "content": "x"}]},
+                            "max_output_tokens": min(16, target.max_output_tokens),
+                        }
+                    )
+                    data, bound = self._execution_data(data)
                 candidate = next(
                     item
-                    for item in self._route_plan(con, data, 1)["candidates"]
+                    for item in self._route_plan(con, data, bound)["candidates"]
                     if item["target_id"] == target.id
                 )
                 reasons = list(candidate["reasons"])
@@ -1183,7 +1284,9 @@ class Gateway:
             reasons.append("half_open_probe_busy")
         scope = self.broker._quota_scope(json.loads(self.broker._snapshot(target)))
         resources = self._target_resources(target, data, bound)
-        for observation in self._quota_observations(con, target, now):
+        observations = self._quota_observations(con, target, now)
+        reasons.extend(self._capacity_reasons(target, observations, resources))
+        for observation in observations:
             metric = "total_tokens" if observation["metric"] == "tokens" else observation["metric"]
             cost = (
                 resources.get(metric)
@@ -1195,6 +1298,10 @@ class Gateway:
                 else bound + data["max_output_tokens"]
                 if observation["metric"] == "tokens"
                 else bound
+                if observation["metric"] == "input_tokens"
+                else data["max_output_tokens"]
+                if observation["metric"] == "output_tokens"
+                else None
             )
             if observation["current"] and observation["remaining"] is not None and cost is None:
                 reasons.append("estimation_unconfigured")
@@ -1207,7 +1314,7 @@ class Gateway:
                 reasons.append("observed_capacity:" + observation["metric"])
         if con.execute(
             "SELECT 1 FROM reservations WHERE target_snapshot IS NULL "
-            "AND state IN ('reserved','dispatched','unknown') AND NOT EXISTS (SELECT 1 FROM execution_completion e WHERE e.reservation_id=reservations.id) LIMIT 1"
+            "AND state IN ('reserved','dispatched','unknown') AND NOT EXISTS (SELECT 1 FROM execution_completion e WHERE e.reservation_id=reservations.id) AND NOT (state='unknown' AND EXISTS (SELECT 1 FROM unknown_slot_acknowledgements a WHERE a.reservation_id=reservations.id)) LIMIT 1"
         ).fetchone():
             reasons.append("legacy_active_requires_reconciliation")
         if model.context_tokens > 0 and bound + data["max_output_tokens"] > model.context_tokens:
@@ -1223,7 +1330,7 @@ class Gateway:
         snapshot = self.broker._snapshot(target)
         changed = con.execute(
             "SELECT 1 FROM reservations WHERE target_id=? AND target_snapshot!=? "
-            "AND state IN ('reserved','dispatched','unknown') AND NOT EXISTS (SELECT 1 FROM execution_completion e WHERE e.reservation_id=reservations.id) LIMIT 1",
+            "AND state IN ('reserved','dispatched','unknown') AND NOT EXISTS (SELECT 1 FROM execution_completion e WHERE e.reservation_id=reservations.id) AND NOT (state='unknown' AND EXISTS (SELECT 1 FROM unknown_slot_acknowledgements a WHERE a.reservation_id=reservations.id)) LIMIT 1",
             (target.id, snapshot),
         ).fetchone()
         if changed:
@@ -1241,7 +1348,7 @@ class Gateway:
             reasons.append("account_quota_cooldown")
         active = con.execute(
             "SELECT count(*) FROM reservations WHERE target_id=? "
-            "AND state IN ('reserved','dispatched','unknown') AND NOT EXISTS (SELECT 1 FROM execution_completion e WHERE e.reservation_id=reservations.id)",
+            "AND state IN ('reserved','dispatched','unknown') AND NOT EXISTS (SELECT 1 FROM execution_completion e WHERE e.reservation_id=reservations.id) AND NOT (state='unknown' AND EXISTS (SELECT 1 FROM unknown_slot_acknowledgements a WHERE a.reservation_id=reservations.id))",
             (target.id,),
         ).fetchone()[0]
         if active >= target.concurrency_limit:
@@ -1249,7 +1356,7 @@ class Gateway:
         if target.shared_concurrency_scope:
             shared = con.execute(
                 "SELECT count(*) FROM reservations WHERE shared_scope=? "
-                "AND state IN ('reserved','dispatched','unknown') AND NOT EXISTS (SELECT 1 FROM execution_completion e WHERE e.reservation_id=reservations.id)",
+                "AND state IN ('reserved','dispatched','unknown') AND NOT EXISTS (SELECT 1 FROM execution_completion e WHERE e.reservation_id=reservations.id) AND NOT (state='unknown' AND EXISTS (SELECT 1 FROM unknown_slot_acknowledgements a WHERE a.reservation_id=reservations.id))",
                 (target.shared_concurrency_scope,),
             ).fetchone()[0]
             if shared >= target.shared_concurrency_limit:
@@ -1347,7 +1454,7 @@ class Gateway:
                     else:
                         permanent = True
             active = con.execute(
-                "SELECT state,expires_at FROM reservations WHERE target_id=? AND state IN ('reserved','dispatched','unknown') AND NOT EXISTS (SELECT 1 FROM execution_completion e WHERE e.reservation_id=reservations.id)",
+                "SELECT state,expires_at FROM reservations WHERE target_id=? AND state IN ('reserved','dispatched','unknown') AND NOT EXISTS (SELECT 1 FROM execution_completion e WHERE e.reservation_id=reservations.id) AND NOT (state='unknown' AND EXISTS (SELECT 1 FROM unknown_slot_acknowledgements a WHERE a.reservation_id=reservations.id))",
                 (target.id,),
             ).fetchall()
             inflight = len(active)
@@ -1359,7 +1466,7 @@ class Gateway:
                     waits.append(stamp(now + timedelta(seconds=5)))
             if "shared_concurrency_limit" in reasons:
                 unknowns = con.execute(
-                    "SELECT count(*) FROM reservations WHERE shared_scope=? AND state='unknown' AND NOT EXISTS (SELECT 1 FROM execution_completion e WHERE e.reservation_id=reservations.id)",
+                    "SELECT count(*) FROM reservations WHERE shared_scope=? AND state='unknown' AND NOT EXISTS (SELECT 1 FROM execution_completion e WHERE e.reservation_id=reservations.id) AND NOT (state='unknown' AND EXISTS (SELECT 1 FROM unknown_slot_acknowledgements a WHERE a.reservation_id=reservations.id))",
                     (target.shared_concurrency_scope,),
                 ).fetchone()[0]
                 if unknowns >= (target.shared_concurrency_limit or 1):
@@ -1430,6 +1537,7 @@ class Gateway:
                     if target.neuron_estimate
                     else None,
                     "effective_neuron_bound": target_data["neuron_bound"],
+                    "resource_cost_bounds": resources,
                     "features": list(self.registry.resolve(target.model, target.provider).features),
                     "health": health,
                     "quota_observations": observations,
@@ -1777,7 +1885,7 @@ class Gateway:
                 "exclude_target_ids": excluded,
                 "requirements": data.get("requirements", {}),
             }
-            if typed:
+            if "resource_bounds" in data:
                 request.update(
                     resource_bounds=data["resource_bounds"], input_bytes=data["input_bytes"]
                 )
@@ -2029,6 +2137,16 @@ class Gateway:
                         response, response_headers, (secret, account_id)
                     ):
                         raise ProviderError("provider response invalid")
+                    # Preserve bounded metadata even when the typed parser rejects
+                    # a 200 response. Never persist the raw response or error prose.
+                    diagnostics = safe_response_diagnostics(
+                        target.provider,
+                        status,
+                        response_headers,
+                        response,
+                        sensitive_values=(secret, account_id, *content_strings),
+                        requested_model=target.model,
+                    )
                     response_phase = "parse_response"
                     parsed = self.registry.interpret_task(
                         spec, data["capability"], status, response_headers, response
@@ -2073,14 +2191,15 @@ class Gateway:
                             response,
                         )
                     )
-                diagnostics = safe_response_diagnostics(
-                    target.provider,
-                    status,
-                    response_headers,
-                    response,
-                    sensitive_values=(secret, account_id, *content_strings),
-                    requested_model=target.model,
-                )
+                if not typed:
+                    diagnostics = safe_response_diagnostics(
+                        target.provider,
+                        status,
+                        response_headers,
+                        response,
+                        sensitive_values=(secret, account_id, *content_strings),
+                        requested_model=target.model,
+                    )
                 if request_id is not None and any(
                     value and value.casefold() in request_id.casefold()
                     for value in (secret, account_id, *content_strings)

@@ -497,3 +497,24 @@ def test_pure_request_admission_runs_without_child_and_catches_bad_wire_fields(m
     ):
         with pytest.raises(ProviderError, match="invalid_family_transport"):
             transport.validate_family_request(invalid)
+
+
+def test_child_accepts_repeated_case_insensitive_cors_list_headers(monkeypatch):
+    headers = Message()
+    headers.add_header("Content-Length", "2")
+    headers.add_header("access-control-expose-headers", "X-Request-ID")
+    headers.add_header("Access-Control-Expose-Headers", "OpenAI-Processing-Ms")
+    code, output, captured = run_child_fixture(monkeypatch, raw=b"42", response_headers=headers)
+    assert code == 0 and captured["opens"] == 1
+    fake_child(monkeypatch, output)
+    status, received, raw = send_family_request(request(), 3, 100)
+    assert status == 200 and raw == b"42"
+    assert received["access-control-expose-headers"] == "X-Request-ID, OpenAI-Processing-Ms"
+
+
+def test_child_rejects_conflicting_duplicate_request_identifiers(monkeypatch):
+    headers = Message()
+    headers.add_header("x-request-id", "req_one")
+    headers.add_header("X-Request-ID", "req_two")
+    code, output, captured = run_child_fixture(monkeypatch, response_headers=headers)
+    assert code == 2 and output == b"" and captured["reads"] == []

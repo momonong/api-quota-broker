@@ -27,6 +27,7 @@ def catalog_model_id_reason(value: object) -> str | None:
 
 
 ENDPOINT_HOSTS = {
+    "openai": {"api.openai.com"},
     "nvidia": {"integrate.api.nvidia.com", "ai.api.nvidia.com"},
     "google": {"generativelanguage.googleapis.com"},
     "cloudflare": {"api.cloudflare.com"},
@@ -35,3 +36,11 @@ ENDPOINT_HOSTS = {
     "openrouter": {"openrouter.ai"},
     "ocrspace": {"api.ocr.space"},
 }
+
+
+def openrouter_free_policy() -> dict:
+    """Wire-level zero-price ceiling; account eligibility is checked separately."""
+    return {
+        "allow_fallbacks": False,
+        "max_price": {"prompt": 0, "completion": 0, "request": 0},
+    }

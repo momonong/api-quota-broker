@@ -435,3 +435,53 @@ def test_unknown_billing_does_not_become_paid_in_blocking_reasons(tmp_path):
         }
     )
     assert all("billing_enabled" not in row["reasons"] for row in result["candidates"])
+
+
+def test_official_expansion_account_sources_are_display_only_and_keep_routes_disabled(tmp_path):
+    from quota_broker.dashboard_reviewed import create_reviewed
+
+    config, profile, targets = write_bundle(tmp_path)
+    official = {
+        "huggingface": ["https://huggingface.co/settings/billing"],
+        "sambanova": ["https://cloud.sambanova.ai/plans/usage"],
+        "cerebras": ["https://cloud.cerebras.ai/", "https://inference-docs.cerebras.ai/"],
+    }
+    for target in targets:
+        if target["provider"] in official:
+            row = next(row for row in profile["targets"] if row["target_id"] == target["id"])
+            row["sources"] = official[target["provider"]]
+            if target["provider"] == "huggingface":
+                row["display_facts"] = [
+                    {"kind": "credits_usd", "value": 0, "period": "account", "precision": "exact"}
+                ]
+    config.write_text(json.dumps(profile))
+    board = Dashboard(create_reviewed(tmp_path, config, clock=lambda: ANCHOR), clock=lambda: ANCHOR)
+    rows = {row["provider"]: row for row in board.snapshot()["targets"]}
+    assert rows["huggingface"]["reviewed_account"]["display_facts"][0]["value"] == 0
+    assert rows["sambanova"]["reviewed_account"]["display_facts"] == []
+    for provider in official:
+        assert rows[provider]["enabled"] is False
+        assert rows[provider]["free_eligible"] is False
+        assert rows[provider]["state"] == "blocked"
+
+
+@pytest.mark.parametrize(
+    "host",
+    ["huggingface.co", "cloud.sambanova.ai", "cloud.cerebras.ai", "inference-docs.cerebras.ai"],
+)
+@pytest.mark.parametrize(
+    "pattern",
+    [
+        "http://{host}/",
+        "https://user:password@{host}/",
+        "https://{host}/?api_key=synthetic",
+        "https://{host}/#synthetic-token",
+        "https://{host}.example.invalid/",
+        "https://{host}:8443/",
+    ],
+)
+def test_expansion_source_hosts_do_not_allow_credential_urls_or_other_origins(host, pattern):
+    from quota_broker.dashboard_reviewed import _source
+
+    with pytest.raises(ValueError):
+        _source(pattern.format(host=host))

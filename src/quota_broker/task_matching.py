@@ -7,6 +7,7 @@ Only a successful Dashboard dry-run for the SAME task can make a row safe.
 import math
 import re
 from datetime import datetime
+from decimal import Decimal, InvalidOperation
 from itertools import groupby
 from typing import Any
 from urllib.parse import urlsplit
@@ -150,7 +151,12 @@ def _account_grant_info(
     acc = accounts_by_provider.get(provider)
     if not isinstance(acc, dict):
         return False, None
-    if acc.get("auto_recharge_enabled") is True or acc.get("balance_state") == "grant_expired":
+    if (
+        acc.get("auto_recharge_enabled") is True
+        or acc.get("balance_state") != "current"
+        or (acc.get("evidence") or {}).get("current") is not True
+        or acc.get("qualification") not in {"free_trial", "linked_chatgpt_subscription_benefit"}
+    ):
         return False, None
     model_limit = next(
         (
@@ -168,10 +174,10 @@ def _account_grant_info(
     if not active_grants:
         return False, None
     try:
-        bal = float(acc.get("balance") or "0")
-    except (ValueError, TypeError):
-        bal = 0.0
-    if bal <= 0:
+        bal = Decimal(str(acc.get("current_balance") or "0"))
+    except (InvalidOperation, ValueError, TypeError):
+        return False, None
+    if not bal.is_finite() or bal <= 0:
         return False, None
     if isinstance(now_str, str) and len(now_str) >= 10:
         today_str = now_str[:10]
@@ -189,6 +195,42 @@ def _build_quota_summary(
     grant_info: dict[str, Any] | None,
     provider_metadata: dict[str, Any] | None,
 ) -> dict[str, Any]:
+    # Runtime observations are already reduced by account-wide reservations.
+    # Account-page snapshots must never overwrite that executable allowance.
+    current = [
+        q
+        for t in configured
+        for q in (t.get("observations") or [])
+        if q.get("current") is True
+        and type(q.get("effective_remaining")) is int
+        and q["effective_remaining"] >= 0
+    ]
+    if current:
+
+        def amount(q: dict[str, Any]) -> str:
+            value = q["effective_remaining"]
+            if q.get("metric") == "credits_usd_micros":
+                return f"{Decimal(value) / 1000000:f} USD"
+            return f"{value} {q.get('metric')}"
+
+        deadlines = sorted(
+            str(value)
+            for value in [
+                *(t.get("credit_expires_at") for t in configured),
+                *(q.get("reset_at") for q in current),
+            ]
+            if value
+        )
+        return {
+            "state": "broker_conservative_remaining",
+            "headline": "Broker 保守可用："
+            + " · ".join(f"{amount(q)} / {q.get('window')}" for q in current),
+            "limits_text": "上限與剩餘分開；本次成本由任務檢查計算",
+            "reset_or_expiry": "已核對執行截止／重置：" + deadlines[0]
+            if deadlines
+            else "截止／重置未知；不自行展延證據",
+            "sharing_scope": "已扣除同一配額池的 Broker 保留；仍須本次任務檢查",
+        }
     if grant_info is not None:
         acc = grant_info["account"]
         lim = grant_info["model_limit"]
@@ -207,11 +249,9 @@ def _build_quota_summary(
             if lim.get("batch_queue_tokens_per_day"):
                 parts.append(f"Batch {lim['batch_queue_tokens_per_day']} TPD")
         return {
-            "state": "current_remaining" if curr else "last_observed",
-            "headline": f"{'目前餘額' if curr else '最後觀測餘額'} {bal} {acc.get('currency', 'USD')}（到期日 {exp}）",
-            "limits_text": " · ".join(parts)
-            if parts
-            else "共用專案速率上限（已核對模型上限如 500 RPM · 500,000 TPM · Batch 5,000,000 TPD；此模型個別上限待核對）",
+            "state": "current_account_observation" if curr else "last_observed",
+            "headline": f"帳戶最後觀測餘額 {bal} {acc.get('currency', 'USD')}（到期日 {exp}）",
+            "limits_text": " · ".join(parts) if parts else "此模型個別速率上限待核對",
             "reset_or_expiry": f"贈送額度 {exp} 到期（僅提供日期，不展延）",
             "sharing_scope": f"帳戶級共享贈送 Credits（所有可用模型共用同一筆 {bal} {acc.get('currency', 'USD')} grant）",
         }
@@ -232,18 +272,24 @@ def _build_quota_summary(
                 return {
                     "state": "current_remaining" if is_curr else "last_observed",
                     "headline": f"免費日額度{'剩餘' if is_curr else '最後觀測剩餘'} {daily.get('remaining')} / {daily.get('limit')} requests（已用 {daily.get('used')}）",
-                    "limits_text": " · ".join(lim_parts) or "20 RPM · 50 RPD",
+                    "limits_text": " · ".join(lim_parts) or "模型速率上限待核對",
                     "reset_or_expiry": f"每日 UTC 00:00 重置（下次重置 {or_meta.get('reset_at') or '00:00 UTC'}）",
-                    "sharing_scope": "金鑰級共享免費日計數（所有 :free 模型共用 50 RPD）",
+                    "sharing_scope": "金鑰級共享免費日計數；模型適用資格仍須檢查",
                 }
         derived = rev.get("derived_remaining")
         if isinstance(derived, dict):
             obs = (t.get("observations") or [{}])[0]
-            rem_val = obs.get("remaining", derived.get("remaining", derived.get("limit")))
+            rem_val = obs.get("remaining")
+            if rem_val is None:
+                rem_val = derived.get("remaining")
             return {
                 "state": "current_remaining" if obs.get("current") else "last_observed",
-                "headline": f"每日免費額度推算剩餘 {rem_val} / {derived.get('limit')} {derived.get('metric')}（已用 {derived.get('used')}）",
-                "limits_text": " · ".join(lim_parts) or "10,000 Neurons/day",
+                "headline": (
+                    f"每日免費額度推算剩餘 {rem_val} / {derived.get('limit')} {derived.get('metric')}（已用 {derived.get('used')}）"
+                    if rem_val is not None
+                    else "每日免費額度剩餘未知；上限不代表剩餘"
+                ),
+                "limits_text": " · ".join(lim_parts) or "模型上限待核對",
                 "reset_or_expiry": "每日 UTC 00:00 重置",
                 "sharing_scope": "帳戶級共享每日免費 Neurons（所有 Workers AI 模型共用）",
             }
@@ -256,13 +302,13 @@ def _build_quota_summary(
                 if isinstance(f, dict) and isinstance(f.get("kind"), str):
                     facts[f["kind"]] = f.get("value")
         if "monthly_allowance_usd" in facts:
-            used_val = facts.get("used_allowance_usd", facts.get("monthly_used_usd", 0))
+            used_val = facts.get("used_allowance_usd", facts.get("monthly_used_usd", "未知"))
             return {
                 "state": "verified_limit",
                 "headline": f"免費月度額度 {facts.get('monthly_allowance_usd')} USD（最後核對已用 {used_val} USD）",
                 "limits_text": " · ".join(lim_parts),
-                "reset_or_expiry": "依月度帳單週期重置（每月第 1 日）",
-                "sharing_scope": "Workspace 共享月度額度與 1,300,000 TPM 上限",
+                "reset_or_expiry": "月度額度；精確重置規則須核對帳戶證據",
+                "sharing_scope": "Workspace 共享月度額度；個別模型上限另列",
             }
         if lim_parts:
             resets = [

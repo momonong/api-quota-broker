@@ -104,7 +104,8 @@ def _account(value: Any) -> dict[str, Any]:
     if (
         row["provider"] != "openai"
         or row["currency"] != "USD"
-        or row["qualification"] not in {"linked_chatgpt_subscription_benefit", "unverified"}
+        or row["qualification"]
+        not in {"linked_chatgpt_subscription_benefit", "free_trial", "unverified"}
         or row["billing"] not in {"not_started_no_payment_method", "unknown"}
     ):
         raise ValueError
@@ -154,7 +155,11 @@ def _account(value: Any) -> dict[str, Any]:
     anchor, until = _instant(evidence["as_of"]), _instant(evidence["valid_until"])
     if (
         evidence["provenance"] != "observed"
-        or evidence["time_precision"] != "account_pages_checked_during_same_audit_session"
+        or evidence["time_precision"]
+        not in {
+            "account_pages_checked_during_same_audit_session",
+            "owner_report_received_during_same_audit_session",
+        }
         or not anchor < until <= anchor + timedelta(hours=24)
     ):
         raise ValueError
@@ -226,7 +231,11 @@ class CreditAccounts:
             evidence["current"] = (
                 _instant(evidence["as_of"]) <= now < _instant(evidence["valid_until"])
             )
-            evidence["kind"] = "manually_reviewed_credit_account"
+            evidence["kind"] = (
+                "owner_reported_credit_account"
+                if evidence["time_precision"] == "owner_report_received_during_same_audit_session"
+                else "manually_reviewed_credit_account"
+            )
             row["balance_state"] = "current" if evidence["current"] else "stale"
             for grant in row["grants"]:
                 expires = grant["expires"]

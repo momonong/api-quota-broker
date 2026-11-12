@@ -5,7 +5,7 @@ description = "Local free-tier admission and reservation for official AI APIs"
 requires-python = ">=3.12"
 dependencies = [
     "cryptography>=44.0.0",
-    "pypdf>=6.0.0",
+    "pypdf>=7.0.0",
 ]
 
 [project.scripts]

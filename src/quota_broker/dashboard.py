@@ -1,10 +1,12 @@
 """Allowlisted dashboard projection and conservative, advice-only admission."""
 
+import copy
 import json
 import re
 import time
+from collections import Counter
 from collections.abc import Callable
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from http.client import HTTPConnection
 from pathlib import Path
 from typing import Any, Protocol
@@ -13,6 +15,8 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 from .core import stamp, utcnow
 from .dashboard_accounts import CreditAccounts
 from .dashboard_provider_metadata import (
+    COUNTER_TTL,
+    KEY_URL,
     MODEL_TTL,
     quota_projection,
     read_metadata,
@@ -419,20 +423,167 @@ class Dashboard:
         accounts: CreditAccounts | None = None,
         activity: UpstreamSource | None = None,
         provider_metadata_file: str | Path | None = None,
+        reviewed_evidence: Source | None = None,
     ) -> None:
         self.source, self.clock = source, clock
         self.accounts, self.activity = accounts, activity
+        if reviewed_evidence is not None and reviewed_evidence.kind != "reviewed":
+            raise ValueError("reviewed display evidence source required")
+        self.reviewed_evidence = reviewed_evidence
         self.provider_metadata_file = (
             Path(provider_metadata_file) if provider_metadata_file else None
         )
 
-    def _provider_evidence(self, targets: list[dict[str, Any]]) -> dict[str, Any]:
-        if self.provider_metadata_file is None:
-            return {}
+    def _display_targets(
+        self, catalog: list[dict[str, Any]], diagnostics: dict[str, dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """Attach display facts only; live admission fields never come from evidence."""
+        targets = [self._target(item, diagnostics[item["target_id"]]) for item in catalog]
+        if self.reviewed_evidence is None:
+            return targets
+        reviewed = _rows(self.reviewed_evidence.catalog())
+        identity = lambda row: (row.get("provider"), row.get("model"))
+        live_counts = Counter(identity(row) for row in catalog)
+        reviewed_counts = Counter(identity(row) for row in reviewed)
+        evidence = {identity(row): row for row in reviewed}
+        metadata = self.reviewed_evidence.source_metadata()
+        projector = Dashboard(self.reviewed_evidence, clock=self.clock)
+        for target in targets:
+            key = identity(target)
+            if live_counts[key] != 1 or reviewed_counts[key] != 1:
+                continue
+            display = projector._target(evidence[key], {"quota_observations": []})
+            if not isinstance(display["reviewed_account"], dict):
+                raise DashboardError("source_unavailable")
+            target["reviewed_account"] = {
+                **copy.deepcopy(display["reviewed_account"]),
+                **{
+                    name: metadata.get(name)
+                    for name in ("audit_session_at", "review_due_at", "time_precision")
+                },
+                "display_only": True,
+            }
+            target["provider_limits"] = copy.deepcopy(display["provider_limits"])
+        return targets
+
+    def _openrouter_counter(
+        self,
+        catalog: list[dict[str, Any]],
+        diagnostics: dict[str, dict[str, Any]],
+        report: dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        """Project one authoritative account counter, never local reservation holds."""
         now = self.clock()
-        report = read_metadata(self.provider_metadata_file, now)
+        fallback = quota_projection(report, now) if report else None
+        readings = []
+        for target in catalog:
+            if target.get("provider") != "openrouter":
+                continue
+            for row in _rows(diagnostics.get(target["target_id"], {}).get("quota_observations")):
+                if not all(
+                    row.get(key) == expected
+                    for key, expected in (
+                        ("metric", "requests"),
+                        ("window", "day"),
+                        ("provenance", "official"),
+                        ("confidence", "provider_reported"),
+                        ("source", "adapter:openrouter_key_account"),
+                    )
+                ):
+                    continue
+                remaining, limit = _number(row.get("remaining")), _number(row.get("limit"))
+                checked, until = _time(row.get("as_of")), _time(row.get("valid_until"))
+                if (
+                    remaining is None
+                    or limit is None
+                    or not 0 <= remaining <= limit <= 10**12
+                    or limit == 0
+                    or checked is None
+                    or until is None
+                    or not checked < until
+                    or checked > now
+                ):
+                    continue
+                reset = (checked.astimezone(UTC) + timedelta(days=1)).replace(
+                    hour=0, minute=0, second=0, microsecond=0
+                )
+                if row.get("reset_at") is not None and _time(row["reset_at"]) != reset:
+                    continue
+                scope = target.get("shared_concurrency_scope") or ("target:" + target["target_id"])
+                readings.append(
+                    (
+                        scope,
+                        checked,
+                        min(until, checked + COUNTER_TTL, reset),
+                        reset,
+                        {"used": limit - remaining, "limit": limit, "remaining": remaining},
+                    )
+                )
+        if not readings:
+            return fallback
+        latest = max(row[1] for row in readings)
+        current = [row for row in readings if row[1] == latest]
+        ambiguous = (
+            len({row[0] for row in readings}) != 1
+            or len(
+                {(row[3], row[4]["used"], row[4]["limit"], row[4]["remaining"]) for row in current}
+            )
+            != 1
+        )
+        if ambiguous:
+            return {
+                "scope": "ambiguous_accounts_not_aggregated",
+                "source": KEY_URL,
+                "checked_at": None,
+                "valid_until": None,
+                "reset_at": None,
+                "state": "unknown",
+                "daily": None,
+                "last_observed_daily": None,
+            }
+        until = min(row[2] for row in current)
+        daily = current[0][4]
+        projected = {
+            "scope": "queried_key_tier_policy",
+            "source": KEY_URL,
+            "checked_at": latest.isoformat(),
+            "valid_until": until.isoformat(),
+            "reset_at": current[0][3].isoformat(),
+            "state": "current" if now < until else "stale",
+            "daily": daily if now < until else None,
+            "last_observed_daily": daily,
+        }
+        # Cost observations are separate measurements. Never label their original
+        # USD amounts with the fresh runtime counter's timestamp or freshness.
+        if fallback and fallback.get("usage") is not None:
+            projected.update(
+                usage=fallback["usage"],
+                usage_checked_at=fallback["checked_at"],
+                usage_valid_until=fallback["valid_until"],
+                usage_current=fallback["state"] == "current",
+            )
+        return projected
+
+    def _provider_evidence(
+        self,
+        targets: list[dict[str, Any]],
+        catalog: list[dict[str, Any]],
+        diagnostics: dict[str, dict[str, Any]],
+    ) -> dict[str, Any]:
+        now = self.clock()
+        report = (
+            read_metadata(self.provider_metadata_file, now) if self.provider_metadata_file else None
+        )
+        counter = self._openrouter_counter(catalog, diagnostics, report)
         if report is None:
-            return {"provider_metadata": {"state": "unavailable", "openrouter": None}}
+            if self.provider_metadata_file is None and counter is None:
+                return {}
+            return {
+                "provider_metadata": {
+                    "state": "available" if counter else "unavailable",
+                    "openrouter": counter,
+                }
+            }
         observations = {(row["provider"], row["model"]): row for row in report["models"]}
         for target in targets:
             row = observations.get((target["provider"], target["model"]))
@@ -446,7 +597,7 @@ class Dashboard:
         return {
             "provider_metadata": {
                 "state": "available",
-                "openrouter": quota_projection(report, now),
+                "openrouter": counter,
                 "refresh": refresh_projection(report),
             }
         }
@@ -535,7 +686,9 @@ class Dashboard:
             else {}
         )
         billing_state = (
-            reviewed["billing_state"]
+            item["billing_evidence_state"]
+            if item.get("billing_evidence_state") in ("enabled", "disabled", "unknown")
+            else reviewed["billing_state"]
             if isinstance(reviewed, dict)
             else (
                 "disabled"
@@ -601,6 +754,11 @@ class Dashboard:
                 for reason in _strings(diag.get("reasons"))
             ],
             "local_caps": caps,
+            "required_capacity": [
+                {"metric": _text(q.get("metric")), "window": _text(q.get("window"))}
+                for q in _rows(item.get("required_capacity"))
+                if _text(q.get("metric")) and _text(q.get("window"))
+            ],
             "observations": [
                 {
                     **{
@@ -627,7 +785,12 @@ class Dashboard:
                             "local_observation_hold",
                         )
                     },
-                    "source": _text(q.get("source")) if reviewed else None,
+                    "source": KEY_URL
+                    if item.get("provider") == "openrouter"
+                    and q.get("source") == "adapter:openrouter_key_account"
+                    else _text(q.get("source"))
+                    if reviewed
+                    else None,
                     "effective_remaining": _number(q.get("effective_remaining"))
                     if _current(q.get("as_of"), q.get("valid_until"), self.clock())
                     else None,
@@ -739,12 +902,12 @@ class Dashboard:
         try:
             catalog, diag, as_of = self._metadata()
             activity_source, usage, recent = self._activity()
-            targets = [self._target(item, diag[item["target_id"]]) for item in catalog]
+            targets = self._display_targets(catalog, diag)
             self._runtime_configuration(targets)
             inventory, models = self._models(catalog)
             return {
                 **POLICY,
-                **self._provider_evidence(targets),
+                **self._provider_evidence(targets, catalog, diag),
                 "source": self._source(as_of),
                 "targets": targets,
                 "models": models,
@@ -876,12 +1039,9 @@ class Dashboard:
                 self, "provider_metadata", None
             )
             meta_report = read_metadata(Path(meta_file), now) if meta_file else None
-            or_proj = quota_projection(meta_report, now) if meta_report else None
-            if self.source.kind == "reviewed":
-                catalog, diag, _ = self._metadata()
-                targets = [self._target(item, diag[item["target_id"]]) for item in catalog]
-            else:
-                catalog, targets = [], []
+            catalog, diag, _ = self._metadata()
+            targets = self._display_targets(catalog, diag)
+            or_proj = self._openrouter_counter(catalog, diag, meta_report)
             inv = self._provider_inventory() or {}
         except Exception:  # noqa: BLE001
             return {
@@ -913,6 +1073,8 @@ class Dashboard:
         if or_proj is not None:
             daily = or_proj.get("daily") or or_proj.get("last_observed_daily")
             usage = or_proj.get("usage") or {}
+            usage_as_of = or_proj.get("usage_checked_at", or_proj.get("checked_at"))
+            usage_current = or_proj.get("usage_current", or_proj.get("state") == "current")
             metrics = []
             win_ok = in_window(or_proj.get("checked_at"))
             if isinstance(daily, dict):
@@ -946,9 +1108,9 @@ class Dashboard:
                             "used": usage.get(key),
                             "limit": None,
                             "remaining": None,
-                            "as_of": or_proj.get("checked_at"),
-                            "current": or_proj.get("state") == "current",
-                            "window_matched": win_ok,
+                            "as_of": usage_as_of,
+                            "current": usage_current,
+                            "window_matched": in_window(usage_as_of),
                         }
                     )
             scope_note = "涵蓋此 OpenRouter API Key 所有呼叫（含未經 Broker 外部呼叫）；不依單一模型或任務拆分。"
@@ -990,19 +1152,13 @@ class Dashboard:
             win_ok = in_window(as_of)
             metrics = []
             for g in acc.get("grants") or []:
-                try:
-                    amt = float(g.get("amount", "0"))
-                    rem = float(g.get("remaining", "0"))
-                    used_val = f"{max(0.0, amt - rem):.2f}"
-                except (ValueError, TypeError):
-                    used_val = None
                 metrics.append(
                     {
                         "metric": "credit_grant_spend",
-                        "label": "贈送 Credits 已用金額",
+                        "label": "帳戶點數觀測，非實際支出",
                         "unit": acc.get("currency", "USD"),
                         "window": f"{(g.get('received') or {}).get('value', '?')}..{(g.get('expires') or {}).get('value', '?')}",
-                        "used": used_val,
+                        "used": None,
                         "limit": g.get("amount"),
                         "remaining": g.get("remaining"),
                         "as_of": as_of,
@@ -1015,12 +1171,14 @@ class Dashboard:
                 metrics.append(
                     {
                         "metric": "usage_page_audit",
-                        "label": f"官方 Usage 頁核對（{up.get('from_date', '?')} 至 {up.get('through_date', '?')}）",
+                        "label": f"官方 Usage 頁核對（{up.get('from_date', '?')} 至 {up.get('through_date', '?')}）"
+                        + (
+                            "・未回報用量資料，不代表零支出" if up.get("state") == "no_data" else ""
+                        ),
                         "unit": acc.get("currency", "USD"),
                         "window": f"{up.get('from_date', '?')}..{up.get('through_date', '?')}",
-                        "used": "0.00 (no_data)"
-                        if up.get("state") == "no_data"
-                        else up.get("state"),
+                        "used": None,
+                        "reported_state": up.get("state"),
                         "limit": None,
                         "remaining": acc.get("balance"),
                         "as_of": as_of,
@@ -1085,7 +1243,7 @@ class Dashboard:
                         facts_map[f["kind"]] = f.get("value")
             obs_list = t.get("observations") or []
             metrics = []
-            as_of = t.get("free_verified_at")
+            as_of = rev.get("audit_session_at") or t.get("free_verified_at")
             source_url = (rev.get("sources") or [None])[0]
             state_short = "unknown"
             usage_state = "usage_unobserved"
@@ -1308,8 +1466,26 @@ class Dashboard:
         except (GatewayError, ValueError, TypeError, KeyError):
             raise DashboardError("invalid_task") from None
         try:
-            plan = self.source.explain(raw)
             catalog, diag, as_of = self._metadata()
+            # Shared text routes use the same message contract as ProjectClient.
+            # Leave an instance containing only legacy/custom providers intact.
+            if (
+                raw.get("capability") == "text_generation"
+                and isinstance(raw.get("input"), str)
+                and any(
+                    row.get("provider") in {"openai", "openrouter"}
+                    and row.get("enabled") is not False
+                    and raw.get("provider") in (None, row.get("provider"))
+                    and raw.get("model") in (None, row.get("model"))
+                    for row in catalog
+                )
+            ):
+                raw = {
+                    **raw,
+                    "input": {"messages": [{"role": "user", "content": raw["input"]}]},
+                }
+                validate_task(raw, check_registry_constraints=False)
+            plan = self.source.explain(raw)
             if not isinstance(plan, dict):
                 raise DashboardError("source_unavailable")
             by_id = {r["target_id"]: r for r in catalog}
@@ -1353,8 +1529,15 @@ class Dashboard:
                     *_rows(candidate.get("quota_observations")),
                     *_rows(diag[identity].get("quota_observations")),
                 ]
-                required = {(q["metric"], q["window"]) for q in target["local_caps"]}
-                required.update((q.get("metric"), q.get("window")) for q in observations)
+                required = {
+                    (q["metric"], q["window"])
+                    for q in (target["required_capacity"] or target["local_caps"])
+                }
+                required.update(
+                    (q.get("metric"), q.get("window"))
+                    for q in observations
+                    if _current(q.get("as_of"), q.get("valid_until"), self.clock())
+                )
                 if not required:
                     reasons.append("quota_evidence_missing")
                 input_cost = _number(plan.get("estimated_input_tokens"))
@@ -1387,6 +1570,11 @@ class Dashboard:
                     if input_cost is not None and output_cost is not None
                     else None,
                     "neurons": neuron_cost,
+                    # This is the Gateway's conservative reservation bound, not
+                    # provider-reported dollar usage or an account balance.
+                    "credits_usd_micros": _number(
+                        (candidate.get("resource_cost_bounds") or {}).get("credits_usd_micros")
+                    ),
                 }
                 for metric, window in sorted(required):
                     normalized = "total_tokens" if metric == "tokens" else metric
@@ -1418,7 +1606,7 @@ class Dashboard:
                 local_caps = (
                     by_id[identity].get("local_safety_caps") or by_id[identity].get("quotas") or []
                 )
-                if any(
+                if not target["required_capacity"] and any(
                     q.get("window") in {"day", "month"} and q.get("timezone", "UTC") != "UTC"
                     for q in local_caps
                 ):

@@ -440,7 +440,6 @@ def _probe_other_providers(
                     checked_at=checked.isoformat(),
                     model_probe_status="verified",
                     verified_models=count,
-                    account_plan="plus_subscription_grant",
                 )
             else:
                 oa_entry.update(

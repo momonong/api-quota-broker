@@ -482,3 +482,72 @@ def test_account_grant_verified_and_quota_summary_ranking(tmp_path):
     assert "2026-12-03" in openai_cand["quota_summary"]["reset_or_expiry"]
     catalog_only = next(c for c in res["candidates"] if c["access_stage"] == "catalog_only")
     assert res["candidates"].index(openai_cand) < res["candidates"].index(catalog_only)
+
+
+def test_quota_summary_uses_runtime_credit_holds_before_account_snapshot():
+    from quota_broker.task_matching import _build_quota_summary
+
+    target = {
+        "provider_limits": [],
+        "credit_expires_at": "2026-12-02T10:00:00Z",
+        "observations": [
+            {
+                "metric": "credits_usd_micros",
+                "window": "budget",
+                "current": True,
+                "remaining": 200000000,
+                "effective_remaining": 199000000,
+            }
+        ],
+    }
+    account = {
+        "account": {
+            "balance": "200.00",
+            "current_balance": "200.00",
+            "evidence": {"current": True},
+        },
+        "model_limit": None,
+        "grant": {"expires": {"value": "2026-12-03", "precision": "date"}},
+    }
+    summary = _build_quota_summary("openai", "fixture", [target], account, None)
+    assert "199 USD" in summary["headline"]
+    assert "200.00" not in summary["headline"]
+    assert "500" not in summary["limits_text"]
+    assert "Broker" in summary["headline"]
+
+
+def test_unknown_quota_summary_never_substitutes_limit_or_zero_used():
+    from quota_broker.task_matching import _build_quota_summary
+
+    target = {
+        "reviewed_account": {"derived_remaining": {"limit": 10000, "metric": "neurons"}},
+        "observations": [],
+        "provider_limits": [],
+    }
+    summary = _build_quota_summary("cloudflare", "fixture", [target], None, None)
+    assert "剩餘未知" in summary["headline"]
+    assert "剩餘 10000" not in summary["headline"]
+    monthly = {
+        "reviewed_account": {"display_facts": [{"kind": "monthly_allowance_usd", "value": 10}]}
+    }
+    summary = _build_quota_summary("mistral", "fixture", [monthly], None, None)
+    assert "已用 未知" in summary["headline"]
+    assert "1,300,000" not in summary["sharing_scope"]
+
+
+def test_stale_positive_account_grant_is_not_verified_qualification():
+    from quota_broker.task_matching import _account_grant_info
+
+    acc = {
+        "provider": "openai",
+        "qualification": "free_trial",
+        "balance": "200.00",
+        "current_balance": None,
+        "balance_state": "stale",
+        "evidence": {"current": False},
+        "grants": [{"state": "available", "expires": {"value": "2026-12-03", "precision": "date"}}],
+    }
+    assert _account_grant_info("openai", "fixture", {"openai": acc}, "2026-11-11T00:00:00Z") == (
+        False,
+        None,
+    )

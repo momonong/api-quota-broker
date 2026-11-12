@@ -270,6 +270,8 @@ def test_probe_all_records_all_11_providers_and_openrouter_usage():
     assert set(projected_refresh["providers"]) == set(refresh.REFRESH_SOURCES)
     assert projected_refresh["providers"]["openai"]["verified_models"] == 96
     assert projected_refresh["providers"]["openai"]["queried"] is True
+    # Listing models cannot establish a ChatGPT subscription or credit grant.
+    assert "account_plan" not in projected_refresh["providers"]["openai"]
     assert projected_refresh["providers"]["huggingface"]["account_plan"] == "free"
     assert projected_refresh["providers"]["cerebras"]["status"] == "credential_unavailable"
     assert projected_refresh["providers"]["sambanova"]["status"] == "credential_unavailable"

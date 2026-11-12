@@ -19,7 +19,7 @@ from urllib.parse import urlsplit
 
 from .catalog import MODELS, Model, endpoint
 from .family_transport import FamilyRequest, FamilyResponse, validate_family_request
-from .provider_policy import catalog_model_id_reason
+from .provider_policy import catalog_model_id_reason, openrouter_free_policy
 
 MAX_RESPONSE_BYTES = 262_144
 RIVA_MODEL = "nvidia/riva-translate-4b-instruct-v2"
@@ -609,11 +609,18 @@ class Registry:
                     raise RegistryError("unapproved family endpoint schema")
             else:
                 url = _protocol_endpoint(adapter_name, origin, value["endpoint"])
-            if provider_id == "openai" and (adapter_name, origin, url) != (
-                "openai_chat",
-                "https://api.openai.com",
-                "https://api.openai.com/v1/chat/completions",
-            ):
+            if provider_id == "openai" and (adapter_name, origin, url) not in {
+                (
+                    "openai_chat",
+                    "https://api.openai.com",
+                    "https://api.openai.com/v1/chat/completions",
+                ),
+                (
+                    "openai_responses",
+                    "https://api.openai.com",
+                    "https://api.openai.com/v1/responses",
+                ),
+            }:
                 raise RegistryError("unapproved OpenAI endpoint")
             if (urlsplit(url).scheme, urlsplit(url).netloc) != (
                 urlsplit(origin).scheme,
@@ -1032,6 +1039,8 @@ class OpenAIChatAdapter:
         }
         if spec.provider == "openai":
             payload["store"] = False
+        if spec.provider == "openrouter":
+            payload["provider"] = openrouter_free_policy()
         return spec.endpoint_template, {"Authorization": "Bearer " + secret}, payload
 
     def transport(
@@ -1046,6 +1055,8 @@ class OpenAIChatAdapter:
         required = {"model", "messages", output_key, "stream"}
         if spec.provider == "openai":
             required.add("store")
+        if spec.provider == "openrouter":
+            required.add("provider")
         messages = payload.get("messages")
         output = payload.get(output_key)
         response_format = payload.get("response_format")
@@ -1058,6 +1069,10 @@ class OpenAIChatAdapter:
             or payload.get("model") != spec.model
             or payload.get("stream") is not False
             or (spec.provider == "openai" and payload.get("store") is not False)
+            or (
+                spec.provider == "openrouter"
+                and payload.get("provider") != openrouter_free_policy()
+            )
             or not required <= payload.keys()
             or payload.keys() - required - {"response_format"}
             or type(output) is not int

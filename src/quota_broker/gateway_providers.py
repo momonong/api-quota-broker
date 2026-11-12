@@ -82,6 +82,10 @@ def official_request(
             "messages": [{"role": "user", "content": content}],
             "stream": False,
         }
+        if provider == "openrouter":
+            from .provider_policy import openrouter_free_policy
+
+            payload["provider"] = openrouter_free_policy()
         if provider == "groq":
             payload.update(
                 {

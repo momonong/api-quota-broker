@@ -56,6 +56,10 @@ SOURCE_HOSTS = {
     "developers.cloudflare.com",
     "openrouter.ai",
     "ocr.space",
+    "huggingface.co",
+    "cloud.sambanova.ai",
+    "cloud.cerebras.ai",
+    "inference-docs.cerebras.ai",
 }
 TARGET_FIELDS = {
     "id",

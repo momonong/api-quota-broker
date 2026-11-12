@@ -110,6 +110,13 @@ class Broker:
                 CREATE TABLE IF NOT EXISTS execution_completion (
                     reservation_id TEXT PRIMARY KEY, finished_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS unknown_slot_acknowledgements (
+                    reservation_id TEXT PRIMARY KEY,
+                    acknowledgement_id TEXT NOT NULL UNIQUE,
+                    human_message_id TEXT NOT NULL, acknowledged_at TEXT NOT NULL,
+                    project_id TEXT NOT NULL, evidence_sha256 TEXT NOT NULL,
+                    FOREIGN KEY(reservation_id) REFERENCES reservations(id)
+                );
                 CREATE TABLE IF NOT EXISTS reports (
                     report_key TEXT PRIMARY KEY, reservation_id TEXT NOT NULL,
                     fingerprint TEXT NOT NULL
@@ -183,6 +190,8 @@ class Broker:
             value["resource_estimates"] = [
                 estimate.view() for estimate in target.resource_estimates
             ]
+        if target.required_capacity:
+            value["required_capacity"] = sorted(target.required_capacity)
         if target.neuron_estimate is not None:
             value["neuron_estimate"] = target.neuron_estimate.view()
         # Preserve v0.1 snapshots when older direct-client targets have no secret ref.
@@ -250,6 +259,11 @@ class Broker:
                     "account_expires_at": stamp(target.expires_at) if target.expires_at else None,
                     "free_eligible": target.free_eligible,
                     "billing_enabled": target.billing_enabled,
+                    **(
+                        {"billing_evidence_state": target.billing_evidence_state}
+                        if target.billing_evidence_state is not None
+                        else {}
+                    ),
                     "available": target.available(now),
                     "quota_basis": target.quota_basis,
                     "quotas": (
@@ -263,6 +277,10 @@ class Broker:
                         else []
                     ),
                     "provider_quota_facts": [f.view() for f in target.provider_quota_facts],
+                    "required_capacity": [
+                        {"metric": metric, "window": window}
+                        for metric, window in target.required_capacity
+                    ],
                     "capacity": target.capacity.view(),
                     "concurrency_limit": target.concurrency_limit,
                     "shared_concurrency_scope": target.shared_concurrency_scope,
@@ -287,6 +305,172 @@ class Broker:
                 "INSERT OR IGNORE INTO execution_completion VALUES(?,?)",
                 (reservation_id, stamp(self.clock())),
             )
+
+    def _unknown_slot_evidence(
+        self, con: sqlite3.Connection, reservation_id: str, project_id: str
+    ) -> dict[str, Any]:
+        """Operator preview only. Missing links and locally live executions refuse."""
+        reservation = con.execute(
+            "SELECT * FROM reservations WHERE id=?", (reservation_id,)
+        ).fetchone()
+        attempt = con.execute(
+            "SELECT * FROM gateway_attempts WHERE reservation_id=?", (reservation_id,)
+        ).fetchone()
+        if (
+            reservation is None
+            or attempt is None
+            or reservation["state"] != "unknown"
+            or attempt["state"] != "unknown"
+            or reservation["target_snapshot"] is None
+            or reservation["dispatched_at"] is None
+            or attempt["completed_at"] is None
+            or datetime.fromisoformat(attempt["completed_at"]) + timedelta(seconds=180)
+            > self.clock()
+        ):
+            raise BrokerError("conflict", "original unknown execution requires inspection")
+        execution = attempt["request_key"]
+        task = con.execute(
+            "SELECT state FROM gateway_tasks WHERE request_key=?", (execution,)
+        ).fetchone()
+        owners = con.execute(
+            "SELECT project_id,kind,internal_key FROM gateway_project_objects "
+            "WHERE kind='tasks' AND internal_key=?",
+            (execution,),
+        ).fetchall()
+        tables = {
+            row[0] for row in con.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
+        if "queue_attempts" in tables:
+            jobs = con.execute(
+                "SELECT j.* FROM queue_jobs j JOIN queue_attempts a "
+                "ON a.request_key=j.request_key WHERE a.execution_key=?",
+                (execution,),
+            ).fetchall()
+            for job in jobs:
+                if (
+                    job["state"] != "unknown"
+                    or job["lease_token"] is not None
+                    or job["execution_until"] is None
+                    or datetime.fromisoformat(job["execution_until"]) > self.clock()
+                ):
+                    raise BrokerError("conflict", "queue execution still occupies its lease")
+                owners.extend(
+                    con.execute(
+                        "SELECT project_id,kind,internal_key FROM gateway_project_objects "
+                        "WHERE kind='jobs' AND internal_key=?",
+                        (job["request_key"],),
+                    ).fetchall()
+                )
+        if task is None or task[0] != "unknown" or len(owners) != 1 or owners[0][0] != project_id:
+            raise BrokerError("conflict", "original project ownership required")
+        evidence = {
+            "reservation": dict(reservation),
+            "attempt": dict(attempt),
+            "owner": list(owners[0]),
+            "charges": [
+                list(row)
+                for row in con.execute(
+                    "SELECT * FROM charges WHERE reservation_id=? ORDER BY bucket",
+                    (reservation_id,),
+                )
+            ],
+            "holds": [
+                list(row)
+                for row in con.execute(
+                    "SELECT * FROM observed_holds WHERE reservation_id=? ORDER BY rowid",
+                    (reservation_id,),
+                )
+            ],
+        }
+        return {
+            "reservation_id": reservation_id,
+            "project_id": project_id,
+            "sha256": digest(evidence),
+            "outcome": "unknown",
+            "budget_released": False,
+        }
+
+    def preview_unknown_slot(self, reservation_id: str, project_id: str) -> dict[str, Any]:
+        with self._tx() as con:
+            return self._unknown_slot_evidence(con, reservation_id, project_id)
+
+    def acknowledge_unknown_slot(
+        self,
+        reservation_id: str,
+        project_id: str,
+        acknowledgement_id: str,
+        human_message_id: str,
+        expected_sha256: str,
+    ) -> dict[str, Any]:
+        """Explicit operator-only receipt. No HTTP route or automatic caller.
+
+        Human authorization permits new independent work despite uncertainty.
+        This is not evidence of completion and never refunds a budget hold.
+        """
+        try:
+            if any(str(uuid.UUID(v)) != v for v in (acknowledgement_id, human_message_id)):
+                raise ValueError
+        except (ValueError, TypeError, AttributeError):
+            raise BrokerError(
+                "invalid_request", "operator authorization identifiers required"
+            ) from None
+        with self._tx() as con:
+            prior = con.execute(
+                "SELECT * FROM unknown_slot_acknowledgements WHERE reservation_id=?",
+                (reservation_id,),
+            ).fetchone()
+            if prior is not None:
+                if any(
+                    prior[k] != v
+                    for k, v in {
+                        "acknowledgement_id": acknowledgement_id,
+                        "human_message_id": human_message_id,
+                        "project_id": project_id,
+                        "evidence_sha256": expected_sha256,
+                    }.items()
+                ):
+                    raise BrokerError("conflict", "original acknowledgement differs")
+                return {**dict(prior), "outcome": "unknown", "budget_released": False}
+            evidence = self._unknown_slot_evidence(con, reservation_id, project_id)
+            if evidence["sha256"] != expected_sha256:
+                raise BrokerError("conflict", "original evidence changed")
+            row = {
+                "reservation_id": reservation_id,
+                "acknowledgement_id": acknowledgement_id,
+                "human_message_id": human_message_id,
+                "acknowledged_at": stamp(self.clock()),
+                "project_id": project_id,
+                "evidence_sha256": expected_sha256,
+            }
+            con.execute(
+                "INSERT INTO unknown_slot_acknowledgements VALUES(?,?,?,?,?,?)", tuple(row.values())
+            )
+            return {**row, "outcome": "unknown", "budget_released": False}
+
+    @staticmethod
+    def object_unknown_slots_acknowledged(con: sqlite3.Connection, kind: str, key: str) -> bool:
+        if kind == "jobs":
+            executions = [
+                r[0]
+                for r in con.execute(
+                    "SELECT execution_key FROM queue_attempts WHERE request_key=?", (key,)
+                )
+            ]
+        else:
+            executions = [key]
+        acknowledgements: list[bool] = []
+        for execution in executions:
+            rows = con.execute(
+                "SELECT r.id,r.state,a.reservation_id FROM reservations r "
+                "JOIN gateway_attempts g ON g.reservation_id=r.id "
+                "LEFT JOIN unknown_slot_acknowledgements a ON a.reservation_id=r.id "
+                "WHERE g.request_key=?",
+                (execution,),
+            ).fetchall()
+            if not rows or any(row[1] in {"reserved", "dispatched"} for row in rows):
+                return False
+            acknowledgements.extend(row[2] is not None for row in rows if row[1] == "unknown")
+        return bool(acknowledgements) and all(acknowledgements)
 
     def _cost(
         self,
@@ -468,7 +652,7 @@ class Broker:
                 return self._view(con, existing["id"])
             legacy_active = con.execute(
                 "SELECT 1 FROM reservations WHERE target_snapshot IS NULL "
-                "AND state IN ('reserved','dispatched','unknown') AND NOT EXISTS (SELECT 1 FROM execution_completion e WHERE e.reservation_id=reservations.id) LIMIT 1"
+                "AND state IN ('reserved','dispatched','unknown') AND NOT EXISTS (SELECT 1 FROM execution_completion e WHERE e.reservation_id=reservations.id) AND NOT (state='unknown' AND EXISTS (SELECT 1 FROM unknown_slot_acknowledgements a WHERE a.reservation_id=reservations.id)) LIMIT 1"
             ).fetchone()
             if legacy_active:
                 raise BrokerError(
@@ -573,7 +757,7 @@ class Broker:
                 current_snapshot = self._snapshot(target)
                 changed_active = con.execute(
                     "SELECT 1 FROM reservations WHERE target_id=? AND target_snapshot!=? "
-                    "AND state IN ('reserved','dispatched','unknown') AND NOT EXISTS (SELECT 1 FROM execution_completion e WHERE e.reservation_id=reservations.id) LIMIT 1",
+                    "AND state IN ('reserved','dispatched','unknown') AND NOT EXISTS (SELECT 1 FROM execution_completion e WHERE e.reservation_id=reservations.id) AND NOT (state='unknown' AND EXISTS (SELECT 1 FROM unknown_slot_acknowledgements a WHERE a.reservation_id=reservations.id)) LIMIT 1",
                     (target.id, current_snapshot),
                 ).fetchone()
                 if changed_active:
@@ -592,7 +776,7 @@ class Broker:
                     continue
                 active = con.execute(
                     "SELECT count(*) FROM reservations WHERE target_id=? "
-                    "AND state IN ('reserved','dispatched','unknown') AND NOT EXISTS (SELECT 1 FROM execution_completion e WHERE e.reservation_id=reservations.id)",
+                    "AND state IN ('reserved','dispatched','unknown') AND NOT EXISTS (SELECT 1 FROM execution_completion e WHERE e.reservation_id=reservations.id) AND NOT (state='unknown' AND EXISTS (SELECT 1 FROM unknown_slot_acknowledgements a WHERE a.reservation_id=reservations.id))",
                     (target.id,),
                 ).fetchone()[0]
                 if active >= target.concurrency_limit:
@@ -600,7 +784,7 @@ class Broker:
                 if target.shared_concurrency_scope is not None:
                     shared_active = con.execute(
                         "SELECT count(*) FROM reservations WHERE shared_scope=? "
-                        "AND state IN ('reserved','dispatched','unknown') AND NOT EXISTS (SELECT 1 FROM execution_completion e WHERE e.reservation_id=reservations.id)",
+                        "AND state IN ('reserved','dispatched','unknown') AND NOT EXISTS (SELECT 1 FROM execution_completion e WHERE e.reservation_id=reservations.id) AND NOT (state='unknown' AND EXISTS (SELECT 1 FROM unknown_slot_acknowledgements a WHERE a.reservation_id=reservations.id))",
                         (target.shared_concurrency_scope,),
                     ).fetchone()[0]
                     if shared_active >= target.shared_concurrency_limit:

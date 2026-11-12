@@ -316,3 +316,157 @@ def test_unreviewed_limit_sources_and_scopes_never_leak_to_dashboard(tmp_path):
     encoded = json.dumps(board.snapshot())
     assert "synthetic-marker" not in encoded
     assert "private-project-123" not in encoded
+
+
+def test_explicit_credit_capacity_does_not_require_local_token_caps(tmp_path):
+    board, source = dashboard(tmp_path)
+    original_catalog = source.catalog()
+    original_diag = source.diagnostics()
+    original_plan = source.explain(task(provider="google"))
+    ready = original_catalog[0]
+    identity = ready["target_id"]
+    ready["required_capacity"] = [{"metric": "credits_usd_micros", "window": "budget"}]
+    credit = {
+        "metric": "credits_usd_micros",
+        "window": "budget",
+        "remaining": 200000000,
+        "effective_remaining": 199999900,
+        "local_observation_hold": 100,
+        "as_of": (NOW - timedelta(seconds=1)).isoformat(),
+        "valid_until": (NOW + timedelta(minutes=10)).isoformat(),
+        "provenance": "observed",
+        "confidence": "administrator_verified",
+    }
+    next(q for q in original_diag["targets"] if q["target_id"] == identity)[
+        "quota_observations"
+    ] = [credit]
+    candidate = next(q for q in original_plan["candidates"] if q["target_id"] == identity)
+    candidate.update(
+        eligible=True,
+        reasons=[],
+        quota_observations=[credit],
+        resource_cost_bounds={"credits_usd_micros": 100},
+    )
+    source.catalog = lambda: original_catalog
+    source.diagnostics = lambda: original_diag
+    source.explain = lambda _: original_plan
+    result = board.advice(task(provider="google"))
+    assert result["decision"] == "recommend"
+    assert result["selected_target"]["target_id"] == identity
+    projected = board.snapshot()["targets"][0]
+    assert projected["required_capacity"] == ready["required_capacity"]
+    # A missing cost never becomes a zero-cost request.
+    candidate["resource_cost_bounds"] = {}
+    stopped = board.advice(task(provider="google"))
+    assert stopped["decision"] == "ask_user"
+    assert "quota_cost_unknown:credits_usd_micros" in stopped["candidates"][0]["reasons"]
+
+
+@pytest.mark.parametrize(
+    "provider,profile,model",
+    [
+        ("openai", "openai_responses", "gpt-6-luna"),
+        ("openrouter", "openai_inference", "liquid/lfm-2.5-2.6b:free"),
+    ],
+)
+def test_shared_text_routes_recommend_same_typed_contract_without_execution(
+    tmp_path, provider, profile, model
+):
+    from test_family_gateway import catalog
+    from test_gateway import HMAC_KEY, target
+
+    from quota_broker.config import Capacity, ResourceEstimate, SecretInventory
+    from quota_broker.dashboard import Dashboard, GatewaySource
+    from quota_broker.gateway import Gateway
+    from quota_broker.registry import Registry
+
+    registry = (
+        Registry.builtin()
+        if provider == "openrouter"
+        else catalog(provider, profile, "text_generation", model)
+    )
+    metric, window = (
+        ("credits_usd_micros", "budget") if provider == "openai" else ("requests", "day")
+    )
+    item = replace(
+        target(provider, provider, model),
+        model_info=registry.resolve(model, provider),
+        quota_basis="local_safety_cap",
+        required_capacity=((metric, window),),
+        resource_estimates=(
+            ResourceEstimate(
+                metric,
+                100,
+                4096,
+                64,
+                "trusted_operator",
+                NOW - timedelta(minutes=1),
+                NOW + timedelta(minutes=10),
+            ),
+        )
+        if provider == "openai"
+        else (),
+        capacity=Capacity(kind="one_time_gift", credit_expires_at=NOW + timedelta(hours=1))
+        if provider == "openai"
+        else Capacity(),
+    )
+
+    def forbidden(*_):
+        raise AssertionError("advice must never resolve credentials or call provider")
+
+    gateway = Gateway(
+        tmp_path / "shared-dashboard.sqlite3",
+        (item,),
+        HMAC_KEY,
+        forbidden,
+        registry=registry,
+        clock=lambda: NOW,
+        family_transport=forbidden,
+        secret_inventory=SecretInventory(
+            frozenset({provider.upper()}),
+            NOW - timedelta(seconds=1),
+            NOW + timedelta(minutes=10),
+            "fixture",
+            "fixture",
+        ),
+    )
+    gateway.observe_quota(
+        item.id,
+        {
+            "metric": metric,
+            "window": window,
+            "remaining": 200000000 if provider == "openai" else 49,
+            "limit": 200000000 if provider == "openai" else 50,
+            "as_of": (NOW - timedelta(seconds=1)).isoformat(),
+            "valid_until": (NOW + timedelta(minutes=10)).isoformat(),
+            "reset_at": None,
+            "provenance": "observed",
+            "source": "trusted_operator",
+            "confidence": "administrator_verified",
+        },
+    )
+    source = GatewaySource(gateway)
+    seen = []
+
+    def explain(raw):
+        seen.append(raw)
+        return gateway.explain(raw)
+
+    source.explain = explain
+    board = Dashboard(source, clock=lambda: NOW)
+    result = board.advice(
+        {
+            "request_key": "shared-advice",
+            "capability": "text_generation",
+            "input": "Compute 17 + 25.",
+            "max_output_tokens": 32,
+        }
+    )
+    assert result["decision"] == "recommend", [
+        q["reasons"] for q in gateway.diagnostics()["targets"]
+    ]
+    assert result["selected_target"]["provider"] == provider
+    assert seen[0]["input"] == {"messages": [{"role": "user", "content": "Compute 17 + 25."}]}
+    assert result["execution_allowed"] is False
+    with sqlite3.connect(gateway.db) as con:
+        assert con.execute("SELECT count(*) FROM gateway_attempts").fetchone()[0] == 0

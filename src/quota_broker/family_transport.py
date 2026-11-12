@@ -169,7 +169,7 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 try:
  config=json.loads(sys.stdin.buffer.read())
  body=base64.b64decode(config['body'],validate=True)
- headers={**config['headers'],'Content-Type':config['content_type'],'Accept':'*/*'}
+ headers={**config['headers'],'Content-Type':config['content_type'],'Accept':'*/*','User-Agent':'curl/8.5.0'}
  req=urllib.request.Request(config['url'],data=body,headers=headers,method='POST')
  opener=urllib.request.build_opener(NoRedirect())
  try:
@@ -181,9 +181,19 @@ try:
   lengths=[value for name,value in header_items if name.lower()=='content-length']
   encodings=[value for name,value in header_items if name.lower()=='transfer-encoding']
   if len(lengths)>1 or len(encodings)>1 or (lengths and encodings): sys.exit(2)
+  # CORS list fields may legally repeat with different casing. Normalize before
+  # handing the response to the parent; never collapse ambiguous framing/IDs.
+  normalized={}
+  list_fields={'access-control-expose-headers','access-control-allow-headers','vary','cache-control'}
+  for name,value in header_items:
+   name=name.lower()
+   if name in normalized:
+    if name in list_fields: value=normalized[name]+', '+value
+    elif name!='set-cookie' and value!=normalized[name]: sys.exit(2)
+   normalized[name]=value
   raw=response.read(config['response_bound']+1)
   if len(raw)>config['response_bound']: sys.exit(3)
-  head=json.dumps({'status':response.code,'headers':dict(header_items)},separators=(',',':')).encode()
+  head=json.dumps({'status':response.code,'headers':normalized},separators=(',',':')).encode()
   if len(head)>16384: sys.exit(3)
   sys.stdout.buffer.write(head+b'\n'+raw)
 except Exception:

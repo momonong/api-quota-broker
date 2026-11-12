@@ -632,6 +632,23 @@ def gateway_cli(args: argparse.Namespace) -> None:
             print(result["answer"])
 
 
+def _upstream_reviewed_evidence(
+    directory: str | Path, accounts_file: str | None, provider_metadata_file: str | None
+) -> Any:
+    """Optional private sibling evidence; an invalid present profile is fatal."""
+    if not accounts_file or not provider_metadata_file:
+        return None
+    parent = Path(accounts_file).absolute().parent
+    if parent != Path(provider_metadata_file).absolute().parent:
+        raise ValueError("upstream evidence inputs must share one private metadata directory")
+    profile = parent / "reviewed.json"
+    if not profile.exists() and not profile.is_symlink():
+        return None
+    from .dashboard_reviewed import create_reviewed
+
+    return create_reviewed(directory, profile)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Official API free-quota control plane")
     parser.add_argument("--version", action="version", version=__version__)
@@ -828,6 +845,11 @@ def main() -> None:
                     accounts=accounts,
                     activity=activity,
                     provider_metadata_file=args.provider_metadata_file,
+                    reviewed_evidence=_upstream_reviewed_evidence(
+                        directory, args.accounts_file, args.provider_metadata_file
+                    )
+                    if args.upstream
+                    else None,
                 ),
                 dashboard_token,
                 password_file=args.dashboard_password_file,

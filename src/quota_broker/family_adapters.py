@@ -399,7 +399,14 @@ class FamilyAdapter:
         if self.auth_scheme == "form":
             payload["_form_key"] = secret
         try:
-            return self.serializers[data["capability"]](spec, url, headers, payload)
+            request = self.serializers[data["capability"]](spec, url, headers, payload)
+            if spec.provider == "openrouter":
+                from .provider_policy import openrouter_free_policy
+
+                body = _json(request.body)
+                body["provider"] = openrouter_free_policy()
+                request = json_request(url, headers, body)
+            return request
         except (KeyError, TypeError, ValueError, IndexError) as exc:
             if isinstance(exc, FamilyError):
                 raise
@@ -508,12 +515,21 @@ def _chat(
     if spec.provider == "mistral" and "seed" in options:
         options["random_seed"] = options.pop("seed")
     output_key = {"groq": "max_completion_tokens"}.get(spec.provider, "max_tokens")
-    payload = {
+    payload: dict[str, Any] = {
         "model": spec.model,
         "messages": _openai_messages(spec, _input(data, "messages")),
         output_key: data["max_output_tokens"],
         "stream": False,
     }
+    if (
+        spec.provider == "nvidia"
+        and spec.model == "nvidia/nemotron-3.5-lightning-30b-a3b"
+        and "reasoning_effort" not in options
+    ):
+        payload["chat_template_kwargs"] = {"enable_thinking": False}
+    elif spec.provider == "groq" and spec.model == "openai/gpt-oss-20b":
+        payload["reasoning_effort"] = options.pop("reasoning_effort", "low")
+        payload["include_reasoning"] = False
     schema = options.pop("json_schema", None)
     response_format = options.pop("response_format", None)
     if schema is not None:
@@ -534,6 +550,10 @@ def _chat_result(
     spec: "ModelSpec", capability: str, headers: dict[str, str], raw: bytes
 ) -> FamilyResponse:
     body = _json(raw)
+    # OpenRouter can report generation errors inside an HTTP 200 body,
+    # including partial choices. Such output cannot establish completion.
+    if spec.provider == "openrouter" and body.get("error") is not None:
+        raise _bad()
     choices = _list(body.get("choices"), 1)
     choice = _dict(choices[0])
     message = _dict(choice.get("message"))
@@ -570,6 +590,73 @@ def _chat_result(
         _token_usage(body.get("usage")),
         _request_id(headers, body.get("id")),
         finish,
+        truncated,
+    )
+
+
+def _responses_admit(spec: "ModelSpec", data: dict[str, Any]) -> None:
+    if data["max_output_tokens"] < 16:
+        raise FamilyError("Responses requires at least 16 output tokens")
+    for message in _list(_input(data, "messages")):
+        message = _dict(message)
+        if (
+            set(message) != {"role", "content"}
+            or message["role"] not in {"system", "developer", "user", "assistant"}
+            or not isinstance(message["content"], str)
+            or not message["content"]
+        ):
+            raise FamilyError("unsupported Responses input")
+
+
+def _responses(
+    spec: "ModelSpec", url: str, headers: dict[str, str], data: dict[str, Any]
+) -> FamilyRequest:
+    return json_request(
+        url,
+        headers,
+        {
+            "model": spec.model,
+            "input": copy.deepcopy(_input(data, "messages")),
+            "max_output_tokens": data["max_output_tokens"],
+            "store": False,
+            "stream": False,
+            "reasoning": {"effort": "none"},
+            "service_tier": "default",
+        },
+    )
+
+
+def _responses_result(
+    spec: "ModelSpec", capability: str, headers: dict[str, str], raw: bytes
+) -> FamilyResponse:
+    body = _json(raw)
+    state = body.get("status")
+    if state not in {"completed", "incomplete"} or body.get("error") is not None:
+        raise _bad()
+    truncated = state == "incomplete"
+    reason = _dict(body.get("incomplete_details", {})).get("reason") if truncated else None
+    if truncated and reason not in {"max_output_tokens", "content_filter"}:
+        raise _bad()
+    texts = []
+    for item in _list(body.get("output")):
+        item = _dict(item)
+        if item.get("type") != "message" or item.get("role") != "assistant":
+            raise _bad()
+        if item.get("status") not in ({"completed", "incomplete"} if truncated else {"completed"}):
+            raise _bad()
+        for part in _list(item.get("content")):
+            part = _dict(part)
+            if part.get("type") != "output_text":
+                raise _bad()
+            texts.append(_text(part.get("text"), empty=True))
+    answer = "".join(texts)
+    if not answer:
+        raise _bad()
+    return FamilyResponse(
+        {"text": answer, "messages": [{"role": "assistant", "content": answer}]},
+        _token_usage(body.get("usage")),
+        _request_id(headers, body.get("id")),
+        "length" if reason == "max_output_tokens" else "content_filter" if truncated else "stop",
         truncated,
     )
 
@@ -1643,6 +1730,13 @@ def _profile(
 
 
 PACKAGED_FAMILY_ADAPTERS: dict[str, object] = {
+    "openai_responses": _profile(
+        {"openai": "https://api.openai.com/v1/responses"},
+        "text_generation",
+        _responses,
+        _responses_result,
+        admission=_responses_admit,
+    ),
     "openai_inference": FamilyAdapter(
         CHAT_URLS,
         {"text_generation": _chat, "vision": _chat},

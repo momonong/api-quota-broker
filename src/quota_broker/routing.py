@@ -346,7 +346,9 @@ def groq_quota_observations(
                 if isinstance(limit, str) and re.fullmatch(r"[0-9]{1,12}", limit)
                 else None,
                 "as_of": stamp(as_of or now),
-                "valid_until": until,
+                "valid_until": stamp((as_of or now) + timedelta(days=1))
+                if metric == "requests" and int(remaining) > 0
+                else until,
                 "reset_at": until,
                 "provenance": "observed",
                 "source": "groq_rate_limit_headers",
