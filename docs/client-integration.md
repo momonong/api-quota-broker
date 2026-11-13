@@ -1,5 +1,7 @@
 # 跨專案 Gateway 接入指南
 
+> 新專案與臨時工具請先讀 [HTTPS API／SDK 接入文件](developer-api.md) 與 [部署狀態](developer-api-acceptance.md)。本頁保留直接 Gateway、私人連線及歷史接入契約；下列 `/v1` 路由與 legacy token 不是公開 HTTPS 入口。
+
 其他專案的後端可以透過 Gateway HTTP API 共用路由、配額帳本與供應商執行。呼叫端使用 Broker client token，供應商金鑰由 Broker 管理。這是獨立的 JSON 契約；既有 Gemini／OpenAI SDK 不能只換 base URL 或 API key 就完成接入。
 
 本文於 2026-10-12 隨套件 `1.1.0` 更新；PDF 實作與既有部署證據基準為 `81725056364b9c88296a38c93a745e90000fa57e`。Git／套件版本更新不表示 ASUS 已部署 `1.1.0`，也不證明帳號或模型目前可用。歷史部署與有限 live 驗收見[維運紀錄](asus-broker-ops.md)及 [PDF 接入證據](orderflow-pdf-integration.md)；typed 能力與限制見[能力契約](provider-capability-expansion.md)。

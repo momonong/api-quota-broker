@@ -54,11 +54,17 @@ def policy_file(tmp_path, *, inflight=2):
 
 
 @contextmanager
-def running(tmp_path, *, private=False, inflight=2):
+def running(tmp_path, *, private=False, inflight=2, timezone="UTC", configured=None):
     from quota_broker.access import AccessPolicyFile
 
     calls = []
-    configured = target("google", "google", "gemini-2.5-flash-lite")
+    configured = configured or target("google", "google", "gemini-2.5-flash-lite")
+    configured = replace(
+        configured,
+        quotas=tuple(
+            replace(q, timezone=timezone) if q.window == "day" else q for q in configured.quotas
+        ),
+    )
     evidence = Evidence(
         10000,
         "official",
@@ -191,6 +197,86 @@ def test_private_listener_explicit_alias_allowlist(tmp_path):
             assert request(base, "a", "POST", path, {})[0] == 404
         assert request(base, LEGACY, "POST", "/quota/api/v1/tasks", task())[0] == 401
         assert calls == []
+
+
+def test_project_metadata_matches_dispatch_and_hides_operator_details(tmp_path):
+    with running(tmp_path, private=True) as (base, gateway, _queue, calls, _path):
+        status, catalog = request(base, "a", "GET", "/quota/api/v1/catalog")
+        assert status == 200 and catalog[0]["available"]
+        assert catalog[0]["max_output_tokens"] == 32
+        assert catalog[0]["quota_observations"][0]["current"]
+        for private in (
+            "fixture-account",
+            "fixture account evidence",
+            "endpoint",
+            "secret_ref",
+            "scope",
+        ):
+            assert private not in json.dumps(catalog)
+        status, plan = request(base, "a", "POST", "/quota/api/v1/routes/explain", task())
+        assert status == 200 and plan["selected_target_id"] == "google"
+        assert calls == []
+        for who, expected in (("web", 403), (LEGACY, 401), ("invalid", 401)):
+            assert request(base, who, "GET", "/quota/api/v1/catalog")[0] == expected
+            assert request(base, who, "POST", "/quota/api/v1/routes/explain", task())[0] == expected
+        gateway.targets = tuple(replace(t, provider_quota_facts=()) for t in gateway.targets)
+        gateway.broker.targets = gateway.targets
+        catalog = request(base, "a", "GET", "/quota/api/v1/catalog")[1]
+        assert not catalog[0]["available"]
+        assert "project_capacity:requests:day" in catalog[0]["project_reasons"]
+        plan = request(base, "a", "POST", "/quota/api/v1/routes/explain", task())[1]
+        assert plan["selected_target_id"] is None and plan["permanent_rejection"]
+        assert "project_capacity:requests:day" in plan["candidates"][0]["reasons"]
+        assert calls == []
+
+
+def test_project_supports_absolute_evidence_for_pacific_day_window(tmp_path):
+    with running(tmp_path, private=True, timezone="America/Los_Angeles") as (
+        base,
+        _gateway,
+        queue,
+        calls,
+        _path,
+    ):
+        assert request(base, "a", "POST", "/quota/api/v1/jobs", task("pacific"))[0] == 200
+        queue.tick("fixture-worker")
+        status, result = request(base, "a", "GET", "/quota/api/v1/jobs/pacific/result")
+        assert status == 200 and result["state"] == "completed"
+        assert result["result"]["text"] == result["answer"] == "fixture answer"
+        assert len(calls) == 1
+
+
+@pytest.mark.parametrize("required", [False, True])
+def test_expired_optional_observation_does_not_override_required_dimensions(tmp_path, required):
+    with running(tmp_path, private=True) as (base, gateway, queue, calls, _path):
+        if required:
+            gateway.targets = tuple(
+                replace(t, required_capacity=(("tokens", "rolling_minute"),))
+                for t in gateway.targets
+            )
+            gateway.broker.targets = gateway.targets
+        gateway.observe_quota(
+            "google",
+            {
+                "metric": "tokens",
+                "window": "rolling_minute",
+                "remaining": 10000,
+                "limit": 10000,
+                "as_of": (NOW - timedelta(minutes=2)).isoformat(),
+                "valid_until": (NOW - timedelta(minutes=1)).isoformat(),
+                "reset_at": (NOW - timedelta(minutes=1)).isoformat(),
+                "provenance": "observed",
+                "confidence": "provider_reported",
+                "source": "trusted_operator",
+            },
+        )
+        plan = request(base, "a", "POST", "/quota/api/v1/routes/explain", task())[1]
+        assert (plan["selected_target_id"] is None) == required
+        assert request(base, "a", "POST", "/quota/api/v1/jobs", task("expired-extra"))[0] == 200
+        queue.tick("fixture-worker")
+        state = request(base, "a", "GET", "/quota/api/v1/jobs/expired-extra")[1]["state"]
+        assert (state == "completed") == (not required)
+        assert len(calls) == (0 if required else 1)
 
 
 def test_dashboard_global_metadata_has_no_job_identifiers(tmp_path):
