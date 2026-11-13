@@ -1,4 +1,7 @@
-"""Plain HTTP example: standard library only, exactly one request per command."""
+"""Legacy non-sensitive JSON example; no application-layer content encryption.
+
+Use client.py with the encrypted SDK for sensitive data. One request per command.
+"""
 
 import argparse
 import json

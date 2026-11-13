@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from .core import BrokerError, canonical, stamp
+from .execution_policy import POLICIES, execution_policy
 from .gateway import Gateway, GatewayError
 
 POLICY_BYTES = 65536
@@ -32,6 +33,9 @@ class Principal:
     max_inflight: int
     max_deadline_seconds: int
     expires_at: datetime | None = None
+    allowed_execution: frozenset[str] = frozenset({"cloud_only"})
+    default_execution: str = "cloud_only"
+    encryption_required: bool = False
 
 
 def _unique(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -89,10 +93,11 @@ class AccessPolicyFile:
             }
             for item in data["principals"]:
                 required_fields = {"token_sha256", "project_id", "scopes", "limits"}
+                policy_fields = {"allowed_execution", "default_execution", "encryption_required"}
                 if (
                     not isinstance(item, dict)
                     or not required_fields <= set(item)
-                    or set(item) - required_fields - {"expires_at"}
+                    or set(item) - required_fields - {"expires_at"} - policy_fields
                 ):
                     raise ValueError
                 digest, project, scopes, limits = (
@@ -130,15 +135,48 @@ class AccessPolicyFile:
                     expiry = datetime.fromisoformat(expiry)
                     if expiry.tzinfo is None:
                         raise ValueError
+                local_policy: dict[str, Any] = {}
+                if policy_fields & set(item):
+                    if not policy_fields <= set(item):
+                        raise ValueError
+                    allowed = item["allowed_execution"]
+                    default = execution_policy(item["default_execution"])
+                    encrypted = item["encryption_required"]
+                    if (
+                        not isinstance(allowed, list)
+                        or not allowed
+                        or any(not isinstance(p, str) or p not in POLICIES for p in allowed)
+                        or len(set(allowed)) != len(allowed)
+                        or default not in allowed
+                        or type(encrypted) is not bool
+                        or ("local_only" in allowed and not encrypted)
+                    ):
+                        raise ValueError
+                    local_policy = {
+                        "allowed_execution": frozenset(allowed),
+                        "default_execution": default,
+                        "encryption_required": encrypted,
+                    }
                 seen.add(digest)
                 result.append(
-                    Principal(digest, project, frozenset(scopes), **limits, expires_at=expiry)
+                    Principal(
+                        digest,
+                        project,
+                        frozenset(scopes),
+                        **limits,
+                        expires_at=expiry,
+                        **local_policy,
+                    )
                 )
             # A project's credentials cannot bypass each other's resource limits.
-            by_project: dict[str, tuple[int, ...]] = {}
+            by_project: dict[str, tuple[Any, ...]] = {}
             for principal in result:
                 if principal.project_id is not None:
-                    values = tuple(getattr(principal, k) for k in bounds)
+                    values = tuple(getattr(principal, k) for k in bounds) + (
+                        principal.allowed_execution,
+                        principal.default_execution,
+                        principal.encryption_required,
+                    )
                     if (
                         principal.project_id in by_project
                         and by_project[principal.project_id] != values
@@ -219,6 +257,12 @@ class ProjectAccess:
                 # Old claims cannot prove which payload their bounds described.
                 # Keep identity/deadline intact and refuse dispatch until reconciled.
                 con.execute("ALTER TABLE gateway_project_objects ADD COLUMN payload_hmac TEXT")
+            if "execution_policy" not in columns:
+                con.execute("ALTER TABLE gateway_project_objects ADD COLUMN execution_policy TEXT")
+            if "content_encrypted" not in columns:
+                con.execute(
+                    "ALTER TABLE gateway_project_objects ADD COLUMN content_encrypted INTEGER NOT NULL DEFAULT 0"
+                )
         # One shared Gateway can have two listeners. Never chain wrappers twice.
         installed = getattr(gateway, "_project_access", None)
         if installed is None:
@@ -245,7 +289,15 @@ class ProjectAccess:
         ).hexdigest()
 
     def bounds(self, principal: Principal, body: dict[str, Any]) -> dict[str, Any]:
-        data = self.gateway.validate_task(body)
+        if not isinstance(body, dict):
+            raise GatewayError("invalid_request", "invalid task fields")
+        try:
+            effective = execution_policy(body.get("execution_policy", principal.default_execution))
+        except ValueError:
+            raise GatewayError("invalid_request", "invalid execution policy") from None
+        if effective not in principal.allowed_execution:
+            raise GatewayError("forbidden", "execution policy is not authorized")
+        data = self.gateway.validate_task({**body, "execution_policy": effective})
         size = self.input_bytes(data)
         if (
             size > principal.max_input_bytes
@@ -351,6 +403,9 @@ class ProjectAccess:
             reasons = self._capacity_reasons(
                 targets[item["target_id"]], item["quota_observations"], None
             )
+            if "cloud_only" not in principal.allowed_execution:
+                reasons.append("execution_policy:cloud_target")
+            row.update(execution_policy="cloud_only", execution_location="cloud")
             row["project_reasons"] = reasons
             row["available"] = row["available"] and not reasons
             row["max_output_tokens"] = min(row["max_output_tokens"], principal.max_output_tokens)
@@ -359,7 +414,7 @@ class ProjectAccess:
 
     def explain(self, principal: Principal, body: dict[str, Any]) -> dict[str, Any]:
         data = self.bounds(principal, body)
-        plan = self.gateway.explain(body)
+        plan = self.gateway.explain(data)
         targets = {t.id: t for t in self.gateway.targets}
         for row in plan["candidates"]:
             bound, output = plan["estimated_input_tokens"] or 0, data["max_output_tokens"]
@@ -400,8 +455,10 @@ class ProjectAccess:
         return self._public_metadata(plan)
 
     def claim(
-        self, principal: Principal, kind: str, body: dict[str, Any]
+        self, principal: Principal, kind: str, body: dict[str, Any], *, encrypted: bool = False
     ) -> tuple[str, dict[str, Any]]:
+        if principal.encryption_required and not encrypted:
+            raise GatewayError("encryption_required", "encrypted transport required")
         data = self.bounds(principal, body)
         key = data["request_key"]
         if kind == "jobs":
@@ -431,37 +488,79 @@ class ProjectAccess:
                     )
             else:
                 rows = con.execute(
-                    "SELECT kind,internal_key FROM gateway_project_objects WHERE project_id=?",
+                    "SELECT kind,internal_key,execution_policy FROM gateway_project_objects WHERE project_id=?",
                     (principal.project_id,),
                 ).fetchall()
                 active = 0
-                for object_kind, object_key in rows:
-                    table = "queue_jobs" if object_kind == "jobs" else "gateway_tasks"
-                    row = con.execute(
-                        f"SELECT state FROM {table} WHERE request_key=?", (object_key,)
-                    ).fetchone()
-                    terminal = {
-                        "completed",
-                        "failed",
-                        "cancelled",
-                        "expired",
-                        "rejected",
-                        "quota_rejected",
-                        "quota_exhausted",
-                        "pre_send_failed",
-                    }
-                    if row is None or (
-                        row[0] not in terminal
-                        and not (
-                            row[0] == "unknown"
-                            and self.gateway.broker.object_unknown_slots_acknowledged(
-                                con, object_kind, object_key
+                terminal = {
+                    "completed",
+                    "failed",
+                    "cancelled",
+                    "expired",
+                    "rejected",
+                    "quota_rejected",
+                    "quota_exhausted",
+                    "pre_send_failed",
+                }
+                tables = {
+                    r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'")
+                }
+                for object_kind, object_key, object_policy in rows:
+                    table = (
+                        "local_jobs"
+                        if object_policy == "local_only"
+                        else "queue_jobs"
+                        if object_kind == "jobs"
+                        else "gateway_tasks"
+                    )
+                    row = (
+                        con.execute(
+                            f"SELECT state,{('result_state' if object_policy == 'local_only' else 'NULL')} FROM {table} WHERE request_key=?",
+                            (object_key,),
+                        ).fetchone()
+                        if table in tables
+                        else None
+                    )
+                    if (
+                        row is None
+                        or row[1] in {"pending", "storage_failed"}
+                        or (
+                            row[0] not in terminal
+                            and not (
+                                row[0] == "unknown"
+                                and object_policy != "local_only"
+                                and self.gateway.broker.object_unknown_slots_acknowledged(
+                                    con, object_kind, object_key
+                                )
                             )
                         )
                     ):
                         active += 1
                 if active >= principal.max_inflight:
                     raise GatewayError("project_limit", "project inflight limit reached")
+                if data.get("execution_policy") == "local_only":
+                    local_rows = con.execute(
+                        "SELECT project_id,internal_key FROM gateway_project_objects WHERE execution_policy='local_only'"
+                    ).fetchall()
+                    total = project_total = 0
+                    for owner, owned in local_rows:
+                        state = (
+                            con.execute(
+                                "SELECT state,result_state FROM local_jobs WHERE request_key=?",
+                                (owned,),
+                            ).fetchone()
+                            if "local_jobs" in tables
+                            else None
+                        )
+                        if (
+                            state is None
+                            or state[0] not in terminal
+                            or state[1] in {"pending", "storage_failed"}
+                        ):
+                            total += 1
+                            project_total += owner == principal.project_id
+                    if total >= 8 or project_total >= 2:
+                        raise GatewayError("project_limit", "local inflight limit reached")
                 internal = "qp-" + uuid.uuid4().hex
                 deadline = data.get("deadline") or stamp(
                     self.gateway.clock() + timedelta(seconds=principal.max_deadline_seconds)
@@ -469,8 +568,8 @@ class ProjectAccess:
                 data.update(request_key=internal, deadline=deadline)
                 con.execute(
                     "INSERT INTO gateway_project_objects "
-                    "(project_id,kind,external_key,internal_key,token_sha256,input_bytes,output_tokens,deadline,payload_hmac) "
-                    "VALUES(?,?,?,?,?,?,?,?,?)",
+                    "(project_id,kind,external_key,internal_key,token_sha256,input_bytes,output_tokens,deadline,payload_hmac,execution_policy,content_encrypted) "
+                    "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
                     (
                         principal.project_id,
                         kind,
@@ -481,6 +580,8 @@ class ProjectAccess:
                         data["max_output_tokens"],
                         deadline,
                         self._payload_hmac(data),
+                        data.get("execution_policy", "cloud_only"),
+                        int(encrypted),
                     ),
                 )
             # The persisted deadline is stable across retry, preserving payload HMAC.
@@ -498,6 +599,16 @@ class ProjectAccess:
         if row is None:
             raise GatewayError("not_found", "task not found")
         return row[0]
+
+    def execution(self, internal: str) -> str:
+        with closing(sqlite3.connect(self.gateway.db)) as con:
+            row = con.execute(
+                "SELECT execution_policy FROM gateway_project_objects WHERE internal_key=?",
+                (internal,),
+            ).fetchone()
+        if row is None:
+            raise GatewayError("not_found", "project object missing")
+        return row[0] or "cloud_only"
 
     @staticmethod
     def external(value: dict[str, Any], internal: str, key: str) -> dict[str, Any]:
@@ -576,9 +687,12 @@ class ProjectAccess:
                 raise BrokerError("unavailable", "Gateway attempt ownership missing")
             return
         key = task[0]
-        owner = con.execute(
-            "SELECT * FROM gateway_project_objects WHERE internal_key=?", (key,)
-        ).fetchone()
+        owner_query = (
+            "SELECT project_id,kind,external_key,internal_key,token_sha256,input_bytes,"
+            "output_tokens,deadline,payload_hmac,execution_policy,content_encrypted "
+            "FROM gateway_project_objects WHERE internal_key=?"
+        )
+        owner = con.execute(owner_query, (key,)).fetchone()
         if owner is None:
             tables = {
                 r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'")
@@ -588,9 +702,7 @@ class ProjectAccess:
                     "SELECT request_key FROM queue_attempts WHERE execution_key=?", (key,)
                 ).fetchone()
                 if job is not None:
-                    owner = con.execute(
-                        "SELECT * FROM gateway_project_objects WHERE internal_key=?", (job[0],)
-                    ).fetchone()
+                    owner = con.execute(owner_query, (job[0],)).fetchone()
                     if owner is None and job[0].startswith("qp-"):
                         raise BrokerError("unavailable", "project ownership missing")
             if owner is None:
@@ -606,6 +718,9 @@ class ProjectAccess:
             or principal is None
             or principal.project_id != owner[0]
             or "execute" not in principal.scopes
+            or (owner[9] or "cloud_only") not in principal.allowed_execution
+            or (owner[9] or "cloud_only") != "cloud_only"
+            or (principal.encryption_required and not owner[10])
             or owner[5] > principal.max_input_bytes
             or owner[6] > principal.max_output_tokens
             or stamp(self.gateway.clock()) >= owner[7]

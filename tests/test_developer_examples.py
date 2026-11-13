@@ -19,7 +19,7 @@ from test_family_adapters import GOOGLE
 from test_gateway_access import TOKENS, running
 from test_project_client import fixture_worker
 
-from quota_broker.client import ProjectClient
+from quota_broker.client import LegacyProjectClient as ProjectClient
 from quota_broker.gateway import GatewayError, validate_task
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -99,7 +99,12 @@ def test_documented_examples_from_independent_directory(tmp_path):
 
         def run(script, *args, who="a", code=0):
             result = subprocess.run(
-                [python, str(consumer / script), *args],
+                [
+                    python,
+                    str(consumer / script),
+                    *(["--legacy"] if script == "client.py" else []),
+                    *args,
+                ],
                 cwd=consumer,
                 env={**env, "QUOTA_PROJECT_TOKEN": TOKENS[who]},
                 capture_output=True,
@@ -145,6 +150,8 @@ def test_openapi_example_uses_the_real_project_contract(tmp_path):
     assert spec["openapi"] == "3.1.0"
     assert set(spec["paths"]) == {
         "/catalog",
+        "/crypto-config",
+        "/encrypted",
         "/routes/explain",
         "/jobs",
         "/jobs/{request_key}",

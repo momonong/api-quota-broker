@@ -1,0 +1,10 @@
+# Versions in the independent Linux x86_64 Python 3.12 production acceptance.
+# These constrain the client install; HP's Python 3.14 server has its own fixed bundle.
+api-quota-broker==2.0.0
+quota-broker-ohttp==0.1.0
+cryptography==50.0.2
+PyJWT==2.15.1
+Pillow==13.0.0
+pypdf==7.1.0
+cffi==2.1.1
+pycparser==3.12

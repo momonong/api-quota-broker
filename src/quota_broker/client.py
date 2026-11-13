@@ -104,7 +104,7 @@ ProviderTransport = Callable[
 ]
 
 
-class ProjectClient:
+class LegacyProjectClient:
     """Project-scoped HTTPS API; loopback HTTP is supported for local connections.
 
     Submit once and query the original job after uncertainty. TLS verification,
@@ -171,11 +171,8 @@ class ProjectClient:
         escaped = self._key(key)
         url = self._base if submit else self._base + "/" + escaped + suffix
         try:
-            result = _json_http(
-                url,
-                body,
-                {"Authorization": "Bearer " + self._token},
-                self._timeout if timeout is None else min(timeout, self._timeout),
+            result = self._http(
+                url, body, self._timeout if timeout is None else min(timeout, self._timeout)
             )
             if not isinstance(result, dict):
                 raise ClientError("invalid job response", detail={"error": "invalid_response"})
@@ -213,6 +210,7 @@ class ProjectClient:
         model: str | None = None,
         options: dict[str, object] | None = None,
         requirements: dict[str, object] | None = None,
+        execution_policy: str | None = None,
     ) -> dict:
         if not isinstance(text, str) or not text.strip():
             raise ClientError("text input required")
@@ -230,13 +228,16 @@ class ProjectClient:
             task["options"] = options
         if requirements is not None:
             task["requirements"] = requirements
+        if execution_policy is not None:
+            task["execution_policy"] = execution_policy
         return self.submit(task)
+
+    def _http(self, url: str, body: dict | None, timeout: float) -> object:
+        return _json_http(url, body, {"Authorization": "Bearer " + self._token}, timeout)
 
     def _metadata(self, path: str, body: dict | None = None) -> object:
         try:
-            return _json_http(
-                self._api + path, body, {"Authorization": "Bearer " + self._token}, self._timeout
-            )
+            return self._http(self._api + path, body, self._timeout)
         except (OSError, TimeoutError, ValueError, HTTPException):
             raise ClientError(
                 "broker metadata unavailable", detail={"error": "transport_error"}
@@ -314,7 +315,11 @@ class ProjectClient:
                         "action": "query_original_job",
                     },
                 )
-            if state in {"completed", "failed", "expired", "cancelled", "unknown"}:
+            pending_result = status.get("result_state") in {"pending", "storage_failed"}
+            if (
+                state in {"completed", "failed", "expired", "cancelled", "unknown"}
+                and not pending_result
+            ):
                 raise ClientError(
                     "broker job has no available result",
                     detail={
@@ -325,7 +330,7 @@ class ProjectClient:
                         "action": "query_original_job",
                     },
                 )
-            if state not in {"queued", "waiting", "running"}:
+            if state not in {"queued", "waiting", "running"} and not pending_result:
                 raise ClientError(
                     "invalid job state",
                     detail={"error": "invalid_response", "request_key": request_key},
@@ -348,6 +353,31 @@ class ProjectClient:
 
     def cancel(self, request_key: str) -> dict:
         return self._request(request_key, "/cancel", {})
+
+
+class ProjectClient(LegacyProjectClient):
+    """Encrypted project API. No token or business data is sent before trust validation."""
+
+    def __init__(
+        self,
+        base_url: str,
+        token: str,
+        *,
+        timeout: float = 15,
+        security_profile: str = "encrypted",
+        trust_profile: object = None,
+        trust_state: object = None,
+        ssl_context: object = None,
+    ):
+        from .secure_client import SecureTransport
+
+        super().__init__(base_url, token, timeout=timeout)
+        if security_profile != "encrypted" or not self._api.startswith("https://"):
+            raise ClientError("encrypted HTTPS profile required")
+        self._secure = SecureTransport(self._api, trust_profile, trust_state, ssl_context)
+
+    def _http(self, url: str, body: dict | None, timeout: float) -> object:
+        return self._secure.request(url, body, self._token, timeout)
 
 
 class DirectClient:
@@ -481,6 +511,10 @@ def call_free_api(
     timeout: float = 30.0,
     wait_timeout: float = 120.0,
     poll_interval: float = 1.0,
+    execution_policy: str | None = None,
+    trust_profile: object = None,
+    trust_state: object = None,
+    ssl_context: object = None,
 ) -> dict[str, object]:
     """Submit once and obtain a retained result through the shared project API.
 
@@ -489,7 +523,14 @@ def call_free_api(
     """
     if request_key is None:
         raise ClientError("stable request key required; persist it before calling")
-    client = ProjectClient(base_url, token, timeout=timeout)
+    client = ProjectClient(
+        base_url,
+        token,
+        timeout=timeout,
+        trust_profile=trust_profile,
+        trust_state=trust_state,
+        ssl_context=ssl_context,
+    )
     client._key(request_key)
     if isinstance(prompt_or_input, str) and capability == "text_generation":
         prompt_or_input = {"messages": [{"role": "user", "content": prompt_or_input}]}
@@ -510,4 +551,6 @@ def call_free_api(
         task["options"] = options
     if requirements is not None:
         task["requirements"] = requirements
+    if execution_policy is not None:
+        task["execution_policy"] = execution_policy
     return client.run(task, wait_timeout=wait_timeout, poll_interval=poll_interval)

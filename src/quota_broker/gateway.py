@@ -120,6 +120,9 @@ def validate_task(
     registry = registry or Registry.builtin()
     families = family_registry or FamilyRegistry.builtin()
     limits = media_limits or MediaLimits()
+    if isinstance(raw, dict) and raw.get("execution_policy") == "local_only":
+        # Local model constraints are checked by the registered local adapter.
+        check_registry_constraints = False
     allowed = {
         "request_key",
         "capability",
@@ -136,6 +139,7 @@ def validate_task(
         "wait_policy",
         "max_attempts",
         "options",
+        "execution_policy",
     }
     if not isinstance(raw, dict) or set(raw) - allowed:
         raise GatewayError("invalid_request", "invalid task fields")
@@ -245,6 +249,15 @@ def validate_task(
     if neuron_bound is not None and capability != "text_generation":
         raise GatewayError("invalid_request", "neuron_bound only applies to text generation")
     extras: dict[str, Any] = {}
+    from .execution_policy import execution_policy
+
+    try:
+        policy = execution_policy(raw.get("execution_policy", "cloud_only"))
+    except ValueError:
+        raise GatewayError("invalid_request", "invalid execution policy") from None
+    # Missing means cloud for historical payload digests; never rewrite old identities.
+    if policy == "local_only":
+        extras["execution_policy"] = policy
     if "requirements" in raw:
         requirements = raw["requirements"]
         if not isinstance(requirements, dict) or set(requirements) - {"features"}:
@@ -612,9 +625,7 @@ class Gateway:
         if not target.required_capacity:
             return []
         required = set(target.required_capacity) | {
-            (o["metric"], o["window"])
-            for o in observations
-            if o.get("current")
+            (o["metric"], o["window"]) for o in observations if o.get("current")
         }
         reasons = []
         for metric, window in sorted(required):
@@ -1225,6 +1236,8 @@ class Gateway:
         }
         model = self.registry.resolve(target.model, target.provider)
         reasons = []
+        if data.get("execution_policy") == "local_only":
+            reasons.append("execution_policy:cloud_target")
         count_scope = target.shared_concurrency_scope or target.id
         if con.execute(
             "SELECT 1 FROM gateway_token_counts WHERE scope=? AND state='intent' AND expires_at>?",
@@ -1380,6 +1393,7 @@ class Gateway:
         rows: list[dict[str, Any]] = []
         now = self.clock()
         permanent_reasons = {
+            "execution_policy:cloud_target",
             "credit_expired",
             "provider_constraint",
             "model_constraint",
@@ -1782,6 +1796,8 @@ class Gateway:
     ) -> dict[str, Any]:
         data = self.validate_task(raw)
         # Retain only a bounded, validated capability; never custom labels or input.
+        if data.get("execution_policy") == "local_only":
+            raise GatewayError("local_unavailable", "local execution requires a local worker")
         recorded_type = data["capability"] if data["capability"] in RECORDED_TASK_TYPES else None
         key = data["request_key"]
         fingerprint = self._hmac(data)

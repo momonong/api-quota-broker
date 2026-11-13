@@ -3,9 +3,10 @@
 import argparse
 import json
 import os
+import ssl
 import sys
 
-from quota_broker.client import ClientError, ProjectClient
+from quota_broker.client import ClientError, LegacyProjectClient, ProjectClient
 
 
 def main():
@@ -18,6 +19,10 @@ def main():
     parser.add_argument("--text", default="只回答 OK。")
     parser.add_argument("--provider")
     parser.add_argument("--model")
+    parser.add_argument("--execution-policy", choices=("local_only", "cloud_only"))
+    parser.add_argument(
+        "--legacy", action="store_true", help="Explicit non-sensitive legacy JSON client"
+    )
     parser.add_argument("--max-output-tokens", type=int, default=32)
     parser.add_argument("--wait-timeout", type=float, default=120)
     args = parser.parse_args()
@@ -27,9 +32,19 @@ def main():
     if args.action != "catalog" and not args.key:
         parser.error("--key is required; save it before submitting")
     try:
-        client = ProjectClient(
-            os.environ.get("QUOTA_BASE_URL", "https://momonong.me/quota/api/v1"), token
-        )
+        base = os.environ.get("QUOTA_BASE_URL", "https://momonong.me/quota/api/v1")
+        if args.legacy:
+            if args.execution_policy == "local_only":
+                parser.error("local_only requires the encrypted client")
+            client = LegacyProjectClient(base, token)
+        else:
+            client = ProjectClient(
+                base,
+                token,
+                trust_profile=os.environ.get("QUOTA_TRUST_PROFILE"),
+                trust_state=os.environ.get("QUOTA_TRUST_STATE"),
+                ssl_context=ssl.create_default_context(cafile=os.environ.get("QUOTA_CA_FILE")),
+            )
         task = {
             "request_key": args.key,
             "capability": "text_generation",
@@ -39,6 +54,8 @@ def main():
         for field in ("provider", "model"):
             if getattr(args, field):
                 task[field] = getattr(args, field)
+        if args.execution_policy:
+            task["execution_policy"] = args.execution_policy
         if args.action == "catalog":
             result = client.catalog()
         elif args.action in {"submit", "explain"}:

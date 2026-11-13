@@ -24,6 +24,7 @@ BASE = Path("/opt/quota-shared-broker")
 STATE = Path("/var/lib/quota-shared-broker")
 RUN = Path("/run/quota-shared-broker")
 CREDENTIAL = Path("/run/credentials/quota-shared-broker.service/runtime.json")
+PRIVATE_CONFIG = Path("/etc/quota-shared-broker/private-api.json")
 INSTANCE = "hp-shared-20261111"
 PROVIDER_REFS = {
     "openai": "OPENAI_API_KEY",
@@ -380,8 +381,64 @@ def import_observations(gateway, rows):
         gateway.observe_quota(row["target_id"], observation)
 
 
-def run_runtime(release, state, runtime, credential, *, ports=(18587, 18588)):
-    from quota_broker.access import AccessPolicyFile
+def sensitive_policy(base, overlay):
+    """Root-managed additions cannot replace or relax published project policy."""
+    need(
+        isinstance(overlay, dict)
+        and set(overlay) == {"version", "principals"}
+        and overlay["version"] == 1
+        and isinstance(overlay["principals"], list)
+        and 0 < len(overlay["principals"]) <= 256,
+        "sensitive_policy_shape",
+    )
+    projects = {p["project_id"] for p in base["principals"]}
+    digests = {p["token_sha256"] for p in base["principals"]}
+    for principal in overlay["principals"]:
+        need(
+            isinstance(principal, dict)
+            and principal.get("project_id")
+            and principal["project_id"] not in projects
+            and principal.get("token_sha256") not in digests
+            and principal.get("allowed_execution") == ["local_only"]
+            and principal.get("default_execution") == "local_only"
+            and principal.get("encryption_required") is True,
+            "sensitive_policy_scope",
+        )
+        digests.add(principal["token_sha256"])
+    return {"version": 1, "principals": [*base["principals"], *overlay["principals"]]}
+
+
+def copy_worker_credential(source, destination):
+    fd = os.open(source, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(fd, "rb") as stream:
+        info = os.fstat(stream.fileno())
+        need(
+            stat.S_ISREG(info.st_mode)
+            and info.st_nlink == 1
+            and info.st_uid in {0, os.geteuid()}
+            and not info.st_mode & 0o007
+            and not info.st_mode & 0o022
+            and 32 <= info.st_size <= 4096,
+            "worker_credential_metadata",
+        )
+        raw = stream.read(4097).strip()
+    need(
+        32 <= len(raw) <= 4096 and raw.isascii() and not any(chr(c).isspace() for c in raw),
+        "worker_credential_value",
+    )
+    fd, name = tempfile.mkstemp(prefix=".worker-", dir=destination.parent)
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(raw)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(name, destination)
+    finally:
+        Path(name).unlink(missing_ok=True)
+
+
+def run_runtime(release, state, runtime, credential, *, ports=(18587, 18588), private_config=None):
+    from quota_broker.access import AccessPolicyFile, ProjectAccess
     from quota_broker.config import load_gateway_config
     from quota_broker.gateway import Gateway
     from quota_broker.gateway_server import make_gateway_server
@@ -401,6 +458,19 @@ def run_runtime(release, state, runtime, credential, *, ports=(18587, 18588)):
     with tempfile.TemporaryDirectory(prefix="policy-", dir=runtime) as temporary:
         policy_path = Path(temporary) / "access.json"
         policy_data = read_json(release / "config/access.json", private=True)
+        secure = None
+        if private_config is not None:
+            secure = read_json(private_config, private=True)
+            need(
+                isinstance(secure, dict)
+                and set(secure) == {"encrypted", "local", "access", "worker_credential"}
+                and all(isinstance(p, str) and Path(p).is_absolute() for p in secure.values())
+                and len(set(secure.values())) == 4,
+                "private_configuration_shape",
+            )
+            policy_data = sensitive_policy(
+                policy_data, read_json(Path(secure["access"]), private=True)
+            )
         policy_path.write_text(json.dumps(policy_data))
         policy_path.chmod(0o600)
         policy = AccessPolicyFile(policy_path)
@@ -423,6 +493,17 @@ def run_runtime(release, state, runtime, credential, *, ports=(18587, 18588)):
         )
         import_observations(gateway, read_json(release / "config/observations.json"))
         queue = DurableQueue(gateway, queue_key)
+        endpoint, local = None, None
+        if secure is not None:
+            from quota_broker.encrypted_transport import EncryptedEndpoint
+            from quota_broker.local_jobs import LocalHTTPBackend, LocalJobs
+
+            endpoint = EncryptedEndpoint.load(secure["encrypted"])
+            copy_worker_credential(Path(secure["worker_credential"]), runtime / "worker.token")
+            backend = LocalHTTPBackend.load(secure["local"])
+            need(backend.exact_lookup, "exact_worker_lookup_required")
+            need(backend.token_file == runtime / "worker.token", "worker_credential_location")
+            local = LocalJobs(queue, ProjectAccess(gateway, policy), backend)
         metadata = make_gateway_server(
             gateway,
             legacy,
@@ -431,6 +512,7 @@ def run_runtime(release, state, runtime, credential, *, ports=(18587, 18588)):
             worker=True,
             access_policy=policy,
             serialize_work=True,
+            **({"local_jobs": local} if secure is not None else {}),
         )
         try:
             private = make_gateway_server(
@@ -441,6 +523,11 @@ def run_runtime(release, state, runtime, credential, *, ports=(18587, 18588)):
                 access_policy=policy,
                 private_api=True,
                 serialize_work=True,
+                **(
+                    {"local_jobs": local, "encrypted_endpoint": endpoint}
+                    if secure is not None
+                    else {}
+                ),
             )
         except BaseException:
             metadata.server_close()
@@ -503,7 +590,18 @@ def main():
         fixed_directory(directory, owner=0)
     verify_tree(Path("/opt/momonong-quota-readonly/site"))
     sys.path[:0] = [str(release / "app"), "/opt/momonong-quota-readonly/site"]
-    run_runtime(release, STATE, RUN, CREDENTIAL)
+    private_config = None
+    if PRIVATE_CONFIG.exists() or PRIVATE_CONFIG.is_symlink():
+        fixed_directory(PRIVATE_CONFIG.parent, owner=0)
+        info = PRIVATE_CONFIG.lstat()
+        need(
+            stat.S_ISREG(info.st_mode) and info.st_uid == 0 and not info.st_mode & 0o022,
+            "private_configuration_owner",
+        )
+        private_config = PRIVATE_CONFIG
+        verify_tree(Path("/opt/quota-private-crypto/site"))
+        sys.path.insert(1, "/opt/quota-private-crypto/site")
+    run_runtime(release, STATE, RUN, CREDENTIAL, private_config=private_config)
 
 
 if __name__ == "__main__":

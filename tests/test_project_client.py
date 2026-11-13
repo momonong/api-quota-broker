@@ -10,7 +10,8 @@ import pytest
 from test_family_adapters import GOOGLE
 from test_gateway_access import TOKENS, running
 
-from quota_broker.client import ClientError, ProjectClient
+from quota_broker.client import ClientError
+from quota_broker.client import LegacyProjectClient as ProjectClient
 
 
 def test_project_client_ocr_uses_the_same_result_text_contract(tmp_path):
@@ -78,7 +79,10 @@ def test_truncated_http_response_preserves_original_key_and_never_reposts():
         worker.join(timeout=2)
 
 
-def test_helper_keeps_code_completion_output_limit(monkeypatch):
+def test_helper_keeps_code_completion_output_limit(monkeypatch, tmp_path):
+    from test_crypto_config import setup_config
+
+    profile, _, _, _ = setup_config(tmp_path)
     from quota_broker.client import call_free_api
     from quota_broker.gateway import validate_task
 
@@ -95,6 +99,8 @@ def test_helper_keeps_code_completion_output_limit(monkeypatch):
         request_key="code-001",
         capability="code_completion",
         max_output_tokens=16,
+        trust_profile=profile,
+        trust_state=tmp_path / "trust.db",
     )
     assert validate_task(submitted[0])["max_output_tokens"] == 16
 
@@ -172,7 +178,7 @@ def test_wait_preserves_outcome_semantics_without_submitting(monkeypatch, state)
 
 
 def test_project_client_submit_status_result_and_cross_project_isolation(tmp_path):
-    from quota_broker.client import ProjectClient
+    from quota_broker.client import LegacyProjectClient as ProjectClient
 
     with running(tmp_path, private=True) as (base, gateway, queue, calls, _policy):
 
@@ -205,14 +211,14 @@ def test_project_client_submit_status_result_and_cross_project_isolation(tmp_pat
     ],
 )
 def test_client_requires_local_private_tunnel_destination(url):
-    from quota_broker.client import ProjectClient
+    from quota_broker.client import LegacyProjectClient as ProjectClient
 
     with pytest.raises(ClientError):
         ProjectClient(url, TOKENS["a"])
 
 
 def test_client_transport_failure_never_retries_or_relabels_request(monkeypatch):
-    from quota_broker.client import ProjectClient
+    from quota_broker.client import LegacyProjectClient as ProjectClient
 
     calls = []
 
@@ -233,7 +239,7 @@ def test_client_transport_failure_never_retries_or_relabels_request(monkeypatch)
 
 
 def test_project_request_keys_match_gateway_contract():
-    from quota_broker.client import ProjectClient
+    from quota_broker.client import LegacyProjectClient as ProjectClient
 
     for value in ("~existing", ".existing", "_existing", "-existing"):
         assert ProjectClient._key(value) == value
@@ -242,9 +248,20 @@ def test_project_request_keys_match_gateway_contract():
 
 
 def test_call_free_api_one_call_helper(tmp_path):
+    from test_encrypted_api import encrypted_fixture
+
     from quota_broker.client import call_free_api
 
-    with running(tmp_path, private=True) as (base, gateway, queue, calls, _policy):
+    with encrypted_fixture(tmp_path) as (
+        base,
+        profile,
+        tls,
+        gateway,
+        queue,
+        calls,
+        _policy,
+        _endpoint,
+    ):
 
         def transport(request, *_args):
             calls.append(request)
@@ -257,6 +274,9 @@ def test_call_free_api_one_call_helper(tmp_path):
                 token=TOKENS["a"],
                 base_url=base,
                 request_key="helper-call-1",
+                trust_profile=profile,
+                trust_state=tmp_path / "trust.db",
+                ssl_context=tls,
                 max_output_tokens=16,
                 options={"temperature": 0.2},
                 wait_timeout=2,

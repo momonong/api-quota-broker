@@ -197,7 +197,7 @@ def test_r4_install_helpers_are_explicit_required_regular_644_payload(source, pa
     assert path in release.DEPLOY_FILES
     assert "deploy/asus/operator.py" not in release._paths()
     artifact = build(source)
-    assert len(release._paths()) == len(artifact.manifest["release"]["files"]) == 58
+    assert len(release._paths()) == len(artifact.manifest["release"]["files"]) == 64
     assert "src/quota_broker/access.py" in release.SOURCE_FILES
     assert "src/quota_broker/token_preflight.py" in release.SOURCE_FILES
     assert "src/quota_broker/dashboard_reviewed.py" in release.SOURCE_FILES

@@ -58,6 +58,7 @@ POLICY = Path("/etc/quota-shared-maintenance/policy.json")
 ENTRY = Path("/usr/local/libexec/hp-quota-shared-maintenance.py")
 LAUNCHER = Path("/usr/local/libexec/quota-shared-runtime.py")
 UNIT = Path("/etc/systemd/system/quota-shared-broker.service")
+PRIVATE_CONFIG = Path("/etc/quota-shared-broker/private-api.json")
 READ_TOKEN = Path("/etc/credstore.encrypted/quota-shared-read-token")
 MAX_FILE, MAX_TOTAL, MAX_JSON = 4 * 1024**2, 12 * 1024**2, 20 * 1024**2
 NAME = re.compile(r"[a-z0-9][a-z0-9_-]{0,95}")
@@ -73,6 +74,8 @@ MODULES = (
     "client_credentials",
     "config",
     "core",
+    "crypto_admin",
+    "crypto_config",
     "dashboard",
     "dashboard_accounts",
     "dashboard_auth",
@@ -84,6 +87,8 @@ MODULES = (
     "discovery",
     "discovery_parsers",
     "discovery_sources",
+    "encrypted_transport",
+    "execution_policy",
     "families",
     "family_adapters",
     "family_transport",
@@ -91,6 +96,7 @@ MODULES = (
     "gateway_providers",
     "gateway_server",
     "key_admin",
+    "local_jobs",
     "nvidia",
     "nvidia_server",
     "provider_policy",
@@ -98,6 +104,7 @@ MODULES = (
     "registry",
     "retry",
     "routing",
+    "secure_client",
     "server",
     "token_preflight",
 )
@@ -119,6 +126,19 @@ ALLOWED = tuple(
             )
         ]
     )
+)
+LEGACY_ALLOWED = tuple(
+    path
+    for path in ALLOWED
+    if Path(path).stem
+    not in {
+        "crypto_admin",
+        "crypto_config",
+        "encrypted_transport",
+        "execution_policy",
+        "local_jobs",
+        "secure_client",
+    }
 )
 
 
@@ -549,13 +569,17 @@ class Operator:
         location = self.root / "releases" / identifier(release)
         directory(location)
         rows = parse(read(location / "manifest.json", 128 * 1024))
-        need(isinstance(rows, list) and len(rows) == len(ALLOWED), "manifest_shape")
+        need(
+            isinstance(rows, list) and len(rows) in {len(ALLOWED), len(LEGACY_ALLOWED)},
+            "manifest_shape",
+        )
+        expected = ALLOWED if len(rows) == len(ALLOWED) else LEGACY_ALLOWED
         names, total = [], 0
         for row in rows:
             need(isinstance(row, dict) and set(row) == {"path", "size", "sha256"}, "manifest_shape")
             path = row["path"]
             need(
-                path in ALLOWED
+                path in expected
                 and path not in names
                 and type(row["size"]) is int
                 and 0 <= row["size"] <= MAX_FILE,
@@ -565,7 +589,7 @@ class Operator:
             need(len(raw) == row["size"] and digest(raw) == row["sha256"], "installed_drift")
             names.append(path)
             total += len(raw)
-        need(tuple(names) == ALLOWED and total <= MAX_TOTAL, "installed_file_set")
+        need(tuple(names) == expected and total <= MAX_TOTAL, "installed_file_set")
         actual = set()
         for parent, dirs, files in os.walk(location, followlinks=False):
             directory(Path(parent))
@@ -573,7 +597,7 @@ class Operator:
                 directory(Path(parent) / name)
             for name in files:
                 actual.add((Path(parent) / name).relative_to(location).as_posix())
-        need(actual == set(ALLOWED) | {"manifest.json"}, "installed_extra_file")
+        need(actual == set(expected) | {"manifest.json"}, "installed_extra_file")
         return rows
 
     def current(self):
@@ -653,6 +677,17 @@ class Operator:
             sqlite3.connect(path.absolute().as_uri() + "?mode=ro", uri=True, timeout=2)
         ) as con:
             need(con.execute("PRAGMA quick_check").fetchone()[0] == "ok", "ledger_integrity")
+            if con.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='local_jobs'"
+            ).fetchone():
+                need(
+                    con.execute(
+                        "SELECT count(*) FROM local_jobs WHERE state NOT IN ('completed','failed','expired','cancelled') "
+                        "OR result_state IN ('pending','storage_failed')"
+                    ).fetchone()[0]
+                    == 0,
+                    "local_jobs_require_reconcile",
+                )
             need(
                 con.execute(
                     "SELECT count(*) FROM queue_jobs WHERE state IN ('queued','waiting','running')"
@@ -805,6 +840,10 @@ class Operator:
             "foreign_current",
         )
         old = self.manifest(record["previous"])
+        need(
+            not (len(old) == len(LEGACY_ALLOWED) and PRIVATE_CONFIG.exists()),
+            "encrypted_rollback_requires_root_gate",
+        )
         need(digest(canonical(old)) == record["previous_manifest_sha256"], "previous_drift")
         binding = self.idle()
         started = False
