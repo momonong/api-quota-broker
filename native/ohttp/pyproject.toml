@@ -1,0 +1,15 @@
+[project]
+name = "quota-broker-ohttp"
+version = "0.1.0"
+description = "Pinned RFC 9458 and RFC 9292 bindings for API Quota Broker"
+requires-python = ">=3.12"
+license-files = ["THIRD_PARTY_LICENSES.txt"]
+
+[build-system]
+requires = ["maturin==1.16.0"]
+build-backend = "maturin"
+
+[tool.maturin]
+module-name = "quota_broker_ohttp"
+features = ["pyo3/extension-module"]
+locked = true

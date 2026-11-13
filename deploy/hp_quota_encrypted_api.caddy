@@ -1,0 +1,33 @@
+# Insert inside the existing handle @quota_app, before @quota_project_get.
+# Keep all existing HTTPS/Host guards, website and legacy API handlers.
+@quota_encrypted_config {
+    method GET
+    path /quota/api/v1/crypto-config
+}
+@quota_encrypted_body {
+    method POST
+    path /quota/api/v1/encrypted
+}
+handle @quota_encrypted_config {
+    reverse_proxy 127.0.0.1:18588 {
+        header_up -Cookie
+        header_up -Authorization
+        transport http {
+            dial_timeout 5s
+            response_header_timeout 35s
+        }
+    }
+}
+handle @quota_encrypted_body {
+    request_body {
+        max_size 16842752
+    }
+    reverse_proxy 127.0.0.1:18588 {
+        header_up -Cookie
+        header_up -Authorization
+        transport http {
+            dial_timeout 5s
+            response_header_timeout 35s
+        }
+    }
+}

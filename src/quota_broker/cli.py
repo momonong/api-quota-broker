@@ -671,6 +671,13 @@ def main() -> None:
     key_admin.add_argument("--admin-token-file", required=True)
     key_admin.add_argument("--metadata-file", required=True)
     gateway_serve = sub.add_parser("gateway-serve")
+    gateway_serve.add_argument(
+        "--encrypted-config-file", help="operator-owned OHTTP file paths; requires private API"
+    )
+    gateway_serve.add_argument(
+        "--local-config-file",
+        help="approved local durable backend; requires encrypted API and queue",
+    )
     _media_flags(gateway_serve)
     gateway_serve.add_argument("--config", required=True)
     gateway_serve.add_argument("--db", required=True)
@@ -909,6 +916,10 @@ def main() -> None:
             raise SystemExit(1) from None
         return
     if args.command == "gateway-serve":
+        if args.encrypted_config_file and not args.private_api_port:
+            parser.error("--encrypted-config-file requires --private-api-port")
+        if args.local_config_file and not (args.encrypted_config_file and args.queue_key_file):
+            parser.error("--local-config-file requires encrypted API and queue storage")
         if args.private_api_port is not None and (
             not args.access_policy_file
             or args.private_api_port == args.port
@@ -949,6 +960,24 @@ def main() -> None:
             if args.queue_key_file
             else None
         )
+        from .access import ProjectAccess
+        from .encrypted_transport import EncryptedEndpoint
+        from .local_jobs import LocalHTTPBackend, LocalJobs
+
+        encrypted_endpoint = (
+            EncryptedEndpoint.load(args.encrypted_config_file)
+            if args.encrypted_config_file
+            else None
+        )
+        local_jobs = (
+            LocalJobs(
+                queue,
+                ProjectAccess(gateway_instance, access_policy),
+                LocalHTTPBackend.load(args.local_config_file),
+            )
+            if args.local_config_file and queue is not None and access_policy is not None
+            else None
+        )
         server = make_gateway_server(
             gateway_instance,
             client_token,
@@ -956,6 +985,7 @@ def main() -> None:
             queue=queue,
             worker=queue is not None and not args.no_queue_worker,
             serialize_work=args.serialize_work,
+            local_jobs=local_jobs,
             access_policy=access_policy,
             admin_token=Path(args.admin_token_file).read_text().strip()
             if args.admin_token_file
@@ -973,6 +1003,8 @@ def main() -> None:
                     access_policy=access_policy,
                     private_api=True,
                     serialize_work=args.serialize_work,
+                    encrypted_endpoint=encrypted_endpoint,
+                    local_jobs=local_jobs,
                 )
                 private_thread = threading.Thread(target=private_server.serve_forever, daemon=True)
                 private_thread.start()

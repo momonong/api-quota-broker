@@ -109,7 +109,16 @@ def wire(action, **kwargs):
 def test_exact_scope_no_key_files_or_reordered_payloads():
     value = candidate("baseline", "0" * 64)
     manifest, files = maintenance.validate(value)
-    assert len(manifest) == 45 and set(files) == set(maintenance.ALLOWED)
+    assert len(manifest) == 51 and set(files) == set(maintenance.ALLOWED)
+    for module in (
+        "crypto_admin",
+        "crypto_config",
+        "encrypted_transport",
+        "execution_policy",
+        "local_jobs",
+        "secure_client",
+    ):
+        assert "app/quota_broker/" + module + ".py" in files
     for path in ("../../etc/shadow", "config/runtime.json", "launcher.py"):
         changed = candidate("baseline", "0" * 64)
         changed["files"][0]["path"] = path
@@ -118,6 +127,73 @@ def test_exact_scope_no_key_files_or_reordered_payloads():
     value["files"].reverse()
     with pytest.raises(maintenance.Refused):
         maintenance.validate(value)
+
+
+@pytest.mark.parametrize(
+    "state,result_state", [("queued", "none"), ("unknown", "none"), ("completed", "storage_failed")]
+)
+def test_local_unsettled_work_prevents_release_switch(operator, state, result_state):
+    instance, events = operator
+    with sqlite3.connect(instance.runtime_state / "ledger.sqlite3") as con:
+        con.execute("CREATE TABLE local_jobs(state TEXT,result_state TEXT)")
+        con.execute("INSERT INTO local_jobs VALUES(?,?)", (state, result_state))
+    current, sha, _ = instance.current()
+    with pytest.raises(maintenance.Refused, match="local_jobs_require_reconcile"):
+        instance.handle(wire("publish", payload=candidate(current, sha)))
+    assert instance.current()[0] == current
+    assert events == []
+
+
+def test_current_legacy_manifest_is_readable_but_cannot_be_new_payload(operator):
+    instance, _ = operator
+    location = instance.root / "releases/old-release"
+    manifest = json.loads((location / "manifest.json").read_text())
+    legacy = []
+    for row in manifest:
+        if Path(row["path"]).stem in {
+            "crypto_admin",
+            "crypto_config",
+            "encrypted_transport",
+            "execution_policy",
+            "local_jobs",
+            "secure_client",
+        }:
+            (location / row["path"]).unlink()
+        else:
+            legacy.append(row)
+    (location / "manifest.json").write_bytes(maintenance.canonical(legacy))
+    assert len(instance.manifest("old-release")) == 45
+    value = candidate("baseline", "0" * 64)
+    value["files"] = [row for row in value["files"] if row["path"] in {r["path"] for r in legacy}]
+    with pytest.raises(maintenance.Refused):
+        maintenance.validate(value)
+
+
+def test_encrypted_config_blocks_legacy_rollback_before_service_stop(
+    operator, tmp_path, monkeypatch
+):
+    instance, events = operator
+    current, sha, _ = instance.current()
+    operation = str(uuid.uuid4())
+    instance.handle(wire("publish", payload=candidate(current, sha, operation=operation)))
+    old = instance.root / "releases" / current
+    rows = json.loads((old / "manifest.json").read_bytes())
+    legacy = [row for row in rows if row["path"] in maintenance.LEGACY_ALLOWED]
+    for row in rows:
+        if row not in legacy:
+            (old / row["path"]).unlink()
+    (old / "manifest.json").write_bytes(maintenance.canonical(legacy))
+    record = instance.receipt(operation)
+    record["previous_manifest_sha256"] = maintenance.digest(maintenance.canonical(legacy))
+    instance.save(record)
+    private = tmp_path / "private-api.json"
+    private.touch()
+    monkeypatch.setattr(maintenance, "PRIVATE_CONFIG", private, raising=False)
+    events.clear()
+    with pytest.raises(maintenance.Refused, match="encrypted_rollback_requires_root_gate"):
+        instance.handle(wire("rollback", operation_id=operation))
+    assert events == []
+    assert instance.current()[0] == "new-release"
 
 
 def test_publish_cas_stop_before_switch_preserves_ledger_and_binding(operator):

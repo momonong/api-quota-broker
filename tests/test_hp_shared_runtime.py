@@ -358,10 +358,20 @@ def runtime_child(release, state, run, credential, ports, calls_path, unknown):
         )
 
     gateway_module.Gateway = fixture_gateway
+    if unknown == "legacy_factory":
+        import quota_broker.gateway_server as servers
+
+        factory = servers.make_gateway_server
+
+        def legacy_factory(*args, **kwargs):
+            assert not {"local_jobs", "encrypted_endpoint"} & set(kwargs)
+            return factory(*args, **kwargs)
+
+        servers.make_gateway_server = legacy_factory
     module().run_runtime(release, state, run, credential, ports=ports)
 
 
-@pytest.mark.parametrize("unknown", [False, True])
+@pytest.mark.parametrize("unknown", [False, True, "legacy_factory"])
 def test_real_runtime_http_lifecycle_and_restart_without_provider_replay(tmp_path, unknown):
     import multiprocessing
     import socket
@@ -420,11 +430,11 @@ def test_real_runtime_http_lifecycle_and_restart_without_provider_replay(tmp_pat
             if job["state"] in {"completed", "unknown"}:
                 break
             time.sleep(0.03)
-        assert job["state"] == ("unknown" if unknown else "completed")
+        assert job["state"] == ("unknown" if unknown is True else "completed")
         assert request(private, "b", "GET", "/quota/api/v1/jobs/once/result")[0] == 404
         status, result = request(private, "a", "GET", "/quota/api/v1/jobs/once/result")
         assert status == 200, result
-        if not unknown:
+        if unknown is not True:
             assert result["result"]["text"] == "42"
         status, usage = request(metadata, "web", "GET", "/v1/usage")
         assert status == 200 and usage

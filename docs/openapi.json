@@ -2,8 +2,8 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Quota Project API",
-    "version": "1.3.0",
-    "description": "Project bearer-token API. Use a descriptive application User-Agent. Production HTTPS acceptance and deployment receipts are recorded in developer-api-acceptance.md."
+    "version": "2.0.0",
+    "description": "Encrypted SDK 2.0.0 source contract, not deployed. Existing job routes describe inner bHTTP operations; legacy JSON is restricted to non-sensitive principals. See encrypted-local-api.md."
   },
   "servers": [
     {
@@ -281,6 +281,78 @@
           }
         }
       }
+    },
+    "/crypto-config": {
+      "get": {
+        "summary": "Public root-delegated signed OHTTP configuration",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Short-lived signed configuration",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "delegation",
+                    "manifest"
+                  ],
+                  "additionalProperties": false,
+                  "properties": {
+                    "delegation": {
+                      "type": "string"
+                    },
+                    "manifest": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Encrypted service unavailable"
+          }
+        }
+      }
+    },
+    "/encrypted": {
+      "post": {
+        "summary": "RFC 9458 OHTTP encapsulated project request",
+        "security": [],
+        "description": "Only catalog, routes/explain and jobs inner operations; bearer token, method, path, timestamp and per-exchange ID are inside bHTTP. A valid encrypted response uses outer 200 even for an inner error. No redirect, compression, streaming, or plaintext fallback.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "message/ohttp-req": {
+              "schema": {
+                "type": "string",
+                "format": "binary",
+                "maxLength": 16842752
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Authenticated encrypted bHTTP response",
+            "content": {
+              "message/ohttp-res": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Fixed pre-decapsulation error; submitted work remains uncertain"
+          },
+          "503": {
+            "description": "Unavailable; submitted work remains uncertain"
+          }
+        }
+      }
     }
   },
   "components": {
@@ -388,6 +460,14 @@
             "maximum": 32,
             "default": 32,
             "description": "Queue budget; unknown dispatch is never replayed."
+          },
+          "execution_policy": {
+            "type": "string",
+            "enum": [
+              "local_only",
+              "cloud_only"
+            ],
+            "description": "Omitted value inherits server project default. Sensitive projects cannot widen local_only. This value participates in business idempotency."
           }
         },
         "additionalProperties": false,

@@ -63,7 +63,7 @@ def test_client_package_accepted_without_importing_payload(tmp_path):
     candidate = build(metadata, "new", "old", "a" * 64, str(uuid.uuid4()))
     h = helper()
     manifest, files = h.validate(candidate)
-    assert len(files) == 45
+    assert len(files) == 51
     assert h.digest(h.canonical(manifest)) == client_validate(candidate)["manifest_sha256"]
 
 

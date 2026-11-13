@@ -29,6 +29,10 @@ SOURCE_FILES = (
     "src/quota_broker/client_credentials.py",
     "src/quota_broker/config.py",
     "src/quota_broker/core.py",
+    "src/quota_broker/crypto_admin.py",
+    "src/quota_broker/crypto_config.py",
+    "src/quota_broker/encrypted_transport.py",
+    "src/quota_broker/execution_policy.py",
     "src/quota_broker/dashboard.py",
     "src/quota_broker/dashboard_accounts.py",
     "src/quota_broker/dashboard_auth.py",
@@ -47,6 +51,7 @@ SOURCE_FILES = (
     "src/quota_broker/gateway_providers.py",
     "src/quota_broker/gateway_server.py",
     "src/quota_broker/key_admin.py",
+    "src/quota_broker/local_jobs.py",
     "src/quota_broker/nvidia.py",
     "src/quota_broker/nvidia_server.py",
     "src/quota_broker/provider_policy.py",
@@ -55,6 +60,7 @@ SOURCE_FILES = (
     "src/quota_broker/retry.py",
     "src/quota_broker/routing.py",
     "src/quota_broker/server.py",
+    "src/quota_broker/secure_client.py",
     "src/quota_broker/token_preflight.py",
 )
 ASSET_FILES = (

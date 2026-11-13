@@ -2,20 +2,27 @@
 
 import hashlib
 import hmac
+import io
 import json
+import re
 import threading
 import time
 import uuid
 from collections.abc import Callable
+from email.message import Message
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from socket import socket
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
 from .access import AccessPolicyFile, Principal, ProjectAccess, metadata, task_metadata
 from .core import stamp
+from .crypto_config import native_module
 from .discovery import DiscoveryError
+from .encrypted_transport import EncryptedEndpoint, TransportError
 from .families import MediaLimits
 from .gateway import Gateway, GatewayError
+from .local_jobs import LocalJobs
 from .queue import DurableQueue
 
 BODY_READ_TIMEOUT = 30.0
@@ -68,6 +75,8 @@ def make_gateway_server(
     serialize_work: bool = False,
     access_policy: AccessPolicyFile | None = None,
     private_api: bool = False,
+    encrypted_endpoint: EncryptedEndpoint | None = None,
+    local_jobs: LocalJobs | None = None,
 ) -> ThreadingHTTPServer:
     if host not in {"127.0.0.1", "::1", "localhost"}:
         raise ValueError("gateway binds loopback only")
@@ -79,6 +88,8 @@ def make_gateway_server(
         raise ValueError("separate administrator token required")
     if private_api and access_policy is None:
         raise ValueError("private API requires scoped access policy")
+    if encrypted_endpoint is not None and not private_api:
+        raise ValueError("encrypted endpoint requires the scoped API listener")
     if access_policy is not None:
         reserved_digests = {
             hashlib.sha256(value.encode()).hexdigest()
@@ -115,8 +126,17 @@ def make_gateway_server(
                 body = _bounded_json(data, media_limits.result_bytes)
             except (ValueError, TypeError, OverflowError, RecursionError, UnicodeError):
                 status, body = 503, b'{"error":"internal_error"}'
+            content_type = "application/json"
+            context = getattr(self, "_response_context", None)
+            if context is not None:
+                self._response_context = None
+                binary = native_module().encode_response(
+                    status, [("content-type", "application/json")], body
+                )
+                body = context.encapsulate(binary)
+                status, content_type = 200, "message/ohttp-res"
             self.send_response(status)
-            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Type", content_type)
             self.send_header("Cache-Control", "no-store")
             self.send_header("Content-Length", str(len(body)))
             if close:
@@ -140,7 +160,7 @@ def make_gateway_server(
                 work_gate.release()
 
         def _read_body(self, length: int) -> bytes:
-            if work_gate is None:
+            if work_gate is None and encrypted_endpoint is None:
                 return self.rfile.read(length)
             # An idle socket timeout alone can be kept alive by a slow drip.
             deadline = time.monotonic() + BODY_READ_TIMEOUT
@@ -156,6 +176,67 @@ def make_gateway_server(
                 raw.extend(chunk)
             self.connection.settimeout(BODY_READ_TIMEOUT)
             return bytes(raw)
+
+        def _encrypted(self) -> None:
+            assert encrypted_endpoint is not None
+            try:
+                if (
+                    self.path != "/quota/api/v1/encrypted"
+                    or self.headers.get_all("Authorization")
+                    or self.headers.get_all("Transfer-Encoding")
+                    or self.headers.get_all("Content-Encoding")
+                    or len(self.headers.get_all("Content-Length", [])) != 1
+                    or self.headers.get_all("Content-Type") != ["message/ohttp-req"]
+                ):
+                    raise TransportError("invalid envelope")
+                length = int(self.headers["Content-Length"])
+                if not 0 < length <= media_limits.request_bytes + 65536:
+                    raise TransportError("invalid envelope")
+                wire = self._read_body(length)
+                binary, self._response_context = encrypted_endpoint.decapsulate(wire)
+                method, authority, path, fields, body = native_module().decode_request(binary)
+                allowed_headers = {
+                    "authorization",
+                    "content-type",
+                    "x-quota-created",
+                    "x-quota-request",
+                }
+                names = [name for name, _value in fields]
+                headers = dict(fields)
+                route = re.fullmatch(
+                    r"/quota/api/v1/(?:catalog|routes/explain|jobs(?:/[A-Za-z0-9._~-]{1,120}(?:/(?:result|cancel))?)?)",
+                    path,
+                )
+                if (
+                    authority != urlsplit(encrypted_endpoint.profile.audience).netloc
+                    or not route
+                    or method not in {"GET", "POST"}
+                    or len(names) != len(set(names))
+                    or set(names) - allowed_headers
+                    or not {"authorization", "x-quota-created", "x-quota-request"} <= set(names)
+                    or (method == "GET" and body)
+                    or len(body) > media_limits.request_bytes
+                ):
+                    raise TransportError("invalid inner request")
+                encrypted_endpoint.replay.accept(
+                    wire, headers["x-quota-request"], int(headers["x-quota-created"])
+                )
+                self._encrypted_request = True
+                self.command, self.path = method, path
+                self.headers = Message()
+                for name, value in fields:
+                    self.headers[name] = value
+                self.headers["Content-Length"] = str(len(body))
+                self.rfile = io.BytesIO(body)
+                if self._authorized():
+                    if method == "POST":
+                        self._work(self._post)
+                    elif self.path.endswith("/result"):
+                        self._work(self._handle)
+                    else:
+                        self._handle()
+            except (ValueError, OSError, RecursionError):
+                self._send(400, {"error": "invalid_encrypted_request"}, close=True)
 
         def _authorized(self) -> bool:
             self.principal: Principal | None = None
@@ -213,6 +294,9 @@ def make_gateway_server(
             if principal is None:
                 self._send(401, {"error": "unauthorized"})
                 return False
+            if principal.encryption_required and not getattr(self, "_encrypted_request", False):
+                self._send(403, {"error": "encryption_required"})
+                return False
             if private_api and principal.project_id is None:
                 self._send(403, {"error": "forbidden"})
                 return False
@@ -257,19 +341,41 @@ def make_gateway_server(
                 if parsed.path != prefix
                 else []
             )
-            engine = queue if kind == "jobs" else gateway
+            engine: Any = queue if kind == "jobs" else gateway
             if engine is None:
                 raise GatewayError("queue_disabled", "queue is not enabled")
             if not tail and self.command == "GET":
+
+                def status(internal: str) -> dict[str, Any]:
+                    if project_access.execution(internal) == "local_only":
+                        if local_jobs is None:
+                            raise GatewayError(
+                                "local_unavailable", "local worker is not configured"
+                            )
+                        return local_jobs.status(internal)
+                    return engine.status(internal)
+
                 return project_access.recent(
-                    principal, kind, engine.status, parse_qs(parsed.query, keep_blank_values=True)
+                    principal, kind, status, parse_qs(parsed.query, keep_blank_values=True)
                 )
             if parsed.query:
                 raise GatewayError("invalid_request", "query is not supported")
             if not tail and self.command == "POST" and body is not None:
-                internal, data = project_access.claim(principal, kind, body)
+                bounded = project_access.bounds(principal, body)
+                is_local = bounded.get("execution_policy") == "local_only"
+                if is_local:
+                    if local_jobs is None or kind != "jobs":
+                        raise GatewayError(
+                            "local_unavailable", "local jobs worker is not configured"
+                        )
+                    local_jobs.validate(bounded)
+                internal, data = project_access.claim(
+                    principal, kind, body, encrypted=getattr(self, "_encrypted_request", False)
+                )
                 result = (
-                    queue.submit(data)
+                    local_jobs.submit(data)
+                    if is_local and local_jobs is not None
+                    else queue.submit(data)
                     if kind == "jobs" and queue is not None
                     else gateway.run(data)
                 )
@@ -277,13 +383,17 @@ def make_gateway_server(
             if not tail or len(tail) > 2:
                 raise GatewayError("not_found", "task endpoint not found")
             internal = project_access.lookup(principal, kind, tail[0])
+            if project_access.execution(internal) == "local_only":
+                if local_jobs is None:
+                    raise GatewayError("local_unavailable", "local worker is not configured")
+                engine = local_jobs
             if len(tail) == 1 and self.command == "GET":
                 result = engine.status(internal)
             elif kind == "jobs" and queue is not None and len(tail) == 2:
                 if tail[1] == "result" and self.command == "GET":
-                    result = queue.result(internal)
+                    result = engine.result(internal)
                 elif tail[1] == "cancel" and self.command == "POST" and body == {}:
-                    result = queue.cancel(internal)
+                    result = engine.cancel(internal)
                 else:
                     raise GatewayError("not_found", "task endpoint not found")
             else:
@@ -391,6 +501,12 @@ def make_gateway_server(
                         and principal.project_id is not None
                         else gateway.catalog()
                     )
+                    if (
+                        local_jobs is not None
+                        and principal is not None
+                        and "local_only" in principal.allowed_execution
+                    ):
+                        result.append(local_jobs.catalog(principal.project_id))
                 elif (
                     self.command == "GET"
                     and parsed.path == "/v1/model-inventory"
@@ -473,7 +589,14 @@ def make_gateway_server(
                         and principal.project_id is not None
                         and project_access is not None
                     ):
-                        result = project_access.explain(principal, body)
+                        bounded = project_access.bounds(principal, body)
+                        if (
+                            bounded.get("execution_policy") == "local_only"
+                            and local_jobs is not None
+                        ):
+                            result = local_jobs.explain(bounded, principal.project_id)
+                        else:
+                            result = project_access.explain(principal, body)
                     else:
                         if principal is not None and project_access is not None:
                             project_access.bounds(principal, body)
@@ -494,6 +617,8 @@ def make_gateway_server(
                 status = {
                     "invalid_request": 400,
                     "forbidden": 403,
+                    "encryption_required": 403,
+                    "local_unsupported": 422,
                     "project_limit": 429,
                     "not_found": 404,
                     "conflict": 409,
@@ -514,6 +639,12 @@ def make_gateway_server(
                 )
 
         def do_GET(self) -> None:
+            if encrypted_endpoint is not None and self.path == "/quota/api/v1/crypto-config":
+                try:
+                    self._send(200, encrypted_endpoint.public_config())
+                except TransportError:
+                    self._send(503, {"error": "encrypted_unavailable"}, close=True)
+                return
             if self._authorized():
                 parts = urlsplit(self.path).path.split("/")
                 if len(parts) == 5 and parts[1:3] == ["v1", "queue"] and parts[4] == "result":
@@ -522,6 +653,12 @@ def make_gateway_server(
                     self._handle()
 
         def do_POST(self) -> None:
+            if encrypted_endpoint is not None and self.path == "/quota/api/v1/encrypted":
+                # The outer POST also carries read-only status requests. Decode
+                # under the bounded handler limit, then gate the inner operation.
+                # Busy business errors must use the authenticated response context.
+                self._encrypted()
+                return
             if self._authorized():
                 self._work(self._post)
 
@@ -552,9 +689,35 @@ def make_gateway_server(
 
     class GatewayServer(ThreadingHTTPServer):
         def __init__(self) -> None:
+            self.handler_slots = threading.BoundedSemaphore(8)
             super().__init__((host, port), Handler)
             self.stop_worker = threading.Event()
             self.worker_thread: threading.Thread | None = None
+
+        def process_request(
+            self, request: socket | tuple[bytes, socket], client_address: Any
+        ) -> None:
+            assert isinstance(request, socket)
+            if encrypted_endpoint is not None:
+                request.settimeout(BODY_READ_TIMEOUT)
+                if not self.handler_slots.acquire(blocking=False):
+                    self.shutdown_request(request)
+                    return
+            try:
+                super().process_request(request, client_address)
+            except BaseException:
+                if encrypted_endpoint is not None:
+                    self.handler_slots.release()
+                raise
+
+        def process_request_thread(
+            self, request: socket | tuple[bytes, socket], client_address: Any
+        ) -> None:
+            try:
+                super().process_request_thread(request, client_address)
+            finally:
+                if encrypted_endpoint is not None:
+                    self.handler_slots.release()
 
         def serve_forever(self, poll_interval: float = 0.5) -> None:
             if queue is not None and worker:
@@ -566,10 +729,14 @@ def make_gateway_server(
                         try:
                             if work_gate is None:
                                 queue.tick(worker_id)
+                                if local_jobs is not None:
+                                    local_jobs.tick()
                                 worker_state["last_tick_at"] = stamp(gateway.clock())
                             elif work_gate.acquire(blocking=False):
                                 try:
                                     queue.tick(worker_id)
+                                    if local_jobs is not None:
+                                        local_jobs.tick()
                                     worker_state["last_tick_at"] = stamp(gateway.clock())
                                 finally:
                                     work_gate.release()
