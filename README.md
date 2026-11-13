@@ -6,9 +6,13 @@ The instance-local trusted Registry adds compatible providers/models by manifest
 
 Disabled, locally verified expansion profiles for SambaNova, Hugging Face routed inference, and a Cerebras trial candidate are provided separately in `registry.expansion.example.json` and `gateway.expansion.example.json`. They reuse `openai_chat` for string text input. Account eligibility, real inference and deployment are separate gates; see the [expansion profiles and offline evidence](docs/provider-expansion-offline.md).
 
-For another project's backend, start with the [client integration guide](docs/client-integration.md): authentication, synchronous and queued requests, result retention, error handling, and the verified OrderFlow backend integration and remaining acceptance scope. The `gateway-serve` / `gateway` interface is the primary v1 path; it has its own JSON contract and is not a Gemini/OpenAI SDK drop-in endpoint.
+For another project's backend or personal tool, start with the [developer API / Python SDK guide](docs/developer-api.md), [OpenAPI contract](docs/openapi.json) and [runnable independent examples](examples/project_client/README.md). Connect to `https://momonong.me/quota/api/v1` with a project token; independent SDK and plain HTTP consumers passed production acceptance on 2026-11-13. See [delivery and deployment evidence](docs/developer-api-acceptance.md). It has its own JSON contract and is not a Gemini/OpenAI SDK drop-in endpoint. The [legacy integration guide](docs/client-integration.md) retains private Gateway and OrderFlow history.
 
 See also the [ASUS operations and acceptance record](docs/asus-broker-ops.md), [capability and discovery contracts](docs/provider-capability-expansion.md), [v1.0 local usage guide](docs/v1-local-guide.md), and [representative live evidence](docs/v1-seven-provider-readiness.md). The older `serve`, `DirectClient`, and separate NVIDIA executor sections below describe compatible historical interfaces, not the recommended client integration path.
+
+## Version 1.3.0
+
+Adds HTTPS ProjectClient, catalog/explain, resumable wait/run, normalized text results and independent HTTP examples. `call_free_api` now requires a persisted request key and waits for a result; use `submit_text` for immediate queuing. Project admission preserves required quota evidence and supports absolute observations alongside non-UTC ledger windows. HP release `shared-broker-20261113-api-v2` is deployed and verified through public HTTPS. Install the SDK from this GitHub repository or build the supplied wheel recipe. The package has not been published to PyPI; deployment receipts and verification limits are documented separately.
 
 ## Version 1.2.0
 

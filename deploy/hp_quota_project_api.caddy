@@ -1,0 +1,32 @@
+# Insert inside the existing `handle @quota_app` route, before @quota_public.
+# Keep the existing HTTPS/Host guard, website handlers and final 404.
+# Installed and verified on HP on 2026-11-13; see developer-api-acceptance.md.
+@quota_project_get {
+    method GET
+    path_regexp quota_project_get ^/quota/api/v1/(catalog|jobs(/[A-Za-z0-9._~-]{1,120}(/result)?)?)$
+}
+@quota_project_post {
+    method POST
+    path_regexp quota_project_post ^/quota/api/v1/(routes/explain|jobs(/[A-Za-z0-9._~-]{1,120}/cancel)?)$
+}
+handle @quota_project_get {
+    reverse_proxy 127.0.0.1:18588 {
+        header_up -Cookie
+        transport http {
+            dial_timeout 5s
+            response_header_timeout 35s
+        }
+    }
+}
+handle @quota_project_post {
+    request_body {
+        max_size 1MB
+    }
+    reverse_proxy 127.0.0.1:18588 {
+        header_up -Cookie
+        transport http {
+            dial_timeout 5s
+            response_header_timeout 35s
+        }
+    }
+}

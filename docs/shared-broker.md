@@ -1,5 +1,7 @@
 # 共用 Quota Broker：專案接入與額度判讀
 
+> 2026-11-13 已開通並驗收 HTTPS＋專案 token；新專案先讀 [開發者 API／SDK 文件](developer-api.md) 與 [正式交付紀錄](developer-api-acceptance.md)。本頁另外保留早期私人連線與日期化供應商證據。
+
 本文件描述 2026-11-11 的 HP 共用實作與接入契約。Broker、Dashboard 串接、Doppler 專用維護入口與私有 SSH 轉送已安裝；私有接入與拒絕邊界已實測。**新增模型端到端呼叫仍待本輪授權，不能把獨立提供者測試當作共用路徑驗收。** 版本及原操作收據見 [交付紀錄](shared-broker-delivery-2026-11-11.md)。
 
 ## 三個工作台與共用執行層
@@ -15,10 +17,11 @@ Broker 負責接收專案任務、確認任務與模型相容、檢查免費資�
 | 入口 | 用途 | 憑證邊界 |
 | --- | --- | --- |
 | 公網 `https://momonong.me/quota` | 三個工作台、唯讀資料、配對建議 | 既有網站認證；不能提交執行 |
+| 公網 `https://momonong.me/quota/api/v1` | 專案 catalog／explain／jobs | 專案 bearer token；只可查自己的工作與結果 |
 | HP `127.0.0.1:18587` | 內部模型／診斷／用量／選路試算 | 獨立 read/plan 身分；普通專案 token 不能讀取全域診斷與用量 |
 | HP `127.0.0.1:18588/quota/api/v1/jobs` | 私有非同步專案任務 | 專案 token；每個專案只能讀取自己的工作與結果 |
 
-遠端專案經授權的 SSH 本機轉送連入 `18588`；提供者 API key 留在 Broker。客戶端接受的目的地為 `http://127.0.0.1:<本機轉送埠>`，不接受公網 URL、LAN IP 或任意路徑。轉送的身分與權限需由維護流程配置；既有僅限部署的 `quota-deploy` 身分不能逕自當作通用 shell 或轉送帳戶。
+新專案預設使用 HTTPS API root；提供者 API key 留在 Broker。既有私人接入仍可經授權的 SSH 本機轉送連入 `18588`，使用 `http://127.0.0.1:<本機轉送埠>`；不接受未加密的 LAN IP。轉送的身分與權限需由維護流程配置；既有僅限部署的 `quota-deploy` 身分不能逕自當作通用 shell 或轉送帳戶。
 
 一個專案使用一個 token，存取政策把 token 綁定專案 ID 與 scopes。網站的 read/plan token、一般專案 token、維護管理權限互不替代。取得內網連線也不等於取得 API 權限。應用程式不要持有其他專案 token 或提供者 key。
 
@@ -33,7 +36,7 @@ Broker 負責接收專案任務、確認任務與模型相容、檢查免費資�
 
 ## 專案客戶端
 
-`quota_broker.client.ProjectClient` 使用非同步 jobs API。先把 SSH 轉送與專案 token 注入配置好，再由應用程式執行；以下是程式介面範例，不是要求手動貼上部署指令。
+`quota_broker.client.ProjectClient` 使用非同步 jobs API。先注入專案 token；下例保留既有私人轉送用法，HTTPS 開發請使用 [現行文件](developer-api.md) 的 base URL 與範例。
 
 ```python
 import os

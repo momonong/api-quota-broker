@@ -1,5 +1,7 @@
 # Quota 專案成果報告與交接文件（2026-11-13）
 
+> 後續查核：本文的八家結果是直接 `Gateway.run()` 證據，不等於專案 HTTP／SDK 或公開 HTTPS 驗收。1,494 ms 的 OpenRouter 原紀錄是 `unknown`；另一次 701 ms 的成功保存在獨立測試紀錄，不能覆蓋原 UNKNOWN。下列舊 helper 範例缺少穩定 key，且當時只回傳 queued；現行使用方式以 [開發者 API／SDK 文件](developer-api.md) 為準。v7 中部分 remaining 不能由上限推定，未當作可部署餘額使用。
+
 更新時間：2026-11-13 02:40，Asia/Taipei。
 
 ---

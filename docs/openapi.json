@@ -1,0 +1,787 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Quota Project API",
+    "version": "1.3.0",
+    "description": "Project bearer-token API. Use a descriptive application User-Agent. Production HTTPS acceptance and deployment receipts are recorded in developer-api-acceptance.md."
+  },
+  "servers": [
+    {
+      "url": "https://momonong.me/quota/api/v1",
+      "description": "Production HTTPS API; independently verified 2026-11-13"
+    }
+  ],
+  "security": [
+    {
+      "ProjectToken": []
+    }
+  ],
+  "paths": {
+    "/catalog": {
+      "get": {
+        "operationId": "catalog",
+        "summary": "Read models and quota evidence",
+        "description": "Requires project scope: read.",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/CatalogItem"
+                  }
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Structured error; see developer-api.md. Do not automatically retry submissions.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/routes/explain": {
+      "post": {
+        "operationId": "explain",
+        "summary": "Plan without provider execution",
+        "description": "Requires project scope: plan.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Task"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Plan"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Structured error; see developer-api.md. Do not automatically retry submissions.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/jobs": {
+      "get": {
+        "operationId": "jobs",
+        "summary": "List this project's jobs",
+        "description": "Requires project scope: read.",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobList"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Structured error; see developer-api.md. Do not automatically retry submissions.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "submit",
+        "summary": "Submit once using a durable business key",
+        "description": "Requires project scope: execute.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Task"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Job"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Structured error; see developer-api.md. Do not automatically retry submissions.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/jobs/{request_key}": {
+      "parameters": [
+        {
+          "name": "request_key",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/RequestKey"
+          }
+        }
+      ],
+      "get": {
+        "operationId": "status",
+        "summary": "Inspect the original job",
+        "description": "Requires project scope: read.",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Job"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Structured error; see developer-api.md. Do not automatically retry submissions.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/jobs/{request_key}/result": {
+      "parameters": [
+        {
+          "name": "request_key",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/RequestKey"
+          }
+        }
+      ],
+      "get": {
+        "operationId": "result",
+        "summary": "Get retained outcome",
+        "description": "Requires project scope: read.",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Outcome"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Structured error; see developer-api.md. Do not automatically retry submissions.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/jobs/{request_key}/cancel": {
+      "parameters": [
+        {
+          "name": "request_key",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/RequestKey"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "cancel",
+        "summary": "Cancel before execution starts",
+        "description": "Requires project scope: execute.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "maxProperties": 0
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Job"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Structured error; see developer-api.md. Do not automatically retry submissions.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "ProjectToken": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "Project token; not website password or provider key."
+      }
+    },
+    "schemas": {
+      "RequestKey": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9._~-]{1,120}$",
+        "description": "Persist before submission. Same project/key/content is idempotent; different content conflicts."
+      },
+      "Task": {
+        "type": "object",
+        "required": [
+          "request_key",
+          "capability",
+          "input"
+        ],
+        "properties": {
+          "request_key": {
+            "$ref": "#/components/schemas/RequestKey"
+          },
+          "capability": {
+            "type": "string",
+            "description": "A capability advertised by catalog, e.g. text_generation or ocr."
+          },
+          "input": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "object"
+              }
+            ],
+            "description": "Typed family input: messages for text; document media for OCR. Capability validation applies."
+          },
+          "max_output_tokens": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 65536,
+            "description": "Required for text generation; constrained by project/model limits. Omit for typed OCR."
+          },
+          "provider": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "options": {
+            "type": "object"
+          },
+          "requirements": {
+            "type": "object"
+          },
+          "source_language": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "target_language": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "neuron_bound": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 1
+          },
+          "deadline": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "priority": {
+            "type": "integer",
+            "minimum": -100,
+            "maximum": 100
+          },
+          "wait_policy": {
+            "type": "string",
+            "enum": [
+              "wait",
+              "reject"
+            ]
+          },
+          "max_attempts": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 32,
+            "default": 32,
+            "description": "Queue budget; unknown dispatch is never replayed."
+          }
+        },
+        "additionalProperties": false,
+        "example": {
+          "request_key": "my-tool-document-001",
+          "capability": "text_generation",
+          "input": {
+            "messages": [
+              {
+                "role": "user",
+                "content": "只回答 OK。"
+              }
+            ]
+          },
+          "max_output_tokens": 32
+        }
+      },
+      "Observation": {
+        "type": "object",
+        "required": [
+          "metric",
+          "window",
+          "remaining",
+          "current"
+        ],
+        "properties": {
+          "metric": {
+            "type": "string"
+          },
+          "window": {
+            "type": "string"
+          },
+          "remaining": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "limit": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "effective_remaining": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "as_of": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "valid_until": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "reset_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "current": {
+            "type": "boolean"
+          },
+          "provenance": {
+            "type": "string"
+          },
+          "confidence": {
+            "type": "string"
+          },
+          "local_observation_hold": {
+            "type": "integer"
+          }
+        }
+      },
+      "CatalogItem": {
+        "type": "object",
+        "required": [
+          "target_id",
+          "provider",
+          "model",
+          "capabilities",
+          "available",
+          "quota_observations",
+          "project_reasons"
+        ],
+        "properties": {
+          "target_id": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string"
+          },
+          "capabilities": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "available": {
+            "type": "boolean",
+            "description": "Positive current evidence; does not replace full task explain or dispatch checks."
+          },
+          "max_output_tokens": {
+            "type": "integer",
+            "description": "Capped by this project."
+          },
+          "project_reasons": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "quota_observations": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Observation"
+            }
+          },
+          "local_ledger_usage": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            },
+            "description": "Local current-window accounting; not provider remaining."
+          },
+          "quotas": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          },
+          "local_safety_caps": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          },
+          "provider_quota_facts": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          }
+        }
+      },
+      "Plan": {
+        "type": "object",
+        "required": [
+          "selected_target_id",
+          "candidates",
+          "temporary",
+          "permanent_rejection"
+        ],
+        "properties": {
+          "selected_target_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "estimated_input_tokens": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "temporary": {
+            "type": "boolean"
+          },
+          "permanent_rejection": {
+            "type": "boolean"
+          },
+          "next_retry_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "candidates": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "target_id",
+                "eligible",
+                "reasons"
+              ],
+              "properties": {
+                "target_id": {
+                  "type": "string"
+                },
+                "provider": {
+                  "type": "string"
+                },
+                "model": {
+                  "type": "string"
+                },
+                "eligible": {
+                  "type": "boolean"
+                },
+                "reasons": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "quota_observations": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Observation"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "Job": {
+        "type": "object",
+        "required": [
+          "request_key",
+          "state",
+          "result_available"
+        ],
+        "properties": {
+          "request_key": {
+            "$ref": "#/components/schemas/RequestKey"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "queued",
+              "waiting",
+              "running",
+              "completed",
+              "failed",
+              "expired",
+              "cancelled",
+              "unknown"
+            ]
+          },
+          "result_available": {
+            "type": "boolean"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "deadline": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "next_retry_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "error_code": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "attempt_count": {
+            "type": "integer"
+          },
+          "gateway_state": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "JobList": {
+        "type": "object",
+        "required": [
+          "tasks",
+          "next_before"
+        ],
+        "properties": {
+          "tasks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Job"
+            }
+          },
+          "next_before": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Reserved pagination metadata; /jobs does not accept query parameters in v1."
+          }
+        }
+      },
+      "Outcome": {
+        "type": "object",
+        "required": [
+          "request_key",
+          "state"
+        ],
+        "properties": {
+          "request_key": {
+            "$ref": "#/components/schemas/RequestKey"
+          },
+          "state": {
+            "type": "string",
+            "description": "completed or completed_usage_unknown means output obtained; unknown must never be replayed. Other terminal states indicate rejection/failure."
+          },
+          "result": {
+            "type": "object",
+            "properties": {
+              "text": {
+                "type": "string"
+              }
+            },
+            "description": "Text/OCR expose text; other families have their own fields."
+          },
+          "answer": {
+            "type": "string",
+            "description": "Legacy string output retained."
+          },
+          "provider": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "usage": {
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "error_code": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "Error": {
+        "type": "object",
+        "required": [
+          "error"
+        ],
+        "properties": {
+          "error": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "details": {},
+          "wait_until": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      }
+    }
+  }
+}

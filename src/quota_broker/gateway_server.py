@@ -163,6 +163,10 @@ def make_gateway_server(
             path = parsed.path
             if private_api:
                 parts = path.split("/")
+                metadata_route = {
+                    ("GET", "/quota/api/v1/catalog"): "/v1/catalog",
+                    ("POST", "/quota/api/v1/routes/explain"): "/v1/routes/explain",
+                }.get((self.command, path))
                 allowed = (
                     len(parts) >= 5
                     and parts[1:4] == ["quota", "api", "v1"]
@@ -181,11 +185,11 @@ def make_gateway_server(
                         )
                     )
                 )
-                if not allowed or parsed.fragment:
+                if (not allowed and metadata_route is None) or parsed.fragment:
                     self._send(404, {"error": "not_found"})
                     return False
-                path = "/v1/" + ("queue" if parts[4] == "jobs" else "tasks")
-                if tail:
+                path = metadata_route or "/v1/" + ("queue" if parts[4] == "jobs" else "tasks")
+                if tail and metadata_route is None:
                     path += "/" + "/".join(tail)
                 self.path = path + ("?" + parsed.query if parsed.query else "")
             supplied = self.headers.get("Authorization", "")
@@ -208,6 +212,9 @@ def make_gateway_server(
             principal = self.principal
             if principal is None:
                 self._send(401, {"error": "unauthorized"})
+                return False
+            if private_api and principal.project_id is None:
+                self._send(403, {"error": "forbidden"})
                 return False
             if "admin" in principal.scopes and not private_api:
                 return True
@@ -377,7 +384,13 @@ def make_gateway_server(
                     else:
                         raise GatewayError("not_found", "queue endpoint not found")
                 elif self.command == "GET" and parsed.path == "/v1/catalog" and not parsed.query:
-                    result = gateway.catalog()
+                    result = (
+                        project_access.catalog(principal)
+                        if project_access is not None
+                        and principal is not None
+                        and principal.project_id is not None
+                        else gateway.catalog()
+                    )
                 elif (
                     self.command == "GET"
                     and parsed.path == "/v1/model-inventory"
@@ -455,9 +468,16 @@ def make_gateway_server(
                 ):
                     if body is None:
                         raise GatewayError("invalid_request", "missing body")
-                    if principal is not None and project_access is not None:
-                        project_access.bounds(principal, body)
-                    result = gateway.explain(body)
+                    if (
+                        principal is not None
+                        and principal.project_id is not None
+                        and project_access is not None
+                    ):
+                        result = project_access.explain(principal, body)
+                    else:
+                        if principal is not None and project_access is not None:
+                            project_access.bounds(principal, body)
+                        result = gateway.explain(body)
                 else:
                     self._send(404, {"error": "not_found"})
                     return

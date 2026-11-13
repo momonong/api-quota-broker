@@ -1,14 +1,18 @@
 """Direct official API client: one provider attempt per dispatch authorization."""
 
 import json
+import math
 import re
+import time
 import urllib.error
 import urllib.request
 import uuid
 from collections.abc import Callable
 from datetime import UTC, datetime
+from http.client import HTTPException
 from urllib.parse import quote, urlsplit
 
+from . import __version__
 from .catalog import MODELS, endpoint
 from .retry import parse_retry_after
 
@@ -28,7 +32,11 @@ def _json_http(url: str, data: dict | None, headers: dict, timeout: float = 15) 
     request = urllib.request.Request(
         url,
         data=json.dumps(data).encode() if data is not None else None,
-        headers={"Content-Type": "application/json", **headers},
+        headers={
+            "Content-Type": "application/json",
+            "User-Agent": f"api-quota-broker/{__version__}",
+            **headers,
+        },
         method="POST" if data is not None else "GET",
     )
     # Broker authentication stays on the selected local endpoint regardless of
@@ -41,6 +49,8 @@ def _json_http(url: str, data: dict | None, headers: dict, timeout: float = 15) 
         try:
             detail = json.load(exc)
         except (json.JSONDecodeError, ValueError):
+            detail = {"error": "http_error"}
+        if not isinstance(detail, dict):
             detail = {"error": "http_error"}
         raise ClientError(f"broker HTTP {exc.code}: {detail.get('error')}", detail=detail) from exc
 
@@ -95,20 +105,29 @@ ProviderTransport = Callable[
 
 
 class ProjectClient:
-    """Private project API. Submit once; query the same job after any uncertainty.
+    """Project-scoped HTTPS API; loopback HTTP is supported for local connections.
 
-    Remote projects use an authenticated SSH tunnel to this loopback destination.
-    Provider credentials and routing decisions stay inside the Broker.
+    Submit once and query the original job after uncertainty. TLS verification,
+    disabled redirects and disabled ambient proxies keep bearer tokens on the
+    configured origin. Provider credentials remain inside the Broker.
     """
 
     def __init__(self, base_url: str, token: str, *, timeout: float = 15):
         try:
+            if not isinstance(base_url, str) or any(ord(c) <= 32 for c in base_url):
+                raise ValueError
             url = urlsplit(base_url)
             valid = (
-                url.scheme == "http"
-                and url.hostname == "127.0.0.1"
-                and url.port is not None
-                and url.path in {"", "/"}
+                (
+                    url.scheme == "https"
+                    and bool(url.hostname)
+                    or url.scheme == "http"
+                    and url.hostname == "127.0.0.1"
+                    and url.port is not None
+                )
+                and url.path.rstrip("/") in {"", "/quota", "/quota/api/v1"}
+                and not url.path.endswith("//")
+                and (url.port is None or 1 <= url.port <= 65535)
                 and not url.username
                 and not url.password
                 and not url.query
@@ -123,28 +142,48 @@ class ProjectClient:
             or not token.isascii()
             or any(c.isspace() for c in token)
         ):
-            raise ClientError("private loopback endpoint and project token required")
-        if type(timeout) not in {int, float} or not 0 < timeout <= 185:
+            raise ClientError("HTTPS or local loopback API endpoint and project token required")
+        if (
+            type(timeout) not in {int, float}
+            or not math.isfinite(timeout)
+            or not 0 < timeout <= 185
+        ):
             raise ClientError("timeout must be bounded")
-        self._base = base_url.rstrip("/") + "/quota/api/v1/jobs"
+        self._api = f"{url.scheme}://{url.netloc}/quota/api/v1"
+        self._base = self._api + "/jobs"
         self._token, self._timeout = token, timeout
 
     @staticmethod
     def _key(value: str) -> str:
-        if not isinstance(value, str) or not re.fullmatch(
-            r"[A-Za-z0-9._~-]{1,120}", value
-        ):
+        if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9._~-]{1,120}", value):
             raise ClientError("stable request key required")
         return quote(value, safe="")
 
     def _request(
-        self, key: str, suffix: str = "", body: dict | None = None, *, submit: bool = False
+        self,
+        key: str,
+        suffix: str = "",
+        body: dict | None = None,
+        *,
+        submit: bool = False,
+        timeout: float | None = None,
     ) -> dict:
         escaped = self._key(key)
         url = self._base if submit else self._base + "/" + escaped + suffix
         try:
-            return _json_http(url, body, {"Authorization": "Bearer " + self._token}, self._timeout)
-        except (OSError, TimeoutError, ValueError):
+            result = _json_http(
+                url,
+                body,
+                {"Authorization": "Bearer " + self._token},
+                self._timeout if timeout is None else min(timeout, self._timeout),
+            )
+            if not isinstance(result, dict):
+                raise ClientError("invalid job response", detail={"error": "invalid_response"})
+            return result
+        except ClientError as exc:
+            exc.detail = {**(exc.detail or {}), "request_key": key}
+            raise
+        except (OSError, TimeoutError, ValueError, HTTPException):
             # No second POST, new request key, provider fallback, or silent retry.
             raise ClientError(
                 "broker transport outcome unknown",
@@ -172,6 +211,8 @@ class ProjectClient:
         max_output_tokens: int = 256,
         provider: str | None = None,
         model: str | None = None,
+        options: dict[str, object] | None = None,
+        requirements: dict[str, object] | None = None,
     ) -> dict:
         if not isinstance(text, str) or not text.strip():
             raise ClientError("text input required")
@@ -185,7 +226,119 @@ class ProjectClient:
             task["provider"] = provider
         if model is not None:
             task["model"] = model
+        if options is not None:
+            task["options"] = options
+        if requirements is not None:
+            task["requirements"] = requirements
         return self.submit(task)
+
+    def _metadata(self, path: str, body: dict | None = None) -> object:
+        try:
+            return _json_http(
+                self._api + path, body, {"Authorization": "Bearer " + self._token}, self._timeout
+            )
+        except (OSError, TimeoutError, ValueError, HTTPException):
+            raise ClientError(
+                "broker metadata unavailable", detail={"error": "transport_error"}
+            ) from None
+
+    def catalog(self) -> list[dict]:
+        """Read configured models and separately labelled quota evidence."""
+        result = self._metadata("/catalog")
+        if not isinstance(result, list) or any(not isinstance(item, dict) for item in result):
+            raise ClientError("invalid catalog response", detail={"error": "invalid_response"})
+        return result
+
+    def explain(self, task: dict) -> dict:
+        """Check the complete task without reserving quota or dispatching."""
+        if not isinstance(task, dict):
+            raise ClientError("task must be an object")
+        result = self._metadata("/routes/explain", task)
+        if not isinstance(result, dict):
+            raise ClientError("invalid plan response", detail={"error": "invalid_response"})
+        return result
+
+    @staticmethod
+    def _wait_bounds(wait_timeout: float, poll_interval: float) -> None:
+        if (
+            type(wait_timeout) not in {int, float}
+            or not math.isfinite(wait_timeout)
+            or not 0 <= wait_timeout <= 3600
+            or type(poll_interval) not in {int, float}
+            or not math.isfinite(poll_interval)
+            or not 0 < poll_interval <= 60
+        ):
+            raise ClientError("wait timeout and polling interval must be bounded")
+
+    def wait(
+        self,
+        request_key: str,
+        *,
+        wait_timeout: float = 120,
+        poll_interval: float = 1,
+    ) -> dict:
+        """Wait for the original job; a local deadline never cancels or resubmits it."""
+        self._key(request_key)
+        self._wait_bounds(wait_timeout, poll_interval)
+        deadline = time.monotonic() + wait_timeout
+        state = None
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise ClientError(
+                    "broker wait deadline reached",
+                    detail={
+                        "error": "wait_timeout",
+                        "request_key": request_key,
+                        "state": state,
+                        "action": "query_original_job",
+                    },
+                )
+            status = self._request(request_key, timeout=remaining)
+            state = status.get("state")
+            if status.get("result_available") is True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    continue
+                outcome = self._request(request_key, "/result", timeout=remaining)
+                state = outcome.get("state")
+                if state in {"completed", "completed_usage_unknown"}:
+                    return outcome
+                raise ClientError(
+                    "broker job did not complete",
+                    detail={
+                        "error": "job_unknown" if state == "unknown" else "job_failed",
+                        "request_key": request_key,
+                        "state": state,
+                        "error_code": outcome.get("error_code"),
+                        "action": "query_original_job",
+                    },
+                )
+            if state in {"completed", "failed", "expired", "cancelled", "unknown"}:
+                raise ClientError(
+                    "broker job has no available result",
+                    detail={
+                        "error": "job_unknown" if state == "unknown" else "job_failed",
+                        "request_key": request_key,
+                        "state": state,
+                        "error_code": status.get("error_code"),
+                        "action": "query_original_job",
+                    },
+                )
+            if state not in {"queued", "waiting", "running"}:
+                raise ClientError(
+                    "invalid job state",
+                    detail={"error": "invalid_response", "request_key": request_key},
+                )
+            time.sleep(min(poll_interval, max(0, deadline - time.monotonic())))
+
+    def run(self, task: dict, *, wait_timeout: float = 120, poll_interval: float = 1) -> dict:
+        """Submit once, then return the retained outcome or a resumable ClientError."""
+        self._wait_bounds(wait_timeout, poll_interval)
+        self.submit(task)
+        return self.wait(
+            task["request_key"], wait_timeout=wait_timeout, poll_interval=poll_interval
+        )
 
     def status(self, request_key: str) -> dict:
         return self._request(request_key)
@@ -317,36 +470,35 @@ def call_free_api(
     prompt_or_input: str | dict[str, object],
     *,
     token: str,
-    base_url: str = "http://127.0.0.1:18588",
+    base_url: str = "https://momonong.me/quota/api/v1",
     request_key: str | None = None,
     capability: str = "text_generation",
     provider: str | None = None,
     model: str | None = None,
     max_output_tokens: int = 256,
     options: dict[str, object] | None = None,
+    requirements: dict[str, object] | None = None,
     timeout: float = 30.0,
+    wait_timeout: float = 120.0,
+    poll_interval: float = 1.0,
 ) -> dict[str, object]:
-    """Unified one-call helper for invoking free providers via the Shared Broker.
+    """Submit once and obtain a retained result through the shared project API.
 
     If `provider` / `model` are omitted, the Broker automatically selects the
     best eligible free route with available capacity.
     """
+    if request_key is None:
+        raise ClientError("stable request key required; persist it before calling")
     client = ProjectClient(base_url, token, timeout=timeout)
-    key = request_key or f"req-{uuid.uuid4().hex}"
+    client._key(request_key)
     if isinstance(prompt_or_input, str) and capability == "text_generation":
-        return client.submit_text(
-            key,
-            prompt_or_input,
-            max_output_tokens=max_output_tokens,
-            provider=provider,
-            model=model,
-        )
+        prompt_or_input = {"messages": [{"role": "user", "content": prompt_or_input}]}
     task: dict[str, object] = {
-        "request_key": key,
+        "request_key": request_key,
         "capability": capability,
         "input": prompt_or_input,
     }
-    if capability in {"text_generation", "translation", "vision"}:
+    if capability in {"text_generation", "translation", "vision", "code_completion"}:
         task["max_output_tokens"] = max_output_tokens
     elif capability == "ocr" and isinstance(prompt_or_input, str):
         task["max_output_tokens"] = 1
@@ -356,5 +508,6 @@ def call_free_api(
         task["model"] = model
     if options is not None:
         task["options"] = options
-    return client.submit(task)
-
+    if requirements is not None:
+        task["requirements"] = requirements
+    return client.run(task, wait_timeout=wait_timeout, poll_interval=poll_interval)

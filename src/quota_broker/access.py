@@ -267,6 +267,138 @@ class ProjectAccess:
                 raise GatewayError("forbidden", "scoped token preflight unavailable")
         return data
 
+    @staticmethod
+    def _public_metadata(value: Any) -> Any:
+        """Omit operator evidence locations and account/bucket identifiers."""
+        if isinstance(value, list):
+            return [ProjectAccess._public_metadata(item) for item in value]
+        if isinstance(value, dict):
+            return {
+                key: ProjectAccess._public_metadata(item)
+                for key, item in value.items()
+                if key not in {"source", "scope", "bucket"}
+            }
+        return value
+
+    def _capacity_reasons(
+        self,
+        target: Any,
+        observations: list[dict[str, Any]],
+        costs: dict[tuple[str, str], int] | None,
+    ) -> list[str]:
+        """Same evidence gate for project catalog, dry-run and actual dispatch.
+
+        A catalog has no task cost: it only checks for positive current capacity.
+        Absolute evidence validity works with every supported ledger timezone.
+        Expired optional dimensions are historical data, not new requirements.
+        """
+        required = set(target.required_capacity) or {(q.metric, q.window) for q in target.quotas}
+        required.update((o["metric"], o["window"]) for o in observations if o["current"])
+        reasons = []
+        if not target.available(self.gateway.clock()) or not required:
+            reasons.append("project_capacity:unavailable")
+        for metric, window in sorted(required):
+            matches = [o for o in observations if (o["metric"], o["window"]) == (metric, window)]
+            cost = 1 if costs is None else costs.get((metric, window))
+            if (
+                not matches
+                or cost is None
+                or any(
+                    not o["current"]
+                    or o["provenance"] not in {"official", "observed"}
+                    or o["confidence"]
+                    not in {"provider_reported", "administrator_verified", "configured_evidence"}
+                    or o["effective_remaining"] is None
+                    or o["effective_remaining"] < cost
+                    for o in matches
+                )
+            ):
+                reasons.append(f"project_capacity:{metric}:{window}")
+        return reasons
+
+    def catalog(self, principal: Principal) -> list[dict[str, Any]]:
+        fields = {
+            "target_id",
+            "provider",
+            "model",
+            "capabilities",
+            "variants",
+            "features",
+            "input_modalities",
+            "output_modalities",
+            "context_tokens",
+            "max_output_tokens",
+            "free_kind",
+            "use_restrictions",
+            "enabled",
+            "available",
+            "request_limits",
+            "quota_basis",
+            "quotas",
+            "local_safety_caps",
+            "provider_quota_facts",
+            "required_capacity",
+            "capacity",
+            "quota_observations",
+            "local_ledger_usage",
+        }
+        targets = {t.id: t for t in self.gateway.targets}
+        result = []
+        for item in self.gateway.catalog():
+            row = self._public_metadata(
+                {key: value for key, value in item.items() if key in fields}
+            )
+            reasons = self._capacity_reasons(
+                targets[item["target_id"]], item["quota_observations"], None
+            )
+            row["project_reasons"] = reasons
+            row["available"] = row["available"] and not reasons
+            row["max_output_tokens"] = min(row["max_output_tokens"], principal.max_output_tokens)
+            result.append(row)
+        return result
+
+    def explain(self, principal: Principal, body: dict[str, Any]) -> dict[str, Any]:
+        data = self.bounds(principal, body)
+        plan = self.gateway.explain(body)
+        targets = {t.id: t for t in self.gateway.targets}
+        for row in plan["candidates"]:
+            bound, output = plan["estimated_input_tokens"] or 0, data["max_output_tokens"]
+            resources = row["resource_cost_bounds"]
+            if resources is None:
+                resources = {
+                    "input_tokens": bound,
+                    "output_tokens": output,
+                    "total_tokens": bound + output,
+                }
+                if row["effective_neuron_bound"] is not None:
+                    resources["neurons"] = row["effective_neuron_bound"]
+            costs = {}
+            for o in row["quota_observations"]:
+                metric = o["metric"]
+                cost = (
+                    1
+                    if metric == "requests"
+                    else resources.get("total_tokens" if metric == "tokens" else metric)
+                )
+                if cost is not None:
+                    costs[(metric, o["window"])] = cost
+            reasons = self._capacity_reasons(
+                targets[row["target_id"]], row["quota_observations"], costs
+            )
+            if reasons:
+                row["reasons"].extend(reasons)
+                row.update(eligible=False, temporary=False, next_retry_at=None)
+        selected = next((row["target_id"] for row in plan["candidates"] if row["eligible"]), None)
+        temporary = any(row["temporary"] for row in plan["candidates"])
+        retries = [row["next_retry_at"] for row in plan["candidates"] if row["next_retry_at"]]
+        plan.update(
+            selected_target_id=selected,
+            temporary=selected is None and temporary,
+            permanent_rejection=selected is None and not temporary,
+            next_retry_at=min(retries) if retries else None,
+        )
+        return self._public_metadata(plan)
+
     def claim(
         self, principal: Principal, kind: str, body: dict[str, Any]
     ) -> tuple[str, dict[str, Any]]:
@@ -383,6 +515,8 @@ class ProjectAccess:
                 }
                 for attempt in result["attempts"]
             ]
+        if "result" not in result and isinstance(result.get("answer"), str):
+            result["result"] = {"text": result["answer"]}
         return result
 
     def recent(
@@ -480,35 +614,12 @@ class ProjectAccess:
         observations = self.gateway._quota_observations(
             con, target, self.gateway.clock(), reservation_id
         )
-        required = (
-            set(target.required_capacity)
-            if target.required_capacity
-            else {(q.metric, q.window) for q in target.quotas}
-        )
-        required.update((o["metric"], o["window"]) for o in observations)
-        if (
-            not target.available(self.gateway.clock())
-            or not required
-            or any(q.window in {"day", "month"} and q.timezone != "UTC" for q in target.quotas)
-        ):
-            raise BrokerError("unavailable", "current free capacity required")
-        for metric, window in required:
-            matches = [o for o in observations if o["metric"] == metric and o["window"] == window]
-            costs = con.execute(
-                "SELECT amount FROM observed_holds WHERE reservation_id=? AND metric=? AND window=?",
-                (reservation_id, metric, window),
-            ).fetchall()
-            if (
-                not matches
-                or not costs
-                or any(
-                    not o["current"]
-                    or o["provenance"] not in {"official", "observed"}
-                    or o["confidence"]
-                    not in {"provider_reported", "administrator_verified", "configured_evidence"}
-                    or o["effective_remaining"] is None
-                    or o["effective_remaining"] < max(c[0] for c in costs)
-                    for o in matches
-                )
-            ):
-                raise BrokerError("unavailable", "current known free quota required")
+        costs = {
+            (row[0], row[1]): row[2]
+            for row in con.execute(
+                "SELECT metric,window,amount FROM observed_holds WHERE reservation_id=?",
+                (reservation_id,),
+            )
+        }
+        if self._capacity_reasons(target, observations, costs):
+            raise BrokerError("unavailable", "current known free quota required")
