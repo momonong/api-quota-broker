@@ -5,7 +5,7 @@ const num = value => value === null || value === undefined ? '—' : new Intl.Nu
 const metricNumber = (metric,value) => metric==='credits_usd_micros' && value!==null && value!==undefined ? new Intl.NumberFormat('zh-TW',{maximumFractionDigits:6}).format(value/1000000) : num(value);
 const date = value => value ? new Date(value).toLocaleString('zh-TW', {hour12:false}) : '未提供';
 const metrics = {requests:'requests',input_tokens:'input tokens',output_tokens:'output tokens',total_tokens:'total tokens',tokens:'total tokens',neurons:'neurons',audio_seconds:'秒',images:'張圖片',pages:'頁',conversions:'次轉換',credits_usd_micros:'USD'};
-const usageUnknownFields = {reported_input_tokens:'input_unknown_count',reported_output_tokens:'output_unknown_count',reported_neurons:'neurons_unknown_count'};
+const usageUnknownFields = {reported_input_tokens:'input_unknown_count',reported_output_tokens:'output_unknown_count',reported_neurons:'neurons_unknown_count',reported_total_tokens:'total_tokens_unknown_count',reported_audio_seconds:'audio_seconds_unknown_count',reported_images:'images_unknown_count',reported_pages:'pages_unknown_count',reported_conversions:'conversions_unknown_count'};
 const windows = {rolling_minute:'滾動分鐘',rolling_hour:'滾動小時',day:'日視窗',month:'月視窗',budget:'預算視窗'};
 const states = {ready:'基本檢查通過・待任務檢查',blocked:'需要檢查',unknown:'狀態未知'};
 const credentials = {present:'名稱清單已確認',missing:'缺少名稱',unknown:'尚未確認'};
@@ -16,7 +16,7 @@ const modalityNames = {text:'文字',image:'圖片',document:'文件',audio:'音
 const catalogTaskNames={...taskNames,unknown:'能力未知',realtime:'即時互動',realtime_audio_transcription:'即時轉錄',image_editing:'圖片編輯',video_generation:'影片生成',music_generation:'音樂生成',decisions:'結構化決策',extraction:'資料抽取',document_extraction:'文件抽取',code_generation:'程式生成',reward_scoring:'回覆評分',object_detection:'物件偵測',image_classification:'圖片分類',turn_detection:'語音輪次偵測',batch:'批次工作',agents:'代理與工具',files:'檔案與快取',model_discovery:'模型查詢',management:'用量與管理',specialized:'專門領域推論',robotics_reasoning:'機器人推理',computer_use:'電腦操作'};
 const catalogStatus={listed:'已列出',preview:'預覽',restricted:'存取受限',deprecated:'舊版／待退場',retired:'已退場',self_hosted:'開放權重',unknown:'狀態未核對'};
 const catalogPageSize=24;
-const reasonNames = {credit_expired:'已確認點數到期，停止使用',billing_state_unknown:'計費狀態未核對',billing_enabled:'已啟用計費，禁止推薦',gateway_ineligible:'未通過 Gateway 任務條件',diagnostics_not_ready:'最新本機狀態尚未就緒',credential_inventory_not_current:'憑證名稱清單未知或已到期',free_evidence_not_current:'免費資格證據需要重新確認',free_eligibility_unverified:'免費資格尚未確認',free_evidence_missing:'缺少免費資格證據',credential_inventory_unknown:'憑證名稱清單未知',provider_constraint:'不符合供應商限制',model_constraint:'不符合模型限制',capability_mismatch:'不支援此任務能力',features_mismatch:'不符合功能需求',quota_evidence_missing:'缺少權威配額讀值',quota_evidence_not_current:'配額讀值缺少、過時或不完整',quota_insufficient:'已確認餘額不足',quota_cost_unknown:'此配額的成本未知',disabled:'配置停用',local_cap:'本機保護上限不足',observed_capacity:'觀測餘額不足',gateway_blocked:'Gateway 條件阻擋'};
+const reasonNames = {verified_free_eligibility_and_local_safety_caps:'免費方案已核對，使用本機保護上限',local_caps_missing:'缺少本機保護上限',local_budget_policy_unverified:'免費方案或本機保護條件尚未核對',credit_expired:'已確認點數到期，停止使用',billing_state_unknown:'計費狀態未核對',billing_enabled:'已啟用計費，禁止推薦',gateway_ineligible:'未通過 Gateway 任務條件',diagnostics_not_ready:'最新本機狀態尚未就緒',credential_inventory_not_current:'憑證名稱清單未知或已到期',free_evidence_not_current:'免費資格證據需要重新確認',free_eligibility_unverified:'免費資格尚未確認',free_evidence_missing:'缺少免費資格證據',credential_inventory_unknown:'憑證名稱清單未知',provider_constraint:'不符合供應商限制',model_constraint:'不符合模型限制',capability_mismatch:'不支援此任務能力',features_mismatch:'不符合功能需求',quota_evidence_missing:'缺少權威配額讀值',quota_evidence_not_current:'配額讀值缺少、過時或不完整',quota_insufficient:'已確認餘額不足',quota_cost_unknown:'此配額的成本未知',disabled:'配置停用',local_cap:'本機保護上限不足',observed_capacity:'觀測餘額不足',gateway_blocked:'Gateway 條件阻擋'};
 function reason(value) { const key=value.split(':')[0]; return (reasonNames[key] || '需要核對路由條件') + (value.includes(':') ? '（'+value.split(':').slice(1).map(v=>metrics[v]||windows[v]||v).join(' / ')+'）' : ''); }
 let pending=false, sessionVersion=0, taskVersion=0, usageVersion=0, hasAdvice=false;
 let currentSnapshot=null, activeTab='models', usageLoaded=false;
@@ -40,7 +40,7 @@ function clearWorkspace(){
   $('catalog-advanced').open=false;$('catalog-source-panel').open=false;
   ['catalog-summary','catalog-sources','catalog-count','catalog-models','catalog-page'].forEach(id=>$(id)?.replaceChildren());
   ['catalog-provider','catalog-task','catalog-input','catalog-output'].forEach(id=>$(id)?.replaceChildren());
-  ['quota-kpi','quota-priority','quota-overview','quota-sync','accounts','providers','provider-usage','provider-usage-status','usage','usage-totals','usage-coverage','usage-status','recent','time-overview','time-preview','source-detail','evidence-brief','activity-source','pool-status','model-count','advice-compatibility'].forEach(id=>$(id)?.replaceChildren());
+  ['quota-kpi','quota-priority','quota-overview','quota-sync','accounts','providers','provider-usage','provider-usage-status','usage','usage-totals','usage-charts','usage-coverage','usage-status','recent','time-overview','time-preview','source-detail','evidence-brief','activity-source','pool-status','model-count','advice-compatibility'].forEach(id=>$(id)?.replaceChildren());
   options('provider',[],'不限供應商');options('model',[],'不限模型');options('model-provider',[],'全部供應商');options('model-task',[],'全部任務');options('model-input',[],'全部輸入');options('usage-provider',[],'全部供應商');options('usage-model',[],'全部模型');
   ['task-input','match-text','login-token','usage-from','usage-to'].forEach(id=>$(id).value='');
   ['match-task','match-input','match-output','match-provider'].forEach(id=>$(id).replaceChildren());
@@ -206,7 +206,7 @@ function renderQuotaOverview(){
       }
       balance.append(node('p','觀測 '+date(p.counter.checked_at)+(q?' · 讀值有效至 '+date(p.counter.valid_until):' · 已過時或未提供'),'small'));
     }
-    p.fresh.forEach(q=>{hasKnownFigure=true;balance.append(node('span',q.metric==='credits_usd_micros'?'Broker 保守可用量':'有效觀測扣除保留','quota-badge current'),node('p',metricNumber(q.metric,q.effective_remaining)+' '+(metrics[q.metric]||q.metric)+' / '+(windows[q.window]||q.window)+(q.provenance==='estimated'?'（推算）':''),'quota-number'),node('p',q.model+' · 觀測 '+date(q.as_of),'small'));});
+    p.fresh.forEach(q=>{hasKnownFigure=true;balance.append(node('span',q.metric==='credits_usd_micros'?'Broker 保守可用量':'有效觀測扣除保留','quota-badge current'),node('p',metricNumber(q.metric,q.effective_remaining)+' '+(metrics[q.metric]||q.metric)+' / '+(windows[q.window]||q.window)+(q.provenance==='estimated'?'（推算）':''),'quota-number'),node('p',q.model+' · 觀測 '+date(q.as_of)+' · 讀值有效至 '+date(q.valid_until),'small'));});
     p.observations.filter(q=>!q.current&&q.remaining!==null&&q.remaining!==undefined).slice(0,2).forEach(q=>{
       hasKnownFigure=true;
       balance.append(node('span',q.provenance==='estimated'?'最後觀測推算餘額':'最後觀測餘額','quota-badge observed'));
@@ -611,17 +611,133 @@ function renderProviderUsage(providerUsage){
     scopeCell.append(node('p','觀測時間：'+(r.as_of?date(r.as_of):'未提供')+' · 來源：'+(r.source||'無'),'small'));
     const localCell=node('td');
     localCell.append(node('p','本機帳本嘗試：'+(r.local_recorded_generation_attempts===null||r.local_recorded_generation_attempts===undefined?'來源未接入（未知）':num(r.local_recorded_generation_attempts)+' requests'),'small'));
-    localCell.append(node('p','本機保留中（尚未結算）：'+num(r.ledger_held_count||0),'small'));
+    localCell.append(node('p','本機保留中（尚未結算）：'+(r.ledger_held_count===null||r.ledger_held_count===undefined?'未知':num(r.ledger_held_count)),'small'));
+    (r.local_reported_metrics||[]).forEach(m=>{
+      const present=Number.isFinite(m.reported),notApplicable=m.reported===null&&m.coverage==='not_applicable';
+      const incomplete=!notApplicable&&(m.coverage!=='complete'||!Number.isFinite(m.unknown_count));
+      localCell.append(node('p','本機已回報 '+(metrics[m.metric]||m.metric)+'：'+(present?(incomplete?'≥':'')+num(m.reported):notApplicable||m.unknown_count===0&&m.coverage==='complete'?'不適用':'未知')+(m.unknown_count>0?' · 另 '+num(m.unknown_count)+' 筆未知':incomplete?' · 完整性未知':''),'small'));
+    });
     row.append(who,metricsCell,scopeCell,localCell);body.append(row);
   });
   table.append(body);
   const scroll=node('div',undefined,'table-scroll');scroll.tabIndex=0;scroll.setAttribute('aria-label','供應商帳戶用量明細');scroll.append(table);
   box.append(scroll);
 }
+// Known reported values remain visible even when another attempt has no usage report.
+function usageMeasure(rows,key){
+  const present=rows.filter(r=>Number.isFinite(r[key]));
+  const unknownField=usageUnknownFields[key];
+  const unknown=unknownField?rows.reduce((sum,r)=>sum+(Number.isFinite(r[unknownField])?r[unknownField]:0),0):0;
+  const coverageUnknown=unknownField&&rows.some(r=>
+    r[key]===undefined||r[unknownField]===undefined||
+    (!Number.isFinite(r[unknownField])&&!(r[unknownField]===null&&r[key]===null)));
+  const incomplete=unknown>0||coverageUnknown||(!unknownField&&present.length!==rows.length);
+  const value=present.length?present.reduce((sum,r)=>sum+r[key],0):null;
+  return {value,unknown,incomplete,text:(incomplete&&value!==null?'≥':'')+num(value),
+    note:unknown>0?'另 '+num(unknown)+' 筆未知'+(coverageUnknown?' · 完整性未知':''):coverageUnknown?(value===null?'含未回報值 · 完整性未知':'完整性未知'):value===null?(unknownField?'不適用':'含未回報值'):''};
+}
+function usageChartState(message){$('usage-charts')?.replaceChildren(node('p',message,'empty'));}
+function svgNode(tag,attrs,text){
+  const element=document.createElementNS('http://www.w3.org/2000/svg',tag);
+  Object.entries(attrs||{}).forEach(([key,value])=>element.setAttribute(key,String(value)));
+  if(text!==undefined)element.textContent=text;
+  return element;
+}
+function dailyUsageChart(timeline,kind){
+  const tokens=kind==='tokens',label=tokens?'每日已回報 tokens':'每日生成嘗試';
+  const figure=node('figure',undefined,'usage-chart');figure.append(node('figcaption',label));
+  const known=row=>tokens?(Number.isFinite(row.reported_total_tokens)?row.reported_total_tokens:null):row.requests;
+  const values=timeline.map(known).filter(Number.isFinite),max=Math.max(0,...values);
+  const magnitude=Math.max(1,10**Math.floor(Math.log10(max/3||1))),step=Math.max(1,Math.ceil(max/(3*magnitude))*magnitude);
+  const ceiling=3*step,width=640,height=220,left=52,right=14,bottom=34,plotHeight=height-bottom-10,plotWidth=width-left-right;
+  const svg=svgNode('svg',{viewBox:`0 0 ${width} ${height}`,role:'img','aria-label':label+'；完整數值見下方每日明細'});
+  const first=Date.parse(timeline[0].date),last=Date.parse(timeline.at(-1).date),span=Math.max(86400000,last-first);
+  const x=row=>left+12+(Date.parse(row.date)-first)/span*(plotWidth-24),y=value=>height-bottom-value/ceiling*plotHeight;
+  for(let i=0;i<=3;i++){
+    const value=step*i,yy=y(value);
+    svg.append(svgNode('line',{x1:left,y1:yy,x2:width-right,y2:yy,class:'chart-grid'}),svgNode('text',{x:left-8,y:yy+4,'text-anchor':'end',class:'chart-label'},new Intl.NumberFormat('zh-TW',{notation:'compact',maximumFractionDigits:1}).format(value)));
+  }
+  const labelStep=Math.max(1,Math.ceil(timeline.length/5));
+  timeline.forEach((row,index)=>{
+    if(index%labelStep===0)svg.append(svgNode('text',{x:x(row),y:height-10,'text-anchor':index===0?'start':'middle',class:'chart-label'},row.date.slice(5)));
+  });
+  const barWidth=Math.max(2,Math.min(22,(plotWidth-24)/(span/86400000+1)*0.65));
+  if(tokens){
+    let segment=[];
+    const flush=()=>{if(segment.length>1)svg.append(svgNode('polyline',{points:segment.join(' '),class:'chart-token-line'}));segment=[];};
+    timeline.forEach(row=>{
+      const value=known(row);
+      if(value===null){flush();svg.append(svgNode('text',{x:x(row),y:height-bottom-6,'text-anchor':'middle',class:'chart-label'},'?'));return;}
+      segment.push(`${x(row)},${y(value)}`);
+      const point=svgNode('circle',{cx:x(row),cy:y(value),r:3,class:'chart-token-point'+(usageMeasure([row],'reported_total_tokens').incomplete?' partial':'')});
+      point.append(svgNode('title',{},row.date+'：'+usageMeasure([row],'reported_total_tokens').text+' tokens'));
+      svg.append(point);
+    });flush();
+    figure.append(node('p','僅連接已回報讀值；「?」為整日未回報。空心點為部分回報下限，不能視為完整消耗。','small'));
+  }else{
+    const series=[['completed_count','已完成','completed'],['failed_count','失敗／拒絕','failed'],['outcome_unknown_count','結果未知','unresolved'],['other','其他／待處理','other']].filter(([key])=>timeline.some(row=>key==='other'?row.requests>(row.completed_count||0)+(row.failed_count||0)+(row.outcome_unknown_count||0):row[key]>0));
+    const legend=node('div',undefined,'chart-legend');
+    series.forEach(([,text,cls])=>{const item=node('span');item.append(node('i',undefined,'chart-swatch '+cls),document.createTextNode(text));legend.append(item);});figure.append(legend);
+    timeline.forEach(row=>{
+      let base=0;
+      const other=Math.max(0,row.requests-(row.completed_count||0)-(row.failed_count||0)-(row.outcome_unknown_count||0));
+      series.forEach(([key,text,cls])=>{const value=key==='other'?other:row[key];if(!Number.isFinite(value)||value<=0)return;
+        const rect=svgNode('rect',{x:x(row)-barWidth/2,y:y(base+value),width:barWidth,height:value/ceiling*plotHeight,class:'chart-bar '+cls});
+        rect.append(svgNode('title',{},row.date+'：'+text+' '+num(value)+' requests'));svg.append(rect);base+=value;
+      });
+    });
+  }
+  figure.append(svg);return figure;
+}
+function renderUsageCharts(report){
+  const box=$('usage-charts');if(!box)return;box.replaceChildren();
+  const rows=report.rows;
+  if(!Array.isArray(rows)){usageChartState('用量來源未接入或無法統計；圖表未知，不顯示為零。');return;}
+  if(!rows.length){usageChartState('所選條件沒有本機生成嘗試；不代表供應商帳戶零消耗。');return;}
+  const grid=node('div',undefined,'usage-chart-grid');
+  const timeline=Array.isArray(report.timeline)?report.timeline.filter(r=>/^\d{4}-\d{2}-\d{2}$/.test(r.date)&&Number.isFinite(Date.parse(r.date))).sort((a,b)=>a.date.localeCompare(b.date)):null;
+  if(timeline?.length){
+    grid.append(dailyUsageChart(timeline,'requests'),dailyUsageChart(timeline,'tokens'));
+  }else grid.append(node('p','每日趨勢資料未提供；不以最近工作推算歷史。','empty'));
+  const distribution=node('section',undefined,'usage-distribution');distribution.append(node('h3','供應商分布'),node('p','所選條件的 Broker 本機生成嘗試；不代表供應商帳戶帳單占比。','small'));
+  const grouped=new Map();rows.forEach(row=>{const current=grouped.get(row.provider)||[];current.push(row);grouped.set(row.provider,current);});
+  const overall=usageMeasure(rows,'requests');
+  [...grouped].map(([provider,items])=>({provider,measure:usageMeasure(items,'requests')})).sort((a,b)=>(b.measure.value||0)-(a.measure.value||0)).forEach(({provider,measure})=>{
+    const row=node('div',undefined,'usage-provider-bar'),label=node('div',undefined,'usage-provider-label');
+    const ratio=overall.value>0&&measure.value!==null?measure.value/overall.value:0;
+    label.append(node('span',provider),node('span',measure.text+' requests'+(!overall.incomplete&&overall.value>0?' · '+new Intl.NumberFormat('zh-TW',{style:'percent',maximumFractionDigits:1}).format(ratio):''),'num'));
+    const track=node('div',undefined,'usage-provider-track');
+    const graphic=svgNode('svg',{viewBox:'0 0 100 5',preserveAspectRatio:'none'});
+    graphic.append(svgNode('rect',{x:0,y:0,width:Number((ratio*100).toFixed(1)),height:5}));
+    track.setAttribute('aria-hidden','true');track.append(graphic);row.append(label,track);distribution.append(row);
+  });
+  box.append(grid,distribution);
+  if(timeline?.length){
+    const detail=node('details',undefined,'usage-daily-detail');detail.append(node('summary','每日明細（UTC · '+num(timeline.length)+' 個有紀錄日期）'));
+    const table=node('table',undefined,'usage-table');table.append(node('caption','每日本機生成嘗試與回報完整性','sr-only'));
+    const head=node('thead'),header=node('tr');['日期（UTC）','生成嘗試','已完成','失敗／拒絕','結果未知','已回報 tokens 下限','tokens 未知筆數','保留中'].forEach((label,index)=>{const th=node('th',label,index?'num':'');th.scope='col';header.append(th);});head.append(header);table.append(head);
+    const body=node('tbody');timeline.forEach(r=>{const row=node('tr');row.append(node('td',r.date));['requests','completed_count','failed_count','outcome_unknown_count'].forEach(key=>row.append(node('td',num(r[key]),'num')));const tokens=usageMeasure([r],'reported_total_tokens');row.append(node('td',tokens.text+'（'+(tokens.note||'完整回報')+'）','num'),node('td',Number.isFinite(r.total_tokens_unknown_count)?num(r.total_tokens_unknown_count):'未知','num'),node('td',num(r.ledger_held_count),'num'));body.append(row);});table.append(body);
+    const scroll=node('div',undefined,'table-scroll');scroll.tabIndex=0;scroll.setAttribute('aria-label','每日用量明細，可水平捲動');scroll.append(table);detail.append(scroll,node('p','保留中可能與結果未知重疊，未重複加入生成嘗試。未列出的日期不另推算用量。','small'));box.append(detail);
+  }
+}
+function appendRankingEvidence(container,rank){
+  if(!Number.isFinite(rank?.score))return;
+  const detail=node('details',undefined,'ranking-evidence');
+  detail.append(node('summary','排序分數 '+num(rank.score)+' / 100 · 查看選用依據'));
+  const profiles={general:'一般',coding:'程式',reasoning:'推理',translation:'翻譯',extraction:'資料抽取'};
+  detail.append(node('p','任務類型：'+(profiles[rank.task_profile]||rank.task_profile||'未提供')+' · 分數用於候選間排序，不代表成功機率。','small'));
+  detail.append(node('p',rank.quality_basis==='measured'?'品質量測樣本：'+num(rank.quality_samples):'品質尚未量測；品質分量使用先驗值，不代表已證明此模型較好。','small'));
+  detail.append(node('p','健康度樣本：'+num(rank.reliability_samples),'small'));
+  const labels={expiry_urgency:'到期／重置迫近',task_fit:'任務適配',quality:'品質分量',reliability:'健康度',free_headroom:'免費餘裕',latency:'延遲',load:'負載'};
+  const factors=node('dl',undefined,'ranking-factors');
+  Object.entries(labels).forEach(([key,label])=>{const value=rank.components?.[key];if(!Number.isFinite(value))return;factors.append(node('dt',label),node('dd',num(value)));});
+  detail.append(node('p','以下為 0–1 的排序分量，越高越優先；總分由 Broker 的權重與組合規則計算。','small'),factors);
+  if(rank.algorithm)detail.append(node('p','排序規則：'+rank.algorithm,'small'));container.append(detail);
+}
 function renderUsage(report){
   $('usage-filter-note').textContent=report.task_metadata?.state==='available_for_new_records'?'新紀錄依實際任務能力分類；歷史未記錄類別的嘗試保留為「類別未記錄」。':'此來源的歷史任務類別未記錄；指定任務可能無法統計，未知不視為零用量。';
   $('usage').replaceChildren();$('usage-totals').replaceChildren();
-  renderProviderUsage(report.provider_usage);
+  renderProviderUsage(report.provider_usage);renderUsageCharts(report);
   $('activity-source').textContent=report.source.label+' · '+(report.source.state==='available'?'本機讀取 '+date(report.source.as_of):'來源未接入或所選條件無法統計');
   $('usage-coverage').textContent='送出時間：'+(report.filters?.from?date(report.filters.from):'最早紀錄')+' 至 '+(report.filters?.to?date(report.filters.to)+'（不含）':'最新紀錄')+' · 僅此帳本已記錄的嘗試';
   const rows=report.rows;
@@ -629,10 +745,10 @@ function renderUsage(report){
   $('usage-status').textContent=rows.length+' 組供應商／模型／任務';
   if(!rows.length){$('usage').append(node('p','所選條件沒有本機生成嘗試；不代表整個供應商帳戶用量為零。','empty'));return;}
   const measures=[['requests','生成嘗試','requests'],['reported_input_tokens','已回報輸入','input tokens'],['reported_output_tokens','已回報輸出','output tokens'],['reported_total_tokens','已回報總 tokens','total tokens'],['reported_neurons','已回報運算量','neurons'],['reported_audio_seconds','已回報音訊','秒'],['reported_images','已回報圖片','張圖片'],['reported_pages','已回報文件','頁'],['reported_conversions','已回報轉換','次轉換']];
-  measures.forEach(([key,label,unit])=>{const known=rows.every(r=>r[key]!==null&&r[key]!==undefined),unknownField=usageUnknownFields[key],complete=known&&(!unknownField||rows.every(r=>r[unknownField]===0)),value=complete?rows.reduce((sum,r)=>sum+r[key],0):null;const item=node('div');item.append(node('span',label,'small'),node('p',num(value),'total-value'),node('span',unit+(!known?' · 含未回報值':!complete?' · 部分回報或完整性未知':''),'small'));$('usage-totals').append(item);});
+  measures.forEach(([key,label,unit])=>{const measure=usageMeasure(rows,key),item=node('div');item.append(node('span',label,'small'),node('p',measure.text,'total-value'),node('span',unit+(measure.note?' · '+measure.note:''),'small'));$('usage-totals').append(item);});
   const table=node('table',undefined,'usage-table');table.setAttribute('aria-label','篩選範圍的本機用量');
   const head=node('thead'),header=node('tr');['供應商／模型','任務',...measures.map(m=>m[0]==='requests'?m[2]:'已回報 '+m[2]),'結果未知'].forEach((text,i)=>header.append(node('th',text,i>1?'num':'')));head.append(header);table.append(head);
-  const body=node('tbody');rows.forEach(r=>{const row=node('tr');const who=node('td');who.append(node('p',r.provider),node('p',r.model,'model'));row.append(who,node('td',taskNames[r.task_type]||'類別未記錄','small'));[...measures.map(m=>m[0]),'outcome_unknown_count'].forEach(key=>{const unknownField=usageUnknownFields[key],present=r[key]!==null&&r[key]!==undefined;const suffix=!unknownField||!present||r[unknownField]===0?'':r[unknownField]>0?'（部分）':'（完整性未知）';row.append(node('td',num(r[key])+suffix,'num'));});body.append(row);});table.append(body);
+  const body=node('tbody');rows.forEach(r=>{const row=node('tr');const who=node('td');who.append(node('p',r.provider),node('p',r.model,'model'));row.append(who,node('td',taskNames[r.task_type]||'類別未記錄','small'));[...measures.map(m=>m[0]),'outcome_unknown_count'].forEach(key=>{const unknownField=usageUnknownFields[key],present=r[key]!==null&&r[key]!==undefined;const suffix=!unknownField||!present||r[unknownField]===0?'':r[unknownField]>0?'（部分）':'（完整性未知）';const value=usageMeasure([r],key);row.append(node('td',value.text+(value.note==='不適用'?'（不適用）':suffix),'num'));});body.append(row);});table.append(body);
   const scroll=node('div',undefined,'table-scroll');scroll.tabIndex=0;scroll.setAttribute('aria-label','用量明細，可水平捲動');scroll.append(table);$('usage').append(scroll);
 }
 function populateUsageModels(){
@@ -658,8 +774,8 @@ function usageQuery(){
 async function loadUsage(){
   if(!currentSnapshot)return;
   let query;try{query=usageQuery();}catch(error){$('usage-status').textContent='請選有效的起訖日期';return;}
-  const version=++usageVersion,session=sessionVersion;usageLoaded=true;$('usage-status').textContent='讀取完整本機帳本…';$('usage').replaceChildren(node('p','正在依篩選條件統計…','empty'));$('usage-totals').replaceChildren();
-  try{const report=await api('/api/usage'+(query?'?'+query:''));if(version!==usageVersion||session!==sessionVersion)return;renderUsage(report);}catch(error){if(version!==usageVersion||session!==sessionVersion)return;if(error.status===401){showLogin();return;}$('usage-status').textContent='用量未知';$('usage').replaceChildren(node('p','無法取得本機用量，請重試。未使用最近工作推算完整歷史。','empty'));}
+  const version=++usageVersion,session=sessionVersion;usageLoaded=true;$('usage-status').textContent='讀取完整本機帳本…';$('usage').replaceChildren(node('p','正在依篩選條件統計…','empty'));$('usage-totals').replaceChildren();usageChartState('正在讀取篩選範圍的圖表…');renderProviderUsage(null);$('usage-coverage').textContent='';
+  try{const report=await api('/api/usage'+(query?'?'+query:''));if(version!==usageVersion||session!==sessionVersion)return;renderUsage(report);}catch(error){if(version!==usageVersion||session!==sessionVersion)return;if(error.status===401){showLogin();return;}$('usage-status').textContent='用量未知';usageChartState('無法取得本機用量，圖表未知。請重試。');$('usage').replaceChildren(node('p','無法取得本機用量，請重試。未使用最近工作推算完整歷史。','empty'));}
 }
 function render(snapshot){
   invalidateMatch();
@@ -674,7 +790,7 @@ function render(snapshot){
   const ready=snapshot.targets.filter(evidenceComplete).length;
   $('evidence-brief').replaceChildren(node('span',String(ready)),node('div',undefined));const brief=$('evidence-brief').children[1];brief.append(node('p',ready?'條路由的餘額證據完整':'目前沒有完整的路由餘額證據'),node('span','配置、能力、帳戶資格與剩餘額度各自核對。','small'));
   $('usage-totals').replaceChildren();$('usage-coverage').textContent='';$('usage-status').textContent='尚未套用篩選';$('usage').replaceChildren(node('p',snapshot.usage===null?'用量來源未接入或無法讀取；實際帳戶消耗未知。':'開啟總用量後，依完整本機帳本統計；不以最近工作推算。','empty'));
-  renderProviderUsage(null);
+  renderProviderUsage(null);usageChartState('套用篩選後顯示本機用量趨勢。');
   if(snapshot.source.kind==='reviewed')brief.append(node('span','本機核對快照不執行；線上服務的啟用狀態未在此查核。','small'));
   const models=inventory(snapshot);$('pool-status').textContent=models.length+(snapshot.model_inventory?.state==='unavailable'?' 個已配置模型 · 登錄清單不可用 · ':' 個登錄模型 · ')+snapshot.targets.length+(snapshot.source.kind==='reviewed'?' 份資格核對項目':' 條配置路由');
   const allUsageProviders=[...snapshot.targets.map(t=>t.provider),...(snapshot.usage||[]).map(u=>u.provider),...(snapshot.provider_inventory?.providers||[]).map(p=>p.id),...(snapshot.accounts||[]).map(a=>a.provider)];
@@ -717,8 +833,8 @@ $('advice-form').addEventListener('submit',async event=>{
     if($('provider').value)task.provider=$('provider').value;if($('model').value)task.model=$('model').value;
     const data=await api('/api/advice',task);if(version!==taskVersion)return;
     const result=node('div',undefined,data.decision==='recommend'?'result-recommend':'result-blocked');result.append(node('h3',data.decision==='recommend'?'可建議此免費路由':'目前沒有可建議的免費路由'));
-    if(data.selected_target){result.append(node('p',data.selected_target.provider+' · '+data.selected_target.model),node('p','本次任務通過免費資格、憑證清單與額度檢查；建議沒有送出任務。','small'));}
-    (data.candidates||[]).forEach(candidate=>{const item=node('div',undefined,'candidate');item.append(node('p',candidate.provider+' · '+candidate.model));item.append(node('p',candidate.reasons.length?candidate.reasons.map(reason).join('；'):data.selected_target?.target_id===candidate.target_id?'本次建議路由':'符合檢查，依 Broker 順序候選','small'));if(candidate.ranking){const rank=candidate.ranking;if(rank.value_loss_basis==='credit_expiry')item.append(node('p','排序因素：已核對 credit 較早到期；約 '+num(rank.value_loss_seconds)+' 秒後到期。','small'));else if(rank.value_loss_basis==='quota_reset')item.append(node('p','排序因素：已核對下次額度重置；約 '+num(rank.value_loss_seconds)+' 秒後重置。','small'));if(rank.observed_headroom!==null && rank.observed_headroom!==undefined)item.append(node('p','觀測額度最小可用比例 '+new Intl.NumberFormat('zh-TW',{style:'percent',maximumFractionDigits:1}).format(rank.observed_headroom)+'；相同時間因素再比較餘裕、健康度與負載。','small'));}result.append(item);});
+    if(data.selected_target){result.append(node('p',data.selected_target.provider+' · '+data.selected_target.model),node('p',data.selected_target.capacity_basis==='verified_free_eligibility_with_local_safety_caps'?'免費方案與本機保護上限已核對；供應商剩餘量仍未知。此建議沒有送出任務。':'本次任務通過免費資格、憑證清單與額度檢查；建議沒有送出任務。','small'));}
+    (data.candidates||[]).forEach(candidate=>{const item=node('div',undefined,'candidate');item.append(node('p',candidate.provider+' · '+candidate.model));item.append(node('p',candidate.reasons.length?candidate.reasons.map(reason).join('；'):data.selected_target?.target_id===candidate.target_id?'本次建議路由':'符合檢查，依 Broker 順序候選','small'));if(candidate.ranking){const rank=candidate.ranking;appendRankingEvidence(item,rank);if(rank.value_loss_basis==='credit_expiry')item.append(node('p','排序因素：已核對 credit 較早到期；約 '+num(rank.value_loss_seconds)+' 秒後到期。','small'));else if(rank.value_loss_basis==='quota_reset')item.append(node('p','排序因素：已核對下次額度重置；約 '+num(rank.value_loss_seconds)+' 秒後重置。','small'));if(rank.observed_headroom!==null && rank.observed_headroom!==undefined)item.append(node('p','觀測額度最小可用比例 '+new Intl.NumberFormat('zh-TW',{style:'percent',maximumFractionDigits:1}).format(rank.observed_headroom)+'；此比例與到期迫近、任務適配、品質證據及健康度共同參與排序。','small'));}result.append(item);});
     if(data.recheck_at)result.append(node('p','估計可重新核對：'+date(data.recheck_at)+'。不會自動排程，也不保證配額已恢復。','small'));
     result.append(node('p','資料：'+data.source.label+' · '+date(data.source.as_of),'small'));$('advice-result').replaceChildren(result);
   }catch(error){if(version!==taskVersion)return;if(error.status===401){showLogin();return;}$('advice-result').replaceChildren(node('p',error.message==='invalid_task'?'任務格式、功能或輸出上限不符目前契約，請修正後再試。':'無法取得建議。資料來源未確認，請重新讀取後再試。','result-error'));}finally{if(version===taskVersion){button.textContent='檢查免費路由';updateAdviceCompatibility();}}
@@ -774,7 +890,7 @@ function matchCandidate(candidate,compact=false){
     if(qs.limits_text)item.append(node('p',qs.limits_text,'small'));
     if(qs.reset_or_expiry)item.append(node('p','重置／到期：'+qs.reset_or_expiry+(qs.sharing_scope?' · '+qs.sharing_scope:''),'small'));
   }
-  const rank=candidate.ranking||{};
+  const rank=candidate.ranking||{};appendRankingEvidence(item,rank);
   if(rank.value_loss_seconds!==null&&rank.value_loss_seconds!==undefined)item.append(node('p',(rank.value_loss_basis==='quota_reset'?'已核對重置：約 ':'已核對到期：約 ')+num(Math.ceil(rank.value_loss_seconds/60))+' 分鐘後','small'));
   if(rank.observed_headroom!==null&&rank.observed_headroom!==undefined)item.append(node('p','各額度中最低可用比例：'+new Intl.NumberFormat('zh-TW',{style:'percent',maximumFractionDigits:1}).format(rank.observed_headroom),'small'));
   if(!candidate.remaining?.length)item.append(node('p','免費剩餘：未知 · 本次可用額度：未知','small'));
@@ -801,8 +917,8 @@ function renderMatchResult(){
   const data=matchResult,root=$('match-result');root.replaceChildren();
   const chosen=data.recommended_model||data.selected_target;
   root.append(node('h3',chosen?'優先考慮：'+chosen.provider+' · '+chosen.model:'目前沒有已確認符合完整需求的模型'));
-  root.append(node('p',num(data.matched_models)+' 個模型符合任務與模態。先比較任務能力，優先列出已有免費方案證據的模型；已確認可用的免費路由，再依到期／重置時間與餘額排序。','section-note'));
-  root.append(node('p',data.selected_target?'已有通過本次免費額度檢查的路由；此頁仍只提供建議，不會自動呼叫。':'你可以先選模型；目前沒有通過完整免費額度檢查的路由，不會自動呼叫或付費。','section-note'));
+  root.append(node('p',num(data.matched_models)+' 個模型符合任務與模態。先比較任務能力，優先列出已有免費方案證據的模型；已確認可用的免費路由，再依到期迫近、任務適配與可用證據計分排序。','section-note'));
+  root.append(node('p',data.selected_target?'已有通過本次免費使用條件檢查的路由；此頁仍只提供建議，不會自動呼叫。':'你可以先選模型；目前沒有通過完整免費使用條件檢查的路由，不會自動呼叫或付費。','section-note'));
   if(!data.candidates?.length){root.append(node('p','目前型錄沒有同時符合這些需求的模型；可調整任務或輸入／輸出。','empty'));return;}
   if(data.shortlist?.length){
     const shortlist=node('section',undefined,'match-shortlist');shortlist.append(node('h4','先比較這幾個選項'));

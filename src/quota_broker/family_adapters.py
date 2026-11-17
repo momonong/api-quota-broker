@@ -24,7 +24,12 @@ from urllib.parse import urlsplit
 
 from .families import FamilyError
 from .family_transport import FamilyRequest, FamilyResponse, form_request, json_request
-from .gateway_providers import ProviderError
+from .gateway_providers import (
+    ProviderError,
+    cloudflare_result_text,
+    cloudflare_result_usage,
+    cloudflare_text_envelope,
+)
 from .provider_policy import catalog_model_id_reason
 
 if TYPE_CHECKING:
@@ -163,6 +168,21 @@ def _usage(value: Any) -> dict[str, int]:
         if len(set(reported)) != 1:
             raise _bad()
         result[metric] = reported[0]
+    if any(
+        name in usage
+        for name in (
+            "promptTokenCount",
+            "candidatesTokenCount",
+            "thoughtsTokenCount",
+            "totalTokenCount",
+        )
+    ):
+        thoughts = usage.get("thoughtsTokenCount")
+        if thoughts is not None and (type(thoughts) is not int or not 0 <= thoughts <= 10**12):
+            raise _bad()
+        known = result.get("input_tokens", 0) + result.get("output_tokens", 0) + (thoughts or 0)
+        if "total_tokens" in result and result["total_tokens"] < known:
+            raise _bad()
     return result
 
 
@@ -527,6 +547,8 @@ def _chat(
         and "reasoning_effort" not in options
     ):
         payload["chat_template_kwargs"] = {"enable_thinking": False}
+    elif spec.provider == "nvidia" and spec.model == "z-ai/glm-5.3-flash":
+        payload["chat_template_kwargs"] = {"clear_thinking": True}
     elif spec.provider == "groq" and spec.model == "openai/gpt-oss-20b":
         payload["reasoning_effort"] = options.pop("reasoning_effort", "low")
         payload["include_reasoning"] = False
@@ -1430,7 +1452,13 @@ def _cf_text(
     return json_request(
         url,
         headers,
-        {"messages": messages, "max_tokens": data["max_output_tokens"], "stream": False, **options},
+        {
+            "messages": messages,
+            "max_tokens": data["max_output_tokens"],
+            "stream": False,
+            **options,
+            "options": {"rejectIfBusy": True},
+        },
     )
 
 
@@ -1470,12 +1498,18 @@ def _cf_translation_result(
 def _cf_text_result(
     spec: "ModelSpec", capability: str, headers: dict[str, str], raw: bytes
 ) -> FamilyResponse:
-    body, result = _cf_body(raw)
-    item = _dict(result)
+    body = _json(raw)
+    item = _dict(cloudflare_text_envelope(body, spec.model, require_success=True))
+    text = _text(cloudflare_result_text(item))
+    finish, truncated = None, None
+    if "choices" in item:
+        finish, truncated = _finish(item["choices"][0].get("finish_reason"))
     return FamilyResponse(
-        {"text": _text(item.get("response"))},
-        _usage(item.get("usage")),
-        _request_id(headers, body.get("request_id")),
+        {"text": text},
+        _token_usage(cloudflare_result_usage(body, item)),
+        _request_id(headers, body.get("request_id") or item.get("id")),
+        finish,
+        truncated,
     )
 
 

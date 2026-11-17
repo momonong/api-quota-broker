@@ -80,6 +80,7 @@ class ModelSpec(Model):
     output_parameters: tuple[str, ...] = ("max_output_tokens",)
     capabilities: tuple[str, ...] = ()
     family_adapters: tuple[tuple[str, str], ...] = ()
+    task_profiles: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -97,6 +98,8 @@ class Adapter(Protocol):
     persist request content or credentials. Manifests can only name this code.
     An optional ``admit(spec, task)`` hook rejects adapter-specific input before
     credentials or quota reservations are used; rejection raises ValueError.
+    Optional ``reported_usage`` returns explicit numeric resource counters only;
+    missing counters, including total tokens, remain unknown.
     Optional ``quota_rejection`` and ``quota_observations`` hooks carry tested
     provider quota semantics. Missing hooks mean unknown; generic HTTP 429 does
     not authorize retry. Observation evidence is validated before persistence.
@@ -181,6 +184,11 @@ class _BuiltinAdapter:
         from .gateway_providers import provider_http
 
         return provider_http(url, headers, payload, timeout)
+
+    def reported_usage(self, spec: ModelSpec, status: int, raw: bytes) -> dict[str, int]:
+        from .gateway_providers import reported_usage
+
+        return reported_usage(spec.provider, status, raw)
 
     def interpret(
         self,
@@ -447,7 +455,7 @@ class Registry:
                 for method in ("request", "transport", "interpret")
             ):
                 raise RegistryError("invalid adapter implementation")
-            for method in ("admit", "quota_rejection", "quota_observations"):
+            for method in ("admit", "quota_rejection", "quota_observations", "reported_usage"):
                 hook = getattr(adapter, method, None)
                 if hook is not None and not callable(hook):
                     raise RegistryError("invalid adapter hook")
@@ -662,6 +670,7 @@ class Registry:
             "adapter",
             "family_adapters",
             "replace_builtin",
+            "task_profiles",
         }
         for value in document["models"]:
             value = _object(value, required, optional, "model")
@@ -787,6 +796,11 @@ class Registry:
                     **metadata,
                 )
                 model_endpoint = implementation.endpoint_for(prototype, capability, "{account_id}")
+            from .routing import PROFILES
+
+            profiles = _strings(value.get("task_profiles", []), "task_profiles")
+            if not set(profiles) <= PROFILES:
+                raise RegistryError("unsupported task profile")
             models[(provider_id, model_id)] = ModelSpec(
                 provider=provider_id,
                 model=model_id,
@@ -801,6 +815,7 @@ class Registry:
                 output_parameters=outputs,
                 capabilities=capabilities,
                 family_adapters=tuple(sorted(bindings.items())),
+                task_profiles=profiles,
                 **metadata,
             )
             for family, binding in bindings.items():
@@ -960,6 +975,37 @@ class Registry:
         self._check(spec)
         return self.adapters[spec.adapter].interpret(spec, status, raw)
 
+    def reported_usage(self, spec: ModelSpec, status: int, raw: bytes) -> dict[str, int]:
+        """A tested adapter hook supplies counters; provider names grant no schema authority."""
+        self._check(spec)
+        hook = getattr(self.adapters[spec.adapter], "reported_usage", None)
+        if hook is None:
+            return {}
+        try:
+            result = hook(spec, status, raw)
+            metrics = {
+                "requests",
+                "input_tokens",
+                "output_tokens",
+                "total_tokens",
+                "neurons",
+                "audio_seconds",
+                "images",
+                "pages",
+                "conversions",
+            }
+            if (
+                type(result) is not dict
+                or result.keys() - metrics
+                or any(
+                    type(value) is not int or not 0 <= value <= 10**12 for value in result.values()
+                )
+            ):
+                raise RegistryError("invalid adapter reported usage")
+            return dict(result)
+        except Exception:  # noqa: BLE001 - adapter failures never expose private response data
+            raise RegistryError("invalid adapter reported usage") from None
+
     def quota_rejection(
         self,
         spec: ModelSpec,
@@ -1098,6 +1144,11 @@ class OpenAIChatAdapter:
             raise RegistryError("unsupported adapter transport")
         return _json_http(spec, url, headers, payload, timeout)
 
+    def reported_usage(self, spec: ModelSpec, status: int, raw: bytes) -> dict[str, int]:
+        from .gateway_providers import reported_usage
+
+        return reported_usage("openai_chat", status, raw)
+
     def interpret(
         self, spec: ModelSpec, status: int, raw: bytes
     ) -> tuple[str | None, int | None, int | None, int | None, str | None]:
@@ -1210,6 +1261,11 @@ class GeminiGenerateContentAdapter:
             raise RegistryError("unsupported adapter transport")
         return _json_http(spec, url, headers, payload, timeout)
 
+    def reported_usage(self, spec: ModelSpec, status: int, raw: bytes) -> dict[str, int]:
+        from .gateway_providers import reported_usage
+
+        return reported_usage("google", status, raw)
+
     def interpret(
         self,
         spec: ModelSpec,
@@ -1252,6 +1308,7 @@ class CloudflareWorkersAIAdapter:
             {
                 "prompt": content,
                 "max_tokens": max_output_tokens,
+                "options": {"rejectIfBusy": True},
             },
         )
 
@@ -1264,6 +1321,7 @@ class CloudflareWorkersAIAdapter:
         timeout: float,
     ) -> tuple[int, dict[str, str], bytes]:
         prompt, output = payload.get("prompt"), payload.get("max_tokens")
+        options = payload.get("options")
         auth = headers.get("Authorization")
         if (
             spec.adapter != "cloudflare_workers_ai"
@@ -1271,7 +1329,10 @@ class CloudflareWorkersAIAdapter:
             or not isinstance(auth, str)
             or not auth.startswith("Bearer ")
             or not _valid_secret(auth.removeprefix("Bearer "))
-            or set(payload) != {"prompt", "max_tokens"}
+            or set(payload) != {"prompt", "max_tokens", "options"}
+            or not isinstance(options, dict)
+            or set(options) != {"rejectIfBusy"}
+            or options.get("rejectIfBusy") is not True
             or not isinstance(prompt, str)
             or not prompt.strip()
             or type(output) is not int
@@ -1279,6 +1340,11 @@ class CloudflareWorkersAIAdapter:
         ):
             raise RegistryError("unsupported adapter transport")
         return _json_http(spec, url, headers, payload, timeout)
+
+    def reported_usage(self, spec: ModelSpec, status: int, raw: bytes) -> dict[str, int]:
+        from .gateway_providers import reported_usage
+
+        return reported_usage("cloudflare", status, raw)
 
     def interpret(
         self,

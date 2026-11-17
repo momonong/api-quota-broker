@@ -222,11 +222,14 @@ class Target:
     account_id_ref: str | None = None
     model_info: Model | None = field(default=None, compare=False, repr=False)
     # Explicit external capacity gates, independent of local safety caps.
-    # Empty preserves historical strict project-scoped admission.
+    # Empty remains strict unless its configuration explicitly declares local budgets.
     required_capacity: tuple[tuple[str, str], ...] = ()
     # Display evidence only. The existing conservative billing_enabled flag
     # continues to govern admission, including unknown-account placeholders.
     billing_evidence_state: str | None = None
+    # Only an explicit configuration declaration may opt out of provider capacity.
+    # Historical programmatic and omitted targets retain strict project admission.
+    required_capacity_declared: bool = False
 
     def neurons(
         self, input_bound: int, output: int, now: datetime, explicit: int | None = None
@@ -416,16 +419,27 @@ def parse_capacity(raw: dict) -> Capacity:
 
 
 CF_NEURON_FORMULA = "cloudflare_llama_3_2_1b_formula"
+CF_GEMMA_NEURON_FORMULA = "cloudflare_gemma_4_26b_formula"
+# Published Neurons per million input/output tokens; evidence TTL still applies.
+CF_NEURON_FORMULAS = {
+    CF_NEURON_FORMULA: ("@cf/meta/llama-3.2-1b-instruct", 2457, 18252),
+    CF_GEMMA_NEURON_FORMULA: ("@cf/google/gemma-4-26b-a4b-it", 9091, 27273),
+}
 
 
-def cloudflare_neuron_upper_bound(input_tokens: int, output_tokens: int) -> int:
+def cloudflare_neuron_upper_bound(
+    input_tokens: int, output_tokens: int, *, model: str = "@cf/meta/llama-3.2-1b-instruct"
+) -> int:
     """Ceil the published per-million coefficients; never label this actual usage."""
     if any(
         type(value) is not int or not 0 <= value <= 10**12
         for value in (input_tokens, output_tokens)
     ):
         raise ConfigError("invalid Neurons formula bounds")
-    return max(1, (input_tokens * 2457 + output_tokens * 18252 + 999999) // 1000000)
+    rates = next((row[1:] for row in CF_NEURON_FORMULAS.values() if row[0] == model), None)
+    if rates is None:
+        raise ConfigError("unknown model Neurons formula")
+    return max(1, (input_tokens * rates[0] + output_tokens * rates[1] + 999999) // 1000000)
 
 
 def parse_neuron_estimate(raw: object) -> NeuronEstimate | None:
@@ -444,7 +458,7 @@ def parse_neuron_estimate(raw: object) -> NeuronEstimate | None:
     if any(
         type(raw[name]) is not int or not 1 <= raw[name] <= 10**12
         for name in ("amount", "max_input_tokens", "max_output_tokens")
-    ) or raw["source"] not in {"trusted_operator", CF_NEURON_FORMULA}:
+    ) or raw["source"] not in {"trusted_operator", *CF_NEURON_FORMULAS}:
         raise ConfigError("invalid Neurons estimate bounds or source")
     verified, expires = _instant(raw["verified_at"]), _instant(raw["expires_at"])
     if verified is None or expires is None or expires <= verified:
@@ -596,6 +610,7 @@ def load_config(
                 resource_estimates=parse_resource_estimates(item.get("resource_estimates", [])),
                 required_capacity=parse_required_capacity(item.get("required_capacity", [])),
                 billing_evidence_state=billing_evidence_state,
+                required_capacity_declared="required_capacity" in item,
             )
         except (KeyError, TypeError, RegistryError) as exc:
             raise ConfigError(f"invalid target: {exc}") from exc
@@ -614,13 +629,13 @@ def load_config(
         estimate = target.neuron_estimate
         if (
             estimate is not None
-            and estimate.source == CF_NEURON_FORMULA
+            and estimate.source in CF_NEURON_FORMULAS
             and (
                 target.provider != "cloudflare"
-                or target.model != "@cf/meta/llama-3.2-1b-instruct"
+                or target.model != CF_NEURON_FORMULAS[estimate.source][0]
                 or estimate.amount
                 < cloudflare_neuron_upper_bound(
-                    estimate.max_input_tokens, estimate.max_output_tokens
+                    estimate.max_input_tokens, estimate.max_output_tokens, model=target.model
                 )
             )
         ):

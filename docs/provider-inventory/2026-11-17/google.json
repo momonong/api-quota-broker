@@ -1,0 +1,1336 @@
+{
+  "schema_version": 1,
+  "provider": "google",
+  "source": "https://generativelanguage.googleapis.com/v1beta/models",
+  "checked_at": "2026-11-16T16:03:51.733846+00:00",
+  "complete": true,
+  "models": [
+    {
+      "model": "antigravity-preview-05-2026",
+      "capability": "text_generation",
+      "hosting": "hosted",
+      "endpoint": "https://generativelanguage.googleapis.com/v1beta/models/antigravity-preview-05-2026:generateContent",
+      "protocol": "gemini_inference",
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 1048576,
+      "max_output_tokens": 65536,
+      "features": [
+        "token_counting"
+      ]
+    },
+    {
+      "model": "antigravity-preview-09-2026",
+      "capability": "text_generation",
+      "hosting": "hosted",
+      "endpoint": "https://generativelanguage.googleapis.com/v1beta/models/antigravity-preview-09-2026:generateContent",
+      "protocol": "gemini_inference",
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 1048576,
+      "max_output_tokens": 65536,
+      "features": [
+        "token_counting"
+      ]
+    },
+    {
+      "model": "antigravity-preview-latest",
+      "capability": "text_generation",
+      "hosting": "hosted",
+      "endpoint": "https://generativelanguage.googleapis.com/v1beta/models/antigravity-preview-latest:generateContent",
+      "protocol": "gemini_inference",
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 1048576,
+      "max_output_tokens": 65536,
+      "features": [
+        "token_counting"
+      ]
+    },
+    {
+      "model": "aqa",
+      "capability": "unknown",
+      "hosting": "hosted",
+      "endpoint": null,
+      "protocol": null,
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 7168,
+      "max_output_tokens": 1024,
+      "features": []
+    },
+    {
+      "model": "deep-research-max-preview-04-2026",
+      "capability": "text_generation",
+      "hosting": "hosted",
+      "endpoint": "https://generativelanguage.googleapis.com/v1beta/models/deep-research-max-preview-04-2026:generateContent",
+      "protocol": "gemini_inference",
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 1048576,
+      "max_output_tokens": 65536,
+      "features": [
+        "reasoning",
+        "token_counting"
+      ]
+    },
+    {
+      "model": "deep-research-preview-04-2026",
+      "capability": "text_generation",
+      "hosting": "hosted",
+      "endpoint": "https://generativelanguage.googleapis.com/v1beta/models/deep-research-preview-04-2026:generateContent",
+      "protocol": "gemini_inference",
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 1048576,
+      "max_output_tokens": 65536,
+      "features": [
+        "reasoning",
+        "token_counting"
+      ]
+    },
+    {
+      "model": "deep-research-pro-preview-12-2025",
+      "capability": "text_generation",
+      "hosting": "hosted",
+      "endpoint": "https://generativelanguage.googleapis.com/v1beta/models/deep-research-pro-preview-12-2025:generateContent",
+      "protocol": "gemini_inference",
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 1048576,
+      "max_output_tokens": 65536,
+      "features": [
+        "reasoning",
+        "token_counting"
+      ]
+    },
+    {
+      "model": "gemini-2.5-computer-use-preview-10-2025",
+      "capability": "text_generation",
+      "hosting": "hosted",
+      "endpoint": "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-computer-use-preview-10-2025:generateContent",
+      "protocol": "gemini_inference",
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 131072,
+      "max_output_tokens": 65536,
+      "features": [
+        "reasoning",
+        "token_counting"
+      ]
+    },
+    {
+      "model": "gemini-2.5-flash",
+      "capability": "text_generation",
+      "hosting": "hosted",
+      "endpoint": "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent",
+      "protocol": "gemini_inference",
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 1048576,
+      "max_output_tokens": 65536,
+      "features": [
+        "reasoning",
+        "token_counting"
+      ]
+    },
+    {
+      "model": "gemini-2.5-flash",
+      "capability": "unknown",
+      "hosting": "hosted",
+      "endpoint": null,
+      "protocol": null,
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 1048576,
+      "max_output_tokens": 65536,
+      "features": [
+        "reasoning",
+        "token_counting",
+        "unrecognized_generation_method"
+      ]
+    },
+    {
+      "model": "gemini-2.5-flash-image",
+      "capability": "text_generation",
+      "hosting": "hosted",
+      "endpoint": "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image:generateContent",
+      "protocol": "gemini_inference",
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 32768,
+      "max_output_tokens": 32768,
+      "features": [
+        "token_counting"
+      ]
+    },
+    {
+      "model": "gemini-2.5-flash-lite",
+      "capability": "text_generation",
+      "hosting": "hosted",
+      "endpoint": "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent",
+      "protocol": "gemini_inference",
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 1048576,
+      "max_output_tokens": 65536,
+      "features": [
+        "reasoning",
+        "token_counting"
+      ]
+    },
+    {
+      "model": "gemini-2.5-flash-lite",
+      "capability": "unknown",
+      "hosting": "hosted",
+      "endpoint": null,
+      "protocol": null,
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 1048576,
+      "max_output_tokens": 65536,
+      "features": [
+        "reasoning",
+        "token_counting",
+        "unrecognized_generation_method"
+      ]
+    },
+    {
+      "model": "gemini-2.5-flash-native-audio-latest",
+      "capability": "unknown",
+      "hosting": "hosted",
+      "endpoint": null,
+      "protocol": null,
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 131072,
+      "max_output_tokens": 8192,
+      "features": [
+        "reasoning",
+        "token_counting"
+      ]
+    },
+    {
+      "model": "gemini-2.5-flash-native-audio-preview-09-2025",
+      "capability": "unknown",
+      "hosting": "hosted",
+      "endpoint": null,
+      "protocol": null,
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 131072,
+      "max_output_tokens": 8192,
+      "features": [
+        "reasoning",
+        "token_counting"
+      ]
+    },
+    {
+      "model": "gemini-2.5-flash-native-audio-preview-12-2025",
+      "capability": "unknown",
+      "hosting": "hosted",
+      "endpoint": null,
+      "protocol": null,
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 131072,
+      "max_output_tokens": 8192,
+      "features": [
+        "reasoning",
+        "token_counting"
+      ]
+    },
+    {
+      "model": "gemini-2.5-flash-preview-tts",
+      "capability": "text_generation",
+      "hosting": "hosted",
+      "endpoint": "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-tts:generateContent",
+      "protocol": "gemini_inference",
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": null,
+      "max_output_tokens": null,
+      "features": [
+        "token_counting",
+        "token_limits_conflicting"
+      ]
+    },
+    {
+      "model": "gemini-2.5-pro",
+      "capability": "text_generation",
+      "hosting": "hosted",
+      "endpoint": "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent",
+      "protocol": "gemini_inference",
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 1048576,
+      "max_output_tokens": 65536,
+      "features": [
+        "reasoning",
+        "token_counting"
+      ]
+    },
+    {
+      "model": "gemini-2.5-pro",
+      "capability": "unknown",
+      "hosting": "hosted",
+      "endpoint": null,
+      "protocol": null,
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 1048576,
+      "max_output_tokens": 65536,
+      "features": [
+        "reasoning",
+        "token_counting",
+        "unrecognized_generation_method"
+      ]
+    },
+    {
+      "model": "gemini-2.5-pro-preview-tts",
+      "capability": "text_generation",
+      "hosting": "hosted",
+      "endpoint": "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro-preview-tts:generateContent",
+      "protocol": "gemini_inference",
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": null,
+      "max_output_tokens": null,
+      "features": [
+        "token_counting",
+        "token_limits_conflicting"
+      ]
+    },
+    {
+      "model": "gemini-3-flash-preview",
+      "capability": "text_generation",
+      "hosting": "hosted",
+      "endpoint": "https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent",
+      "protocol": "gemini_inference",
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 1048576,
+      "max_output_tokens": 65536,
+      "features": [
+        "reasoning",
+        "token_counting"
+      ]
+    },
+    {
+      "model": "gemini-3-flash-preview",
+      "capability": "unknown",
+      "hosting": "hosted",
+      "endpoint": null,
+      "protocol": null,
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 1048576,
+      "max_output_tokens": 65536,
+      "features": [
+        "reasoning",
+        "token_counting",
+        "unrecognized_generation_method"
+      ]
+    },
+    {
+      "model": "gemini-3-pro-image",
+      "capability": "text_generation",
+      "hosting": "hosted",
+      "endpoint": "https://generativelanguage.googleapis.com/v1beta/models/gemini-3-pro-image:generateContent",
+      "protocol": "gemini_inference",
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 131072,
+      "max_output_tokens": 32768,
+      "features": [
+        "reasoning",
+        "token_counting"
+      ]
+    },
+    {
+      "model": "gemini-3-pro-image-preview",
+      "capability": "text_generation",
+      "hosting": "hosted",
+      "endpoint": "https://generativelanguage.googleapis.com/v1beta/models/gemini-3-pro-image-preview:generateContent",
+      "protocol": "gemini_inference",
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 131072,
+      "max_output_tokens": 32768,
+      "features": [
+        "reasoning",
+        "token_counting"
+      ]
+    },
+    {
+      "model": "gemini-3.1-flash-image",
+      "capability": "text_generation",
+      "hosting": "hosted",
+      "endpoint": "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-image:generateContent",
+      "protocol": "gemini_inference",
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 65536,
+      "max_output_tokens": 65536,
+      "features": [
+        "reasoning",
+        "token_counting"
+      ]
+    },
+    {
+      "model": "gemini-3.1-flash-image-preview",
+      "capability": "text_generation",
+      "hosting": "hosted",
+      "endpoint": "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-image-preview:generateContent",
+      "protocol": "gemini_inference",
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 65536,
+      "max_output_tokens": 65536,
+      "features": [
+        "reasoning",
+        "token_counting"
+      ]
+    },
+    {
+      "model": "gemini-3.1-flash-lite",
+      "capability": "text_generation",
+      "hosting": "hosted",
+      "endpoint": "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent",
+      "protocol": "gemini_inference",
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 1048576,
+      "max_output_tokens": 65536,
+      "features": [
+        "reasoning",
+        "token_counting"
+      ]
+    },
+    {
+      "model": "gemini-3.1-flash-lite",
+      "capability": "unknown",
+      "hosting": "hosted",
+      "endpoint": null,
+      "protocol": null,
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 1048576,
+      "max_output_tokens": 65536,
+      "features": [
+        "reasoning",
+        "token_counting",
+        "unrecognized_generation_method"
+      ]
+    },
+    {
+      "model": "gemini-3.1-flash-lite-image",
+      "capability": "text_generation",
+      "hosting": "hosted",
+      "endpoint": "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite-image:generateContent",
+      "protocol": "gemini_inference",
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 65536,
+      "max_output_tokens": 65536,
+      "features": [
+        "reasoning",
+        "token_counting"
+      ]
+    },
+    {
+      "model": "gemini-3.1-flash-lite-preview",
+      "capability": "text_generation",
+      "hosting": "hosted",
+      "endpoint": "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite-preview:generateContent",
+      "protocol": "gemini_inference",
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 1048576,
+      "max_output_tokens": 65536,
+      "features": [
+        "reasoning",
+        "token_counting"
+      ]
+    },
+    {
+      "model": "gemini-3.1-flash-lite-preview",
+      "capability": "unknown",
+      "hosting": "hosted",
+      "endpoint": null,
+      "protocol": null,
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 1048576,
+      "max_output_tokens": 65536,
+      "features": [
+        "reasoning",
+        "token_counting",
+        "unrecognized_generation_method"
+      ]
+    },
+    {
+      "model": "gemini-3.1-flash-live-preview",
+      "capability": "unknown",
+      "hosting": "hosted",
+      "endpoint": null,
+      "protocol": null,
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 131072,
+      "max_output_tokens": 65536,
+      "features": []
+    },
+    {
+      "model": "gemini-3.1-flash-tts-preview",
+      "capability": "text_generation",
+      "hosting": "hosted",
+      "endpoint": "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-tts-preview:generateContent",
+      "protocol": "gemini_inference",
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": null,
+      "max_output_tokens": null,
+      "features": [
+        "token_counting",
+        "token_limits_conflicting"
+      ]
+    },
+    {
+      "model": "gemini-3.1-pro-preview",
+      "capability": "text_generation",
+      "hosting": "hosted",
+      "endpoint": "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-pro-preview:generateContent",
+      "protocol": "gemini_inference",
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 1048576,
+      "max_output_tokens": 65536,
+      "features": [
+        "reasoning",
+        "token_counting"
+      ]
+    },
+    {
+      "model": "gemini-3.1-pro-preview",
+      "capability": "unknown",
+      "hosting": "hosted",
+      "endpoint": null,
+      "protocol": null,
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 1048576,
+      "max_output_tokens": 65536,
+      "features": [
+        "reasoning",
+        "token_counting",
+        "unrecognized_generation_method"
+      ]
+    },
+    {
+      "model": "gemini-3.1-pro-preview-customtools",
+      "capability": "text_generation",
+      "hosting": "hosted",
+      "endpoint": "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-pro-preview-customtools:generateContent",
+      "protocol": "gemini_inference",
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 1048576,
+      "max_output_tokens": 65536,
+      "features": [
+        "reasoning",
+        "token_counting"
+      ]
+    },
+    {
+      "model": "gemini-3.1-pro-preview-customtools",
+      "capability": "unknown",
+      "hosting": "hosted",
+      "endpoint": null,
+      "protocol": null,
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 1048576,
+      "max_output_tokens": 65536,
+      "features": [
+        "reasoning",
+        "token_counting",
+        "unrecognized_generation_method"
+      ]
+    },
+    {
+      "model": "gemini-3.5-flash",
+      "capability": "text_generation",
+      "hosting": "hosted",
+      "endpoint": "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent",
+      "protocol": "gemini_inference",
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 1048576,
+      "max_output_tokens": 65536,
+      "features": [
+        "reasoning",
+        "token_counting"
+      ]
+    },
+    {
+      "model": "gemini-3.5-flash",
+      "capability": "unknown",
+      "hosting": "hosted",
+      "endpoint": null,
+      "protocol": null,
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 1048576,
+      "max_output_tokens": 65536,
+      "features": [
+        "reasoning",
+        "token_counting",
+        "unrecognized_generation_method"
+      ]
+    },
+    {
+      "model": "gemini-3.5-flash-lite",
+      "capability": "text_generation",
+      "hosting": "hosted",
+      "endpoint": "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent",
+      "protocol": "gemini_inference",
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 1048576,
+      "max_output_tokens": 65536,
+      "features": [
+        "reasoning",
+        "token_counting"
+      ]
+    },
+    {
+      "model": "gemini-3.5-flash-lite",
+      "capability": "unknown",
+      "hosting": "hosted",
+      "endpoint": null,
+      "protocol": null,
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 1048576,
+      "max_output_tokens": 65536,
+      "features": [
+        "reasoning",
+        "token_counting",
+        "unrecognized_generation_method"
+      ]
+    },
+    {
+      "model": "gemini-3.5-live-translate-preview",
+      "capability": "unknown",
+      "hosting": "hosted",
+      "endpoint": null,
+      "protocol": null,
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": null,
+      "max_output_tokens": null,
+      "features": [
+        "token_limits_conflicting"
+      ]
+    },
+    {
+      "model": "gemini-3.5-transcribe",
+      "capability": "text_generation",
+      "hosting": "hosted",
+      "endpoint": "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-transcribe:generateContent",
+      "protocol": "gemini_inference",
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 98304,
+      "max_output_tokens": 32768,
+      "features": [
+        "token_counting"
+      ]
+    },
+    {
+      "model": "gemini-3.5-transcribe-live",
+      "capability": "unknown",
+      "hosting": "hosted",
+      "endpoint": null,
+      "protocol": null,
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 131072,
+      "max_output_tokens": 65536,
+      "features": []
+    },
+    {
+      "model": "gemini-3.6-flash",
+      "capability": "text_generation",
+      "hosting": "hosted",
+      "endpoint": "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent",
+      "protocol": "gemini_inference",
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 1048576,
+      "max_output_tokens": 65536,
+      "features": [
+        "reasoning",
+        "token_counting"
+      ]
+    },
+    {
+      "model": "gemini-3.6-flash",
+      "capability": "unknown",
+      "hosting": "hosted",
+      "endpoint": null,
+      "protocol": null,
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 1048576,
+      "max_output_tokens": 65536,
+      "features": [
+        "reasoning",
+        "token_counting",
+        "unrecognized_generation_method"
+      ]
+    },
+    {
+      "model": "gemini-3.7-flash",
+      "capability": "text_generation",
+      "hosting": "hosted",
+      "endpoint": "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.7-flash:generateContent",
+      "protocol": "gemini_inference",
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 1048576,
+      "max_output_tokens": 65536,
+      "features": [
+        "reasoning",
+        "token_counting"
+      ]
+    },
+    {
+      "model": "gemini-3.7-flash",
+      "capability": "unknown",
+      "hosting": "hosted",
+      "endpoint": null,
+      "protocol": null,
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 1048576,
+      "max_output_tokens": 65536,
+      "features": [
+        "reasoning",
+        "token_counting",
+        "unrecognized_generation_method"
+      ]
+    },
+    {
+      "model": "gemini-3.8-flash",
+      "capability": "text_generation",
+      "hosting": "hosted",
+      "endpoint": "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent",
+      "protocol": "gemini_inference",
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 1048576,
+      "max_output_tokens": 65536,
+      "features": [
+        "reasoning",
+        "token_counting"
+      ]
+    },
+    {
+      "model": "gemini-3.8-flash",
+      "capability": "unknown",
+      "hosting": "hosted",
+      "endpoint": null,
+      "protocol": null,
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 1048576,
+      "max_output_tokens": 65536,
+      "features": [
+        "reasoning",
+        "token_counting",
+        "unrecognized_generation_method"
+      ]
+    },
+    {
+      "model": "gemini-3.8-flash-lite-tts",
+      "capability": "text_generation",
+      "hosting": "hosted",
+      "endpoint": "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash-lite-tts:generateContent",
+      "protocol": "gemini_inference",
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": null,
+      "max_output_tokens": null,
+      "features": [
+        "token_counting",
+        "token_limits_conflicting"
+      ]
+    },
+    {
+      "model": "gemini-3.8-flash-tts",
+      "capability": "text_generation",
+      "hosting": "hosted",
+      "endpoint": "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash-tts:generateContent",
+      "protocol": "gemini_inference",
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": null,
+      "max_output_tokens": null,
+      "features": [
+        "token_counting",
+        "token_limits_conflicting"
+      ]
+    },
+    {
+      "model": "gemini-3.8-live",
+      "capability": "unknown",
+      "hosting": "hosted",
+      "endpoint": null,
+      "protocol": null,
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 131072,
+      "max_output_tokens": 65536,
+      "features": []
+    },
+    {
+      "model": "gemini-3.8-live-extended-thinking",
+      "capability": "unknown",
+      "hosting": "hosted",
+      "endpoint": null,
+      "protocol": null,
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 131072,
+      "max_output_tokens": 65536,
+      "features": [
+        "reasoning"
+      ]
+    },
+    {
+      "model": "gemini-4-argon",
+      "capability": "text_generation",
+      "hosting": "hosted",
+      "endpoint": "https://generativelanguage.googleapis.com/v1beta/models/gemini-4-argon:generateContent",
+      "protocol": "gemini_inference",
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 1048576,
+      "max_output_tokens": 32768,
+      "features": [
+        "reasoning",
+        "token_counting"
+      ]
+    },
+    {
+      "model": "gemini-4-carbon",
+      "capability": "text_generation",
+      "hosting": "hosted",
+      "endpoint": "https://generativelanguage.googleapis.com/v1beta/models/gemini-4-carbon:generateContent",
+      "protocol": "gemini_inference",
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 1048576,
+      "max_output_tokens": 32768,
+      "features": [
+        "reasoning",
+        "token_counting"
+      ]
+    },
+    {
+      "model": "gemini-4-hydrogen",
+      "capability": "text_generation",
+      "hosting": "hosted",
+      "endpoint": "https://generativelanguage.googleapis.com/v1beta/models/gemini-4-hydrogen:generateContent",
+      "protocol": "gemini_inference",
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 1048576,
+      "max_output_tokens": 65536,
+      "features": [
+        "reasoning",
+        "token_counting"
+      ]
+    },
+    {
+      "model": "gemini-decision-1",
+      "capability": "unknown",
+      "hosting": "hosted",
+      "endpoint": null,
+      "protocol": null,
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 262144,
+      "max_output_tokens": 1,
+      "features": []
+    },
+    {
+      "model": "gemini-embedding-001",
+      "capability": "embedding",
+      "hosting": "hosted",
+      "endpoint": "https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:embedContent",
+      "protocol": "gemini_embeddings",
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 2048,
+      "max_output_tokens": 1,
+      "features": [
+        "token_counting"
+      ]
+    },
+    {
+      "model": "gemini-embedding-001",
+      "capability": "unknown",
+      "hosting": "hosted",
+      "endpoint": null,
+      "protocol": null,
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 2048,
+      "max_output_tokens": 1,
+      "features": [
+        "token_counting",
+        "unrecognized_generation_method"
+      ]
+    },
+    {
+      "model": "gemini-embedding-2",
+      "capability": "embedding",
+      "hosting": "hosted",
+      "endpoint": "https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-2:embedContent",
+      "protocol": "gemini_embeddings",
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 8192,
+      "max_output_tokens": 1,
+      "features": [
+        "token_counting"
+      ]
+    },
+    {
+      "model": "gemini-embedding-2",
+      "capability": "unknown",
+      "hosting": "hosted",
+      "endpoint": null,
+      "protocol": null,
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 8192,
+      "max_output_tokens": 1,
+      "features": [
+        "token_counting",
+        "unrecognized_generation_method"
+      ]
+    },
+    {
+      "model": "gemini-embedding-2-preview",
+      "capability": "embedding",
+      "hosting": "hosted",
+      "endpoint": "https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-2-preview:embedContent",
+      "protocol": "gemini_embeddings",
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 8192,
+      "max_output_tokens": 1,
+      "features": [
+        "token_counting"
+      ]
+    },
+    {
+      "model": "gemini-embedding-2-preview",
+      "capability": "unknown",
+      "hosting": "hosted",
+      "endpoint": null,
+      "protocol": null,
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 8192,
+      "max_output_tokens": 1,
+      "features": [
+        "token_counting",
+        "unrecognized_generation_method"
+      ]
+    },
+    {
+      "model": "gemini-flash-latest",
+      "capability": "text_generation",
+      "hosting": "hosted",
+      "endpoint": "https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent",
+      "protocol": "gemini_inference",
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 1048576,
+      "max_output_tokens": 65536,
+      "features": [
+        "reasoning",
+        "token_counting"
+      ]
+    },
+    {
+      "model": "gemini-flash-latest",
+      "capability": "unknown",
+      "hosting": "hosted",
+      "endpoint": null,
+      "protocol": null,
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 1048576,
+      "max_output_tokens": 65536,
+      "features": [
+        "reasoning",
+        "token_counting",
+        "unrecognized_generation_method"
+      ]
+    },
+    {
+      "model": "gemini-flash-lite-latest",
+      "capability": "text_generation",
+      "hosting": "hosted",
+      "endpoint": "https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-lite-latest:generateContent",
+      "protocol": "gemini_inference",
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 1048576,
+      "max_output_tokens": 65536,
+      "features": [
+        "reasoning",
+        "token_counting"
+      ]
+    },
+    {
+      "model": "gemini-flash-lite-latest",
+      "capability": "unknown",
+      "hosting": "hosted",
+      "endpoint": null,
+      "protocol": null,
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 1048576,
+      "max_output_tokens": 65536,
+      "features": [
+        "reasoning",
+        "token_counting",
+        "unrecognized_generation_method"
+      ]
+    },
+    {
+      "model": "gemini-nano-banana-2.1",
+      "capability": "text_generation",
+      "hosting": "hosted",
+      "endpoint": "https://generativelanguage.googleapis.com/v1beta/models/gemini-nano-banana-2.1:generateContent",
+      "protocol": "gemini_inference",
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 65536,
+      "max_output_tokens": 65536,
+      "features": [
+        "reasoning",
+        "token_counting"
+      ]
+    },
+    {
+      "model": "gemini-omni-1.1-flash",
+      "capability": "text_generation",
+      "hosting": "hosted",
+      "endpoint": "https://generativelanguage.googleapis.com/v1beta/models/gemini-omni-1.1-flash:generateContent",
+      "protocol": "gemini_inference",
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 131072,
+      "max_output_tokens": 65536,
+      "features": [
+        "reasoning",
+        "token_counting"
+      ]
+    },
+    {
+      "model": "gemini-omni-1.2-flash",
+      "capability": "text_generation",
+      "hosting": "hosted",
+      "endpoint": "https://generativelanguage.googleapis.com/v1beta/models/gemini-omni-1.2-flash:generateContent",
+      "protocol": "gemini_inference",
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 131072,
+      "max_output_tokens": 65536,
+      "features": [
+        "reasoning",
+        "token_counting"
+      ]
+    },
+    {
+      "model": "gemini-omni-flash-preview",
+      "capability": "text_generation",
+      "hosting": "hosted",
+      "endpoint": "https://generativelanguage.googleapis.com/v1beta/models/gemini-omni-flash-preview:generateContent",
+      "protocol": "gemini_inference",
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 131072,
+      "max_output_tokens": 65536,
+      "features": [
+        "reasoning",
+        "token_counting"
+      ]
+    },
+    {
+      "model": "gemini-pro-latest",
+      "capability": "text_generation",
+      "hosting": "hosted",
+      "endpoint": "https://generativelanguage.googleapis.com/v1beta/models/gemini-pro-latest:generateContent",
+      "protocol": "gemini_inference",
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 1048576,
+      "max_output_tokens": 65536,
+      "features": [
+        "reasoning",
+        "token_counting"
+      ]
+    },
+    {
+      "model": "gemini-pro-latest",
+      "capability": "unknown",
+      "hosting": "hosted",
+      "endpoint": null,
+      "protocol": null,
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 1048576,
+      "max_output_tokens": 65536,
+      "features": [
+        "reasoning",
+        "token_counting",
+        "unrecognized_generation_method"
+      ]
+    },
+    {
+      "model": "gemini-robotics-er-2-preview",
+      "capability": "text_generation",
+      "hosting": "hosted",
+      "endpoint": "https://generativelanguage.googleapis.com/v1beta/models/gemini-robotics-er-2-preview:generateContent",
+      "protocol": "gemini_inference",
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 131072,
+      "max_output_tokens": 65536,
+      "features": [
+        "reasoning",
+        "token_counting"
+      ]
+    },
+    {
+      "model": "gemini-robotics-er-2-preview",
+      "capability": "unknown",
+      "hosting": "hosted",
+      "endpoint": null,
+      "protocol": null,
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 131072,
+      "max_output_tokens": 65536,
+      "features": [
+        "reasoning",
+        "token_counting",
+        "unrecognized_generation_method"
+      ]
+    },
+    {
+      "model": "gemini-robotics-er-2-streaming-preview",
+      "capability": "unknown",
+      "hosting": "hosted",
+      "endpoint": null,
+      "protocol": null,
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 131072,
+      "max_output_tokens": 65536,
+      "features": []
+    },
+    {
+      "model": "gemma-4-26b-a4b-it",
+      "capability": "text_generation",
+      "hosting": "hosted",
+      "endpoint": "https://generativelanguage.googleapis.com/v1beta/models/gemma-4-26b-a4b-it:generateContent",
+      "protocol": "gemini_inference",
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 262144,
+      "max_output_tokens": 32768,
+      "features": [
+        "reasoning",
+        "token_counting"
+      ]
+    },
+    {
+      "model": "gemma-4-31b-it",
+      "capability": "text_generation",
+      "hosting": "hosted",
+      "endpoint": "https://generativelanguage.googleapis.com/v1beta/models/gemma-4-31b-it:generateContent",
+      "protocol": "gemini_inference",
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 262144,
+      "max_output_tokens": 32768,
+      "features": [
+        "reasoning",
+        "token_counting"
+      ]
+    },
+    {
+      "model": "lyria-3-clip-preview",
+      "capability": "text_generation",
+      "hosting": "hosted",
+      "endpoint": "https://generativelanguage.googleapis.com/v1beta/models/lyria-3-clip-preview:generateContent",
+      "protocol": "gemini_inference",
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 1048576,
+      "max_output_tokens": 65536,
+      "features": [
+        "token_counting"
+      ]
+    },
+    {
+      "model": "lyria-3-pro-preview",
+      "capability": "text_generation",
+      "hosting": "hosted",
+      "endpoint": "https://generativelanguage.googleapis.com/v1beta/models/lyria-3-pro-preview:generateContent",
+      "protocol": "gemini_inference",
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 1048576,
+      "max_output_tokens": 65536,
+      "features": [
+        "token_counting"
+      ]
+    },
+    {
+      "model": "lyria-3.5",
+      "capability": "text_generation",
+      "hosting": "hosted",
+      "endpoint": "https://generativelanguage.googleapis.com/v1beta/models/lyria-3.5:generateContent",
+      "protocol": "gemini_inference",
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 1048576,
+      "max_output_tokens": 65536,
+      "features": [
+        "token_counting"
+      ]
+    },
+    {
+      "model": "lyria-realtime-exp",
+      "capability": "unknown",
+      "hosting": "hosted",
+      "endpoint": null,
+      "protocol": null,
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 1048576,
+      "max_output_tokens": 65536,
+      "features": []
+    },
+    {
+      "model": "nano-banana-pro-preview",
+      "capability": "text_generation",
+      "hosting": "hosted",
+      "endpoint": "https://generativelanguage.googleapis.com/v1beta/models/nano-banana-pro-preview:generateContent",
+      "protocol": "gemini_inference",
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 131072,
+      "max_output_tokens": 32768,
+      "features": [
+        "reasoning",
+        "token_counting"
+      ]
+    }
+  ]
+}

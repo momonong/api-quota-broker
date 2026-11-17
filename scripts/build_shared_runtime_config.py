@@ -343,13 +343,55 @@ def validate_runtime_configuration(documents, *, now=None):
             if (
                 target.provider not in provider_refs
                 or target.secret_ref != provider_refs[target.provider]
-                or not target.required_capacity
-                or (target.provider == "openai" and (CREDIT_METRIC, "budget") not in target.required_capacity)
-                or (target.provider == "openrouter" and ("requests", "day") not in target.required_capacity)
-                or (target.provider == "cloudflare" and ("neurons", "day") not in target.required_capacity)
-                or (target.account_id_ref != ("CLOUDFLARE_ACCOUNT_ID" if target.provider == "cloudflare" else None))
+                or (
+                    bool(target.required_capacity)
+                    and (
+                        (
+                            target.provider == "openai"
+                            and (CREDIT_METRIC, "budget") not in target.required_capacity
+                        )
+                        or (
+                            target.provider == "openrouter"
+                            and ("requests", "day") not in target.required_capacity
+                        )
+                        or (
+                            target.provider == "cloudflare"
+                            and ("neurons", "day") not in target.required_capacity
+                        )
+                    )
+                )
+                or (
+                    target.account_id_ref
+                    != ("CLOUDFLARE_ACCOUNT_ID" if target.provider == "cloudflare" else None)
+                )
             ):
                 raise ValueError("enabled_target_requires_capacity_and_credential_binding")
+            if not target.required_capacity:
+                raw_target = next(
+                    row for row in documents["gateway.json"]["targets"] if row["id"] == target.id
+                )
+                if (
+                    raw_target.get("required_capacity") != []
+                    or not target.available(current)
+                    or target.billing_evidence_state != "disabled"
+                    or not inventory.current(current)
+                ):
+                    raise ValueError("local_budget_requires_verified_free_eligibility")
+                if target.provider == "cloudflare":
+                    estimate = target.neuron_estimate
+                    if (
+                        estimate is None
+                        or not estimate.verified_at <= current < estimate.expires_at
+                        or target.max_output_tokens > estimate.max_output_tokens
+                        or not any(
+                            q.metric == "neurons"
+                            and q.window == "day"
+                            and q.timezone == "UTC"
+                            and q.limit <= 10000
+                            for q in target.quotas
+                        )
+                    ):
+                        raise ValueError("local_budget_requires_current_neuron_bound")
             required_names.add(target.secret_ref)
             if target.account_id_ref:
                 required_names.add(target.account_id_ref)

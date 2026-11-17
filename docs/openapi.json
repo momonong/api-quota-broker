@@ -2,8 +2,8 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Quota Project API",
-    "version": "2.0.0",
-    "description": "Encrypted SDK 2.0.0 source contract, not deployed. Existing job routes describe inner bHTTP operations; legacy JSON is restricted to non-sensitive principals. See encrypted-local-api.md."
+    "version": "2.1.0",
+    "description": "Broker 2.1.0 source contract with expiry utility routing, bounded overload retry and usage accounting. Existing job routes describe inner bHTTP operations; legacy JSON is restricted to non-sensitive principals. See encrypted-local-api.md and reliability-expiry-2026-11-17.md for deployment evidence."
   },
   "servers": [
     {
@@ -417,7 +417,28 @@
             "type": "object"
           },
           "requirements": {
-            "type": "object"
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "features": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "uniqueItems": true
+              },
+              "profile": {
+                "type": "string",
+                "enum": [
+                  "general",
+                  "coding",
+                  "reasoning",
+                  "translation",
+                  "extraction"
+                ],
+                "description": "Task-scoped quality and fit for expiry-first numerical allocation. Does not bypass capability or quota gates."
+              }
+            }
           },
           "source_language": {
             "type": [
@@ -458,7 +479,7 @@
             "type": "integer",
             "minimum": 1,
             "maximum": 32,
-            "default": 32,
+            "default": 3,
             "description": "Queue budget; unknown dispatch is never replayed."
           },
           "execution_policy": {

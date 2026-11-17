@@ -551,3 +551,48 @@ def test_stale_positive_account_grant_is_not_verified_qualification():
         False,
         None,
     )
+
+
+def test_equal_utility_preserves_authoritative_dispatch_order():
+    models = [
+        ("nvidia", "google/gemma-4-31b-it", "preferred"),
+        ("google", "gemini-2.5-flash-lite", "other"),
+    ]
+    data = {
+        "source": {"kind": "gateway", "fetched_at": "2026-11-16T00:00:00+00:00"},
+        "targets": [
+            {
+                "provider": p,
+                "model": m,
+                "target_id": t,
+                "variants": [
+                    {
+                        "task": "text_generation",
+                        "inputs": ["text"],
+                        "outputs": ["text"],
+                        "features": [],
+                    }
+                ],
+            }
+            for p, m, t in models
+        ],
+    }
+    candidates = [
+        {
+            "provider": p,
+            "model": m,
+            "target_id": t,
+            "safe": True,
+            "reasons": [],
+            "ranking": {
+                "score": 50,
+                "selection_order": index,
+                "value_loss_seconds": None,
+                "value_loss_basis": None,
+                "observed_headroom": None,
+            },
+        }
+        for index, (p, m, t) in enumerate(models)
+    ]
+    advice = {"source": data["source"], "candidates": candidates, "selected_target": candidates[0]}
+    assert match_models(query(), data, advice)["selected_target"]["target_id"] == "preferred"

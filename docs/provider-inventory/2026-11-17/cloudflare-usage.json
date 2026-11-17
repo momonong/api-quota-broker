@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "provider": "cloudflare",
+  "source": "https://api.cloudflare.com/client/v4/graphql",
+  "checked_at": "2026-11-16T16:06:34.185143+00:00",
+  "window_start": "2026-11-16T00:00:00+00:00",
+  "next_documented_free_reset": "2026-11-17T00:00:00+00:00",
+  "reset_source": "https://developers.cloudflare.com/workers-ai/platform/pricing/",
+  "http_status": 200,
+  "requests": 1,
+  "model_calls": 0,
+  "payments": 0,
+  "reported_neurons": null,
+  "remaining_neurons": null,
+  "account_identifiers_output": false,
+  "raw_response_output": false,
+  "status": "missing_permission",
+  "reason": "analytics_permission_required"
+}

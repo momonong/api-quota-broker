@@ -9,6 +9,7 @@ import threading
 import time
 import uuid
 from collections.abc import Callable
+from datetime import datetime
 from email.message import Message
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from socket import socket
@@ -428,6 +429,38 @@ def make_gateway_server(
                     parts = parsed.path.split("/")[4:]
                     if len(parts) == 2 and parts[1] == "quota" and body is not None:
                         gateway.observe_quota(parts[0], body)
+                    elif len(parts) == 2 and parts[1] == "quality" and isinstance(body, dict):
+                        if set(body) != {
+                            "profile",
+                            "passed",
+                            "total",
+                            "evaluation_id",
+                            "as_of",
+                            "valid_until",
+                        }:
+                            raise GatewayError(
+                                "invalid_request", "invalid quality evaluation fields"
+                            )
+                        target = next(
+                            (target for target in gateway.targets if target.id == parts[0]), None
+                        )
+                        if target is None:
+                            raise GatewayError("not_found", "target not found")
+                        try:
+                            gateway.observe_quality(
+                                target.provider,
+                                target.model,
+                                body["profile"],
+                                passed=body["passed"],
+                                total=body["total"],
+                                evaluation_id=body["evaluation_id"],
+                                as_of=datetime.fromisoformat(body["as_of"]),
+                                valid_until=datetime.fromisoformat(body["valid_until"]),
+                            )
+                        except (ValueError, TypeError, AttributeError):
+                            raise GatewayError(
+                                "invalid_request", "invalid quality evaluation"
+                            ) from None
                     elif len(parts) == 3 and parts[1:] == ["health", "reset"] and body == {}:
                         gateway.reset_health(parts[0])
                     else:
@@ -562,7 +595,7 @@ def make_gateway_server(
                     result = gateway.status(parsed.path.removeprefix("/v1/tasks/"))
                 elif self.command == "GET" and parsed.path == "/v1/usage":
                     query = parse_qs(parsed.query, keep_blank_values=True)
-                    if set(query) - {"provider", "model", "from", "to", "task"} or any(
+                    if set(query) - {"provider", "model", "from", "to", "task", "group_by"} or any(
                         len(values) != 1 for values in query.values()
                     ):
                         raise GatewayError("invalid_request", "invalid usage filters")
@@ -572,6 +605,7 @@ def make_gateway_server(
                         from_at=query.get("from", [None])[0],
                         to_at=query.get("to", [None])[0],
                         task_type=query.get("task", [None])[0],
+                        group_by=query.get("group_by", [None])[0],
                     )
                 elif self.command == "POST" and parsed.path == "/v1/tasks" and not parsed.query:
                     if body is None:

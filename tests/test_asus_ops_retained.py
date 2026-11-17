@@ -9,6 +9,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from asus_packet_fixtures import HistoricalOpsClock
 
 ROOT = Path(__file__).parents[1]
 REVIEW = ROOT / "tests/fixtures/asus-history/r11"
@@ -27,6 +28,8 @@ i = module("install_ops")
 
 @pytest.fixture
 def retained(monkeypatch, tmp_path):
+    monkeypatch.setattr(i, "datetime", HistoricalOpsClock)
+    monkeypatch.setattr(e, "datetime", HistoricalOpsClock)
     # Root/account metadata is synthetic; actual files, O_EXCL, rename and fsync are real.
     for name in ("BASE", "CONFIG", "STATE", "RUN", "LIBEXEC", "SYSTEM"):
         path = tmp_path / name

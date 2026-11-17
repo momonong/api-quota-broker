@@ -24,6 +24,7 @@ from .dashboard_provider_metadata import (
 )
 from .gateway import RECORDED_TASK_TYPES, Gateway, GatewayError, validate_task
 from .gateway_server import _bounded_json, _json_depth
+from .routing import observation_freshness
 
 MAX_RESPONSE = 2 * 1024 * 1024
 PROVIDER_INVENTORY = Path(__file__).with_name("dashboard_assets") / "provider-inventory.json"
@@ -42,6 +43,11 @@ USAGE_FIELDS = (
     "reported_conversions",
     "input_unknown_count",
     "output_unknown_count",
+    "total_tokens_unknown_count",
+    "audio_seconds_unknown_count",
+    "images_unknown_count",
+    "pages_unknown_count",
+    "conversions_unknown_count",
     "neurons_unknown_count",
     "ledger_held_count",
     "outcome_unknown_count",
@@ -99,6 +105,7 @@ class GatewaySource:
                 from_at=filters["from"],
                 to_at=filters["to"],
                 task_type=filters["task"],
+                **({"group_by": "day"} if filters.get("group_by") == "day" else {}),
             ),
             "task_types_recorded": True,
         }
@@ -153,15 +160,16 @@ class UpstreamSource:
                     or parsed.scheme
                     or parsed.fragment
                     or not query
-                    or set(query) - {"provider", "model", "from", "to", "task"}
+                    or set(query) - {"provider", "model", "from", "to", "task", "group_by"}
                     or any(len(values) != 1 for values in query.values())
+                    or ("group_by" in query and query["group_by"] != ["day"])
                 ):
                     raise ValueError
                 _usage_filters(
                     {
                         key: values[0]
                         for key, values in query.items()
-                        if not (key == "task" and values == ["all"])
+                        if key != "group_by" and not (key == "task" and values == ["all"])
                     }
                 )
                 allowed = True
@@ -236,11 +244,13 @@ class UpstreamSource:
 
     def usage_history(self, filters: dict[str, Any]) -> Any:
         fields = {key: filters[key] for key in ("provider", "model", "from", "to") if filters[key]}
+        if filters.get("group_by") == "day":
+            fields["group_by"] = "day"
         query = urlencode({**fields, "task": filters["task"] or "all"})
         try:
             return {"rows": self._get("GET", "/v1/usage?" + query), "task_types_recorded": True}
         except DashboardError:
-            if filters["task"] is not None:
+            if filters["task"] is not None or filters.get("group_by") is not None:
                 raise
             # Old Gateways reject the new task query. Only the unfiltered history
             # may fall back; a filtered failure must never become a false zero.
@@ -281,6 +291,49 @@ def _number(value: Any) -> int | None:
 def _fraction(value: Any) -> int | float | None:
     # Comparisons reject NaN/infinity; booleans are not numeric evidence.
     return value if type(value) in {int, float} and 0 <= value <= 1 else None
+
+
+def _ranking_projection(value: Any) -> dict[str, Any]:
+    factors = value if isinstance(value, dict) else {}
+    components = factors.get("components")
+    components = components if isinstance(components, dict) else {}
+    score = factors.get("score")
+    return {
+        "policy": "constrained_expiry_utility_v1",
+        "selection_order": _number(factors.get("selection_order")),
+        "value_loss_seconds": _number(factors.get("value_loss_seconds")),
+        "value_loss_basis": factors.get("value_loss_basis")
+        if factors.get("value_loss_basis") in {"credit_expiry", "quota_reset"}
+        else None,
+        "observed_headroom": _fraction(factors.get("observed_headroom")),
+        "algorithm": "expiry_utility_v1"
+        if factors.get("algorithm") == "expiry_utility_v1"
+        else None,
+        "score": score
+        if isinstance(score, (int, float)) and not isinstance(score, bool) and 0 <= score <= 100
+        else None,
+        "components": {
+            key: _fraction(components.get(key))
+            for key in (
+                "expiry_urgency",
+                "task_fit",
+                "quality",
+                "reliability",
+                "free_headroom",
+                "latency",
+                "load",
+            )
+        },
+        "quality_basis": factors.get("quality_basis")
+        if factors.get("quality_basis") in {"measured", "unmeasured"}
+        else None,
+        "quality_samples": _number(factors.get("quality_samples")),
+        "task_profile": factors.get("task_profile")
+        if factors.get("task_profile")
+        in {"general", "coding", "reasoning", "translation", "extraction"}
+        else None,
+        "reliability_samples": _number(factors.get("reliability_samples")),
+    }
 
 
 def _time(value: Any) -> datetime | None:
@@ -756,7 +809,7 @@ class Dashboard:
             "local_caps": caps,
             "required_capacity": [
                 {"metric": _text(q.get("metric")), "window": _text(q.get("window"))}
-                for q in _rows(item.get("required_capacity"))
+                for q in _rows(item.get("required_capacity", []))
                 if _text(q.get("metric")) and _text(q.get("window"))
             ],
             "observations": [
@@ -792,9 +845,10 @@ class Dashboard:
                     if reviewed
                     else None,
                     "effective_remaining": _number(q.get("effective_remaining"))
-                    if _current(q.get("as_of"), q.get("valid_until"), self.clock())
+                    if observation_freshness(q, self.clock()) == "current"
                     else None,
-                    "current": _current(q.get("as_of"), q.get("valid_until"), self.clock()),
+                    "current": observation_freshness(q, self.clock()) == "current",
+                    "freshness_reason": observation_freshness(q, self.clock()),
                 }
                 for q in _rows(diag.get("quota_observations"))
             ],
@@ -1137,7 +1191,7 @@ class Dashboard:
                     "external_usage_scope": scope_note,
                     "note": scope_note,
                     "local_recorded_generation_attempts": None,
-                    "ledger_held_count": 0,
+                    "ledger_held_count": None,
                 }
             )
 
@@ -1220,7 +1274,7 @@ class Dashboard:
                     "external_usage_scope": scope_note,
                     "note": scope_note,
                     "local_recorded_generation_attempts": None,
-                    "ledger_held_count": 0,
+                    "ledger_held_count": None,
                 }
             )
 
@@ -1320,7 +1374,7 @@ class Dashboard:
                     "external_usage_scope": scope_note,
                     "note": scope_note,
                     "local_recorded_generation_attempts": None,
-                    "ledger_held_count": 0,
+                    "ledger_held_count": None,
                 }
             )
 
@@ -1353,18 +1407,83 @@ class Dashboard:
             row_copy["note"] = " ".join(n for n in notes if n)
             filtered.append(row_copy)
 
-        local_source = self.activity or (self.source if self.source.kind != "reviewed" else None)
         return {
             "state": "available",
-            "local_ledger_state": "available" if local_source is not None else "unavailable",
+            "local_ledger_state": "unavailable",
             "basis": "provider_reported_or_audited_account_usage_distinct_from_broker_ledger",
             "rows": filtered,
             "providers": filtered,
         }
 
+    @staticmethod
+    def _join_provider_ledger(report: dict[str, Any], rows: list[dict[str, Any]] | None) -> None:
+        """Join only the validated, already-filtered local history, never account counters."""
+        state = "available" if rows is not None else "unavailable"
+        report["local_ledger_state"] = state
+        unknown_fields = {
+            "input_tokens": "input_unknown_count",
+            "output_tokens": "output_unknown_count",
+            "total_tokens": "total_tokens_unknown_count",
+            "neurons": "neurons_unknown_count",
+            "audio_seconds": "audio_seconds_unknown_count",
+            "images": "images_unknown_count",
+            "pages": "pages_unknown_count",
+            "conversions": "conversions_unknown_count",
+        }
+        for provider in report.get("providers", []):
+            matching = [r for r in rows or [] if r["provider"] == provider["provider"]]
+            provider["local_ledger_state"] = state
+            requests = sum(r["requests"] for r in matching) if rows is not None else None
+            provider["local_recorded_generation_attempts"] = requests
+            held = [_number(r.get("ledger_held_count")) for r in matching]
+            provider["ledger_held_count"] = (
+                sum(v for v in held if v is not None)
+                if rows is not None and all(v is not None for v in held)
+                else None
+            )
+            metrics = []
+            for metric, unknown_field in unknown_fields.items():
+                # Explicit null/null means not applicable; a missing field is unknown.
+                applicable = [
+                    r
+                    for r in matching
+                    if not (
+                        unknown_field in r
+                        and r[unknown_field] is None
+                        and "reported_" + metric in r
+                        and r["reported_" + metric] is None
+                    )
+                ]
+                not_applicable = bool(matching) and not applicable
+                values = [_number(r.get("reported_" + metric)) for r in applicable]
+                unknowns = [_number(r.get(unknown_field)) for r in applicable]
+                unknown = (
+                    sum(v for v in unknowns if v is not None)
+                    if rows is not None and all(v is not None for v in unknowns)
+                    else None
+                )
+                known = [v for v in values if v is not None]
+                metrics.append(
+                    {
+                        "metric": metric,
+                        "reported": sum(known) if known else None,
+                        "unknown_count": unknown,
+                        "requests": requests,
+                        "coverage": "not_applicable"
+                        if not_applicable
+                        else "unknown"
+                        if unknown is None
+                        else "partial"
+                        if unknown
+                        else "complete",
+                    }
+                )
+            provider["local_reported_metrics"] = metrics
+
     def usage_report(self, raw: dict[str, Any]) -> dict[str, Any]:
         filters = _usage_filters(raw)
         provider_usage = self._provider_usage_report(filters)
+        self._join_provider_ledger(provider_usage, None)
         source = self.activity or (self.source if self.source.kind != "reviewed" else None)
         metadata: dict[str, Any] = {
             "kind": "gateway" if self.activity else self.source.kind,
@@ -1384,6 +1503,8 @@ class Dashboard:
             "filters": filters,
             "rows": None,
             "provider_usage": provider_usage,
+            "timeline": None,
+            "timeline_state": "unavailable",
             "task_metadata": {
                 "state": "unavailable",
                 "basis": "historical_task_labels_not_recorded",
@@ -1423,11 +1544,16 @@ class Dashboard:
                     raise ValueError
             result["rows"] = [
                 {
-                    **_project(row, USAGE_FIELDS),
+                    **{
+                        key: value
+                        for key, value in _project(row, USAGE_FIELDS).items()
+                        if key in row
+                    },
                     "task_type": row["task_type"] if typed else "unknown",
                 }
                 for row in rows
             ]
+            self._join_provider_ledger(provider_usage, result["rows"])
             if typed:
                 result["task_metadata"] = {
                     "state": "available_for_new_records",
@@ -1437,6 +1563,47 @@ class Dashboard:
             metadata.update(state="available", as_of=stamp(self.clock()))
         except Exception:  # noqa: BLE001 - unavailable is unknown, never a fabricated empty report
             return result
+        # A legacy or unavailable daily source must not invalidate a sound aggregate.
+        try:
+            history = source.usage_history({**filters, "group_by": "day"})
+            if not isinstance(history, dict) or history.get("task_types_recorded") is not True:
+                raise ValueError
+            daily = _rows(history.get("rows"))
+            fields = (
+                "requests",
+                "completed_count",
+                "failed_count",
+                "outcome_unknown_count",
+                "reported_total_tokens",
+                "total_tokens_unknown_count",
+                "ledger_held_count",
+            )
+            timeline = []
+            prior = ""
+            for row in daily:
+                date = row.get("date")
+                if (
+                    not isinstance(date, str)
+                    or not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", date)
+                    or datetime.fromisoformat(date).date().isoformat() != date
+                    or date <= prior
+                    or any(_number(row.get(k)) is None for k in fields[:4])
+                    or sum(row[k] for k in fields[1:4]) != row["requests"]
+                ):
+                    raise ValueError
+                prior = date
+                timeline.append(
+                    {
+                        "date": date,
+                        **{
+                            key: value for key, value in _project(row, fields).items() if key in row
+                        },
+                    }
+                )
+            result["timeline"] = timeline
+            result["timeline_state"] = "available"
+        except Exception:  # noqa: BLE001 - timeline unavailable never becomes a zero series
+            result["timeline_state"] = "unavailable"
         return result
 
     def advice(self, raw: dict[str, Any]) -> dict[str, Any]:
@@ -1529,16 +1696,35 @@ class Dashboard:
                     *_rows(candidate.get("quota_observations")),
                     *_rows(diag[identity].get("quota_observations")),
                 ]
+                # An explicit empty list is the Gateway's verified-free/local-budget
+                # policy, not missing provider evidence. Older catalogs retain the
+                # conservative fallback; local caps never become provider remaining.
+                local_capacity = (
+                    by_id[identity].get("required_capacity_declared") is True
+                    and by_id[identity].get("required_capacity") == []
+                )
                 required = {
                     (q["metric"], q["window"])
-                    for q in (target["required_capacity"] or target["local_caps"])
+                    for q in (
+                        target["required_capacity"]
+                        if local_capacity
+                        else target["required_capacity"] or target["local_caps"]
+                    )
                 }
+                if local_capacity and (
+                    by_id[identity].get("quota_basis") != "local_safety_cap"
+                    or by_id[identity].get("billing_evidence_state") != "disabled"
+                    or not {("requests", "rolling_minute"), ("requests", "day")}
+                    <= {(q["metric"], q["window"]) for q in target["local_caps"]}
+                ):
+                    reasons.append("local_budget_policy_unverified")
                 required.update(
                     (q.get("metric"), q.get("window"))
                     for q in observations
-                    if _current(q.get("as_of"), q.get("valid_until"), self.clock())
+                    if observation_freshness(q, self.clock()) == "current"
+                    and (not local_capacity or _number(q.get("effective_remaining")) is not None)
                 )
-                if not required:
+                if not required and not local_capacity:
                     reasons.append("quota_evidence_missing")
                 input_cost = _number(plan.get("estimated_input_tokens"))
                 output_cost = _number(
@@ -1562,6 +1748,8 @@ class Dashboard:
                     or output_cost > (_number(estimate.get("max_output_tokens")) or 0)
                 ):
                     neuron_cost = None
+                if local_capacity and target["provider"] == "cloudflare" and neuron_cost is None:
+                    reasons.append("quota_cost_unknown:neurons")
                 costs = {
                     "requests": 1,
                     "input_tokens": input_cost,
@@ -1589,7 +1777,7 @@ class Dashboard:
                     valid = [
                         q
                         for q in matches
-                        if _current(q.get("as_of"), q.get("valid_until"), self.clock())
+                        if observation_freshness(q, self.clock()) == "current"
                         and q.get("provenance") in {"official", "observed"}
                         and q.get("confidence")
                         in {"provider_reported", "administrator_verified", "configured_evidence"}
@@ -1606,9 +1794,13 @@ class Dashboard:
                 local_caps = (
                     by_id[identity].get("local_safety_caps") or by_id[identity].get("quotas") or []
                 )
-                if not target["required_capacity"] and any(
-                    q.get("window") in {"day", "month"} and q.get("timezone", "UTC") != "UTC"
-                    for q in local_caps
+                if (
+                    not local_capacity
+                    and not target["required_capacity"]
+                    and any(
+                        q.get("window") in {"day", "month"} and q.get("timezone", "UTC") != "UTC"
+                        for q in local_caps
+                    )
                 ):
                     reasons.append("quota_window_alignment_unknown")
                 candidates.append(
@@ -1619,21 +1811,10 @@ class Dashboard:
                         "safe": not reasons,
                         "reasons": list(dict.fromkeys(reasons)),
                         "remaining": target["observations"],
-                        "ranking": {
-                            "policy": "verified_expiry_then_headroom_health",
-                            "value_loss_seconds": _number(
-                                candidate.get("ranking_factors", {}).get("value_loss_seconds")
-                            ),
-                            "value_loss_basis": candidate.get("ranking_factors", {}).get(
-                                "value_loss_basis"
-                            )
-                            if candidate.get("ranking_factors", {}).get("value_loss_basis")
-                            in {"credit_expiry", "quota_reset"}
-                            else None,
-                            "observed_headroom": _fraction(
-                                candidate.get("ranking_factors", {}).get("observed_headroom")
-                            ),
-                        },
+                        "capacity_basis": "verified_free_eligibility_with_local_safety_caps"
+                        if local_capacity
+                        else "current_authoritative_provider_remaining",
+                        "ranking": _ranking_projection(candidate.get("ranking_factors")),
                     }
                 )
             if len(candidates) != len(catalog) or len({r["target_id"] for r in candidates}) != len(
@@ -1654,7 +1835,12 @@ class Dashboard:
                 "decision": "recommend" if selected else "ask_user",
                 "selected_target": selected,
                 "candidates": candidates,
-                "reasons": ["current_authoritative_free_capacity"]
+                "reasons": [
+                    "verified_free_eligibility_and_local_safety_caps"
+                    if selected["capacity_basis"]
+                    == "verified_free_eligibility_with_local_safety_caps"
+                    else "current_authoritative_free_capacity"
+                ]
                 if selected
                 else ["no_confirmed_safe_target"],
                 "recheck_at": recheck,

@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "provider": "cerebras",
+  "source": "https://api.cerebras.ai/public/v1/models",
+  "checked_at": "2026-11-16T15:45:02.488638+00:00",
+  "complete": true,
+  "models": [
+    {
+      "model": "gpt-oss-120b",
+      "capability": "unknown",
+      "hosting": "hosted",
+      "endpoint": null,
+      "protocol": null,
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": null,
+      "max_output_tokens": null,
+      "features": []
+    },
+    {
+      "model": "qwen-3.8-27b",
+      "capability": "unknown",
+      "hosting": "hosted",
+      "endpoint": null,
+      "protocol": null,
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": null,
+      "max_output_tokens": null,
+      "features": []
+    }
+  ]
+}

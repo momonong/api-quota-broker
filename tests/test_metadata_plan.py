@@ -58,7 +58,7 @@ def test_fixed_plan_bounds_and_no_execution_or_secret_resolution(monkeypatch, ca
     assert credentials["minimum_remaining_seconds_before_batch"] == 270
     assert credentials["renew"] is False and credentials["executed_by_this_tool"] is False
     assert credentials["persist_secrets"] is False and credentials["output_account_id"] is False
-    assert set(result["declared_credential_refs"]) == set(plan.PROVIDERS)
+    assert set(result["declared_credential_refs"]) == {p["provider"] for p in result["providers"]}
     assert all(
         set(request["authentication"]) == {"credential_ref", "header", "scheme"}
         for request in requests

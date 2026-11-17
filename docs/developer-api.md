@@ -1,4 +1,4 @@
-# Quota 開發者 API／Python SDK 2.0.0
+# Quota 開發者 API／Python SDK 2.1.0
 
 其他專案使用同一個 `ProjectClient`、HTTPS 入口及自己的專案 token，選擇 `local_only` 或 `cloud_only`。SDK 自動完成內容加解密、設定簽章驗證及每次請求的短期上下文管理。
 
@@ -12,7 +12,7 @@
 python -m venv .venv
 .venv/bin/python -m pip install --constraint ./constraints-linux-py312.txt \
   ./quota_broker_ohttp-0.1.0-cp312-abi3-manylinux_2_34_x86_64.whl \
-  './api_quota_broker-2.0.0-py3-none-any.whl[encrypted]'
+  './api_quota_broker-2.1.0-py3-none-any.whl[encrypted]'
 ```
 
 消費端不需要 Rust、供應商 key、Broker 資料庫或模型權重。維護者的建置與金鑰操作見 [服務指南](encrypted-local-api.md)。其他 OS／架構尚未驗收，不能要求消費端自行編譯來冒充支援。
@@ -118,3 +118,16 @@ outcome = client.wait("report-20261113-001", wait_timeout=120)
 非敏感舊程式可明確用 `LegacyProjectClient` 維持原 JSON 行為；它沒有應用層內容加密。敏感遷移時更換舊 token，僅配置給新 client。伺服器拒絕明文請求不能撤回代理已看過的 token。
 
 [OpenAPI](openapi.json) 描述 encrypted/config 外層與內層工作契約。其他語言須提供相同標準封裝及信任驗證；目前未交付 JS／瀏覽器 SDK。`http_client.py` 僅供非敏感 legacy 使用。新版範例命令見 [examples](../examples/project_client/README.md)。
+
+
+## 到期優先與過載重試（2026-11-17 未部署候選）
+
+以上正式 2.0.0 接入資訊不變；本節為此次程式候選，尚未完成正式切換。文字任務可加 `"requirements": {"profile": "coding"}`，也支援 `general`、`reasoning`、`translation`、`extraction`。省略時 `code_completion` 用 coding、translation 用 translation，其他用 general。profile 只參與適配與品質評分，不會賦予模型未核對的能力。可先用同一 `explain` 看分數、各因素及品質樣本數。
+
+符合免費資格、能力、憑證、有效配額、健康與並行限制的路由，再最大化 `expiry_utility_v1` 效用。權重為到期急迫性 60%、任務適配×品質 17%、歷史穩定性 15%、免費餘額比例 5%、延遲 2%、負載 1%。這些權重反映本產品偏好，不是假稱訓練得出的最優參數。品質採有時效的任務評測，無評測顯示 unmeasured；HTTP 成功只作穩定性證據。同分沿用 Gateway 的 selection_order，建議與派送一致。
+
+新工作的 `max_attempts` 預設 3，顯式上限 32；既有省略參數而已保存為 32 的工作保留原身份與預算，不能靠重送取得新的預算。Broker 只重試已完整接收且可識別的同步過載拒絕，包括既定 503 error envelopes，以及固定 `rejectIfBusy` Cloudflare 429/code 3040。可用其他合格供應商時可切換；指定 provider/model 的請求仍保留該限制。
+
+直接執行使用有上限的指數退避與 jitter；佇列用持久化業務 key、累計 attempt 計算並保存下次時間，重啟不歸零。兩者遵守 Retry-After、deadline 與總 attempt 預算。每次實際嘗試獨立入帳；過載回覆未提供 tokens/Neurons 時保留未知用量，不以重試成功沖銷。timeout、部分回應、202、含糊 502/504 或結果 unknown 不自動重送。消費端沿原 request key 查 status/result，無須自行換 key 重試。
+
+供應商列表、計費資格與模型品質是不同證據；完整性與已知缺口見 [官方盤點](provider-inventory/README.md)，操作及驗證狀態見 [本次交付紀錄](reliability-expiry-2026-11-17.md)。

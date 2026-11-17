@@ -224,7 +224,7 @@ def test_existing_non_openai_provider_new_model_config_only(tmp_path, monkeypatc
             == "https://api.cloudflare.com/client/v4/accounts/account/ai/run/@cf/meta/fixture-new"
         )
         assert headers == {"Authorization": "Bearer fixture-secret"}
-        assert payload == {"prompt": "hello", "max_tokens": 42}
+        assert payload == {"prompt": "hello", "max_tokens": 42, "options": {"rejectIfBusy": True}}
         reply = {
             "result": {
                 "response": "fixture answer",

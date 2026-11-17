@@ -24,7 +24,7 @@ import subprocess
 import sys
 import time
 from contextlib import closing
-from datetime import datetime
+from datetime import UTC, datetime
 from http.client import HTTPConnection
 from pathlib import Path
 from uuid import UUID
@@ -264,8 +264,96 @@ def configuration_instant(value):
         raise Refused("configuration_timestamp") from None
 
 
-def validate_configuration(files):
+def validate_local_budget(target, inventory_start, inventory_end, current):
+    """An explicit local budget requires fresh free-only evidence, never a fake balance."""
+    start = configuration_instant(target.get("verified_at"))
+    end = configuration_instant(target.get("expires_at"))
+    need(
+        target.get("free_eligible") is True
+        and target.get("billing_enabled") is False
+        and target.get("billing_evidence_state") == "disabled"
+        and inventory_start <= current < inventory_end
+        and start <= current < end,
+        "local_budget_requires_verified_free_eligibility",
+    )
+    caps = target.get("local_safety_caps")
+    need(isinstance(caps, list) and 0 < len(caps) <= 32, "local_budget_caps")
+    buckets, dimensions = set(), set()
+    for cap in caps:
+        need(
+            isinstance(cap, dict)
+            and isinstance(cap.get("bucket"), str)
+            and 0 < len(cap["bucket"]) <= 160
+            and cap["bucket"] not in buckets
+            and isinstance(cap.get("metric"), str)
+            and isinstance(cap.get("window"), str)
+            and type(cap.get("limit")) is int
+            and 0 < cap["limit"] <= 10**12,
+            "local_budget_caps",
+        )
+        buckets.add(cap["bucket"])
+        dimensions.add((cap["metric"], cap["window"]))
+    need({("requests", "rolling_minute"), ("requests", "day")} <= dimensions, "local_budget_caps")
+    if target["provider"] != "cloudflare":
+        return
+    estimate = target.get("neuron_estimate")
+    need(
+        isinstance(estimate, dict)
+        and set(estimate)
+        == {
+            "amount",
+            "max_input_tokens",
+            "max_output_tokens",
+            "source",
+            "verified_at",
+            "expires_at",
+        }
+        and all(
+            type(estimate.get(k)) is int and 0 < estimate[k] <= 10**12
+            for k in ("amount", "max_input_tokens", "max_output_tokens")
+        )
+        and estimate.get("source")
+        in {"trusted_operator", "cloudflare_llama_3_2_1b_formula", "cloudflare_gemma_4_26b_formula"}
+        and type(target.get("max_output_tokens")) is int
+        and 0 < target["max_output_tokens"] <= estimate["max_output_tokens"]
+        and configuration_instant(estimate.get("verified_at"))
+        <= current
+        < configuration_instant(estimate.get("expires_at"))
+        and any(
+            cap["metric"] == "neurons"
+            and cap["window"] == "day"
+            and cap.get("timezone", "UTC") == "UTC"
+            and cap["limit"] <= 10000
+            for cap in caps
+        ),
+        "local_budget_requires_current_neuron_bound",
+    )
+    formulas = {
+        "cloudflare_llama_3_2_1b_formula": ("@cf/meta/llama-3.2-1b-instruct", 2457, 18252),
+        "cloudflare_gemma_4_26b_formula": ("@cf/google/gemma-4-26b-a4b-it", 9091, 27273),
+    }
+    if estimate["source"] in formulas:
+        model, input_rate, output_rate = formulas[estimate["source"]]
+        need(
+            target.get("model") == model
+            and estimate["amount"]
+            >= max(
+                1,
+                (
+                    estimate["max_input_tokens"] * input_rate
+                    + estimate["max_output_tokens"] * output_rate
+                    + 999999
+                )
+                // 1000000,
+            ),
+            "local_budget_requires_current_neuron_bound",
+        )
+
+
+def validate_configuration(files, *, now=None):
     """Cheap stdlib cross-file gates only; never import candidate application code."""
+    current = now or datetime.now(UTC)
+    need(current.tzinfo is not None, "configuration_timestamp")
     inventory = parse(files["config/secret-inventory.json"])
     refs = PROVIDER_REFS
     need(
@@ -309,7 +397,7 @@ def validate_configuration(files):
         if provider == "cloudflare":
             required_names.add("CLOUDFLARE_ACCOUNT_ID")
         required = target.get("required_capacity")
-        need(isinstance(required, list) and 0 < len(required) <= 32, "enabled_required_capacity")
+        need(isinstance(required, list) and len(required) <= 32, "enabled_required_capacity")
         dimensions = set()
         for row in required:
             need(
@@ -337,16 +425,19 @@ def validate_configuration(files):
             dimension = (row["metric"], row["window"])
             need(dimension not in dimensions, "enabled_required_capacity")
             dimensions.add(dimension)
-        need(
-            ("credits_usd_micros", "budget") in dimensions
-            if provider == "openai"
-            else ("requests", "day") in dimensions
-            if provider == "openrouter"
-            else ("neurons", "day") in dimensions
-            if provider == "cloudflare"
-            else bool(dimensions),
-            "enabled_required_capacity",
-        )
+        if not dimensions:
+            validate_local_budget(target, inventory_start, inventory_end, current)
+        else:
+            need(
+                ("credits_usd_micros", "budget") in dimensions
+                if provider == "openai"
+                else ("requests", "day") in dimensions
+                if provider == "openrouter"
+                else ("neurons", "day") in dimensions
+                if provider == "cloudflare"
+                else bool(dimensions),
+                "enabled_required_capacity",
+            )
         start = configuration_instant(target.get("verified_at"))
         end = configuration_instant(target.get("expires_at"))
         need(start < end <= inventory_end, "eligibility_exceeds_inventory_validity")

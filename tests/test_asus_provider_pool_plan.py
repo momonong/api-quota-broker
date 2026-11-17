@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
+from asus_packet_fixtures import HistoricalOpsClock
 
 from quota_broker.config import (
     CF_NEURON_FORMULA,
@@ -105,7 +106,8 @@ def test_formula_uses_published_integer_coefficients_and_ceil():
         cloudflare_neuron_upper_bound(True, 1)
 
 
-def test_formula_scope_and_underestimate_are_rejected_by_real_parser(tmp_path):
+def test_formula_scope_and_underestimate_are_rejected_by_real_parser(tmp_path, monkeypatch):
+    monkeypatch.setattr(pool, "datetime", HistoricalOpsClock)
     config = pool.qualified_config(
         {"cloudflare"}, "2026-11-02T03:36:17Z", "2026-09-30T00:00:00Z", normal=True
     )
@@ -126,14 +128,15 @@ def test_formula_scope_and_underestimate_are_rejected_by_real_parser(tmp_path):
         load_gateway_config(path)
 
 
-def test_cf_usage_unknown_does_not_hold_concurrency_forever_and_resets_daily(tmp_path):
+def test_cf_usage_unknown_does_not_hold_concurrency_forever_and_resets_daily(tmp_path, monkeypatch):
+    monkeypatch.setattr(pool, "datetime", HistoricalOpsClock)
     config = pool.qualified_config(
         {"cloudflare"}, "2026-11-02T03:36:17Z", "2026-09-30T00:00:00Z", normal=True
     )
     path = tmp_path / "config.json"
     path.write_text(json.dumps(config))
     targets = load_gateway_config(path)
-    now = datetime.now(UTC) + timedelta(seconds=1)
+    now = HistoricalOpsClock.now(UTC) + timedelta(seconds=1)
     clock = [now]
     calls = []
 

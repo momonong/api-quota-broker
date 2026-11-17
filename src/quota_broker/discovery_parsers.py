@@ -29,6 +29,10 @@ MODEL_FIELDS = (
     "features",
 )
 SOURCES = {
+    "openai": "https://api.openai.com/v1/models",
+    "sambanova": "https://api.sambanova.ai/v1/models",
+    "cerebras": "https://api.cerebras.ai/public/v1/models",
+    "huggingface": "https://router.huggingface.co/v1/models",
     "nvidia": "https://integrate.api.nvidia.com/v1/models",
     "groq": "https://api.groq.com/openai/v1/models",
     "mistral": "https://api.mistral.ai/v1/models",
@@ -156,7 +160,11 @@ def _collection(provider: str, raw: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _complete(provider: str, raw: dict[str, Any], count: int, output_modalities: str) -> bool:
-    if not count or (provider == "openrouter" and output_modalities != "all"):
+    if (
+        not count
+        or provider == "huggingface"
+        or (provider == "openrouter" and output_modalities != "all")
+    ):
         return False
     for name in ("nextPageToken", "next_page_token", "next_cursor", "next", "previous", "prev"):
         if raw.get(name) not in (None, ""):
@@ -199,7 +207,12 @@ def _complete(provider: str, raw: dict[str, Any], count: int, output_modalities:
 def _nvidia(item: dict[str, Any]) -> list[dict[str, Any]]:
     # The public /v1/models list does not describe per-model tasks or protocols.
     # In particular, a name containing "embed", "vision", or "riva" is not proof.
-    return [_row(_id(item.get("id")))]
+    features = set()
+    if item.get("supports_thinking") is True:
+        features.add("reasoning")
+    if item.get("supports_tools") is True:
+        features.add("tool_calling")
+    return [_row(_id(item.get("id")), context=item.get("context_window"), features=features)]
 
 
 def _groq(item: dict[str, Any]) -> list[dict[str, Any]]:
@@ -578,6 +591,9 @@ def parse_models(
     for value in values:
         if provider == "nvidia":
             rows = _nvidia(value)
+        elif provider in {"openai", "sambanova", "cerebras", "huggingface"}:
+            # Identity-only lists never prove a task, wire protocol, or account access.
+            rows = [_row(_id(value.get("id")))]
         elif provider == "groq":
             rows = _groq(value)
         elif provider == "mistral":

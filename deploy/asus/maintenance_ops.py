@@ -397,7 +397,7 @@ def queue_gate(con, *, first):
 
 def copy_dashboard_assets(source, destination):
     """Copy only the reviewed package assets; never accept an arbitrary subtree."""
-    names = {"index.html", "dashboard.css", "dashboard.js"}
+    names = {"index.html", "dashboard.css", "dashboard.js", "provider-inventory.json"}
     need(source.is_dir() and not source.is_symlink(), "runtime_invalid")
     need({p.name for p in source.iterdir()} == names, "runtime_invalid")
     need(
@@ -517,6 +517,7 @@ class Native:
         )
 
     def upload(self):
+        verifier = module(self.e, "release_verifier.py")
         # First activation retains the reviewed fixed packet. Later authorized
         # code-only updates use a directory derived solely from this operation ID.
         directory = (
@@ -553,8 +554,10 @@ class Native:
                 # This digest is an artifact identity, NOT a trust root. Root
                 # validates every allowlisted member and never executes any of it.
                 with tarfile.open(fileobj=io.BytesIO(raw), mode="r:") as archive:
-                    members = list(itertools.islice(archive, 65))
-                    need(len(members) <= 64)
+                    # The pinned verifier owns the exact release allowlist.
+                    member_bound = len(verifier._paths()) + 1  # plus release manifest
+                    members = list(itertools.islice(archive, member_bound + 1))
+                    need(len(members) == member_bound)
                     manifests = [m for m in members if m.name == "release-manifest.json"]
                     need(len(manifests) == 1)
                     member = manifests[0]
@@ -564,7 +567,6 @@ class Native:
                 self.wheel = read("project.whl", 2097152)
         finally:
             os.close(parent)
-        verifier = module(self.e, "release_verifier.py")
         verified = verifier.verify_archive(raw, self.manifest_sha)
         self.version = verified["release"]["package_version"]
         need(re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", self.version))

@@ -193,10 +193,70 @@ def enabled_provider_names(targets):
             and target.secret_ref == PROVIDER_REFS[target.provider]
             and target.account_id_ref
             == ("CLOUDFLARE_ACCOUNT_ID" if target.provider == "cloudflare" else None)
-            and target.required_capacity
-            and (target.provider != "cloudflare" or ("neurons", "day") in target.required_capacity),
+            and (
+                not target.required_capacity
+                or target.provider != "cloudflare"
+                or ("neurons", "day") in target.required_capacity
+            ),
             "enabled_target_requires_capacity",
         )
+        if not target.required_capacity:
+            # Startup validates policy shape, not time-dependent route readiness.
+            # An expired route remains inspectable; Gateway/Project dispatch gates
+            # enforce its eligibility, inventory and estimate freshness per request.
+            need(
+                getattr(target, "required_capacity_declared", False) is True
+                and target.quota_basis == "local_safety_cap"
+                and target.free_eligible is True
+                and target.billing_enabled is False
+                and target.billing_evidence_state == "disabled"
+                and target.verified_at is not None
+                and target.expires_at is not None
+                and target.verified_at.tzinfo is not None
+                and target.expires_at.tzinfo is not None
+                and target.verified_at < target.expires_at
+                and {("requests", "rolling_minute"), ("requests", "day")}
+                <= {(q.metric, q.window) for q in target.quotas}
+                and all(type(q.limit) is int and q.limit > 0 and q.bucket for q in target.quotas),
+                "enabled_target_requires_verified_local_budget",
+            )
+            if target.provider == "cloudflare":
+                from quota_broker.config import CF_NEURON_FORMULAS, cloudflare_neuron_upper_bound
+
+                estimate = target.neuron_estimate
+                need(
+                    estimate is not None
+                    and all(
+                        type(getattr(estimate, k)) is int and 0 < getattr(estimate, k) <= 10**12
+                        for k in ("amount", "max_input_tokens", "max_output_tokens")
+                    )
+                    and estimate.verified_at.tzinfo is not None
+                    and estimate.expires_at.tzinfo is not None
+                    and estimate.verified_at < estimate.expires_at
+                    and target.max_output_tokens <= estimate.max_output_tokens
+                    and any(
+                        q.metric == "neurons"
+                        and q.window == "day"
+                        and q.timezone == "UTC"
+                        and q.limit <= 10000
+                        for q in target.quotas
+                    ),
+                    "enabled_target_requires_neuron_bound",
+                )
+                if estimate.source == "trusted_operator":
+                    pass  # Existing explicitly verified per-target upper-bound contract.
+                else:
+                    need(
+                        estimate.source in CF_NEURON_FORMULAS
+                        and target.model == CF_NEURON_FORMULAS[estimate.source][0]
+                        and estimate.amount
+                        >= cloudflare_neuron_upper_bound(
+                            estimate.max_input_tokens,
+                            estimate.max_output_tokens,
+                            model=target.model,
+                        ),
+                        "enabled_target_requires_neuron_bound",
+                    )
         names.add(target.secret_ref)
         if target.account_id_ref:
             names.add(target.account_id_ref)

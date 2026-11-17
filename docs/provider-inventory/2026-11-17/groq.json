@@ -1,0 +1,156 @@
+{
+  "schema_version": 1,
+  "provider": "groq",
+  "source": "https://api.groq.com/openai/v1/models",
+  "checked_at": "2026-11-16T16:03:52.377431+00:00",
+  "complete": true,
+  "models": [
+    {
+      "model": "allam-2-7b",
+      "capability": "unknown",
+      "hosting": "hosted",
+      "endpoint": null,
+      "protocol": null,
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 4096,
+      "max_output_tokens": 4096,
+      "features": []
+    },
+    {
+      "model": "canopylabs/orpheus-arabic-saudi",
+      "capability": "unknown",
+      "hosting": "hosted",
+      "endpoint": null,
+      "protocol": null,
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": null,
+      "max_output_tokens": null,
+      "features": [
+        "token_limits_conflicting"
+      ]
+    },
+    {
+      "model": "canopylabs/orpheus-v1-english",
+      "capability": "unknown",
+      "hosting": "hosted",
+      "endpoint": null,
+      "protocol": null,
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": null,
+      "max_output_tokens": null,
+      "features": [
+        "token_limits_conflicting"
+      ]
+    },
+    {
+      "model": "meta-llama/llama-prompt-guard-2-22m",
+      "capability": "unknown",
+      "hosting": "hosted",
+      "endpoint": null,
+      "protocol": null,
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 512,
+      "max_output_tokens": 512,
+      "features": []
+    },
+    {
+      "model": "meta-llama/llama-prompt-guard-2-86m",
+      "capability": "unknown",
+      "hosting": "hosted",
+      "endpoint": null,
+      "protocol": null,
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 512,
+      "max_output_tokens": 512,
+      "features": []
+    },
+    {
+      "model": "openai/gpt-oss-120b",
+      "capability": "unknown",
+      "hosting": "hosted",
+      "endpoint": null,
+      "protocol": null,
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 131072,
+      "max_output_tokens": 65536,
+      "features": []
+    },
+    {
+      "model": "openai/gpt-oss-20b",
+      "capability": "unknown",
+      "hosting": "hosted",
+      "endpoint": null,
+      "protocol": null,
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 131072,
+      "max_output_tokens": 65536,
+      "features": []
+    },
+    {
+      "model": "openai/gpt-oss-safeguard-20b",
+      "capability": "unknown",
+      "hosting": "hosted",
+      "endpoint": null,
+      "protocol": null,
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 131072,
+      "max_output_tokens": 65536,
+      "features": []
+    },
+    {
+      "model": "qwen/qwen3.8-27b",
+      "capability": "unknown",
+      "hosting": "hosted",
+      "endpoint": null,
+      "protocol": null,
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 131072,
+      "max_output_tokens": 16384,
+      "features": []
+    },
+    {
+      "model": "whisper-large-v3",
+      "capability": "unknown",
+      "hosting": "hosted",
+      "endpoint": null,
+      "protocol": null,
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 448,
+      "max_output_tokens": 448,
+      "features": []
+    },
+    {
+      "model": "whisper-large-v3-turbo",
+      "capability": "unknown",
+      "hosting": "hosted",
+      "endpoint": null,
+      "protocol": null,
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 448,
+      "max_output_tokens": 448,
+      "features": []
+    }
+  ]
+}

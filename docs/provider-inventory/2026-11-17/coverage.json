@@ -1,0 +1,78 @@
+{
+  "schema_version": 1,
+  "checked_at": "2026-11-16T16:03:51.187562+00:00",
+  "model_calls": 0,
+  "payments": 0,
+  "account_identifiers_output": false,
+  "raw_replies_output": false,
+  "providers": [
+    {
+      "provider": "google",
+      "max_pages": 5,
+      "max_models": 10000,
+      "http_status": 200,
+      "requests": 1,
+      "status": "observed",
+      "complete": true,
+      "unique_models": 64,
+      "capability_records": 84,
+      "pages": 1
+    },
+    {
+      "provider": "groq",
+      "max_pages": 1,
+      "max_models": 10000,
+      "http_status": 200,
+      "requests": 1,
+      "status": "observed",
+      "complete": true,
+      "unique_models": 11,
+      "capability_records": 11,
+      "pages": 1
+    },
+    {
+      "provider": "mistral",
+      "max_pages": 1,
+      "max_models": 10000,
+      "http_status": 200,
+      "requests": 1,
+      "status": "observed",
+      "complete": true,
+      "unique_models": 53,
+      "capability_records": 58,
+      "pages": 1
+    },
+    {
+      "provider": "cloudflare",
+      "max_pages": 5,
+      "max_models": 10000,
+      "http_status": 200,
+      "requests": 2,
+      "status": "observed",
+      "complete": false,
+      "unique_models": 75,
+      "capability_records": 75,
+      "pages": 2,
+      "pagination_reason": "reported_total_mismatch_after_empty_next_page",
+      "reported_total_count": 334,
+      "next_page_rows": 0
+    },
+    {
+      "provider": "openai",
+      "max_pages": 1,
+      "max_models": 10000,
+      "http_status": 200,
+      "requests": 1,
+      "status": "observed",
+      "complete": true,
+      "unique_models": 96,
+      "capability_records": 96,
+      "pages": 1,
+      "private_model_identities_omitted": 0
+    }
+  ],
+  "model_list_get_requests": 6,
+  "cloudflare_usage_queries": 1,
+  "cloudflare_usage_status": "missing_permission",
+  "cloudflare_usage_reason": "analytics_permission_required"
+}

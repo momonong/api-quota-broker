@@ -1,0 +1,103 @@
+{
+  "targets": [
+    {
+      "id": "nvidia-model-candidate",
+      "provider": "nvidia",
+      "model": "z-ai/glm-5.3-flash",
+      "account_id": "unbound-candidate",
+      "enabled": false,
+      "free_eligible": false,
+      "billing_enabled": false,
+      "billing_evidence_state": "unknown",
+      "verified_at": null,
+      "expires_at": null,
+      "source": "disabled candidate; account eligibility and quota evidence still required",
+      "secret_ref": "NVIDIA_API_KEY",
+      "concurrency_limit": 1,
+      "max_output_tokens": 4096,
+      "capacity": {
+        "kind": "unknown",
+        "refresh_seconds": null,
+        "as_of": null,
+        "source": null,
+        "scope": null,
+        "expires_at": null
+      },
+      "provider_quota_facts": [],
+      "local_safety_caps": [
+        {
+          "bucket": "nvidia-model-candidate-rpm",
+          "metric": "requests",
+          "window": "rolling_minute",
+          "limit": 5
+        },
+        {
+          "bucket": "nvidia-model-candidate-rpd",
+          "metric": "requests",
+          "window": "day",
+          "limit": 100
+        }
+      ]
+    },
+    {
+      "id": "cloudflare-model-candidate",
+      "provider": "cloudflare",
+      "model": "@cf/google/gemma-4-26b-a4b-it",
+      "account_id": "unbound-candidate",
+      "enabled": false,
+      "free_eligible": false,
+      "billing_enabled": false,
+      "billing_evidence_state": "unknown",
+      "verified_at": null,
+      "expires_at": null,
+      "source": "disabled candidate; account eligibility and quota evidence still required",
+      "secret_ref": "CLOUDFLARE_API_TOKEN",
+      "concurrency_limit": 1,
+      "max_output_tokens": 4096,
+      "capacity": {
+        "kind": "unknown",
+        "refresh_seconds": null,
+        "as_of": null,
+        "source": null,
+        "scope": null,
+        "expires_at": null
+      },
+      "provider_quota_facts": [],
+      "local_safety_caps": [
+        {
+          "bucket": "cloudflare-model-candidate-rpm",
+          "metric": "requests",
+          "window": "rolling_minute",
+          "limit": 5
+        },
+        {
+          "bucket": "cloudflare-model-candidate-rpd",
+          "metric": "requests",
+          "window": "day",
+          "limit": 100
+        },
+        {
+          "bucket": "cloudflare-model-candidate-neurons",
+          "metric": "neurons",
+          "window": "day",
+          "limit": 10000
+        }
+      ],
+      "account_id_ref": "CLOUDFLARE_ACCOUNT_ID",
+      "required_capacity": [
+        {
+          "metric": "neurons",
+          "window": "day"
+        }
+      ],
+      "neuron_estimate": {
+        "amount": 410,
+        "max_input_tokens": 32768,
+        "max_output_tokens": 4096,
+        "source": "cloudflare_gemma_4_26b_formula",
+        "verified_at": "2026-11-16T16:00:00Z",
+        "expires_at": "2026-11-23T16:00:00Z"
+      }
+    }
+  ]
+}

@@ -92,9 +92,9 @@ def test_large_refresh_bounded_request_and_full_candidate_pages(api):
     assert request(api, "/v1/admin/discovery/refresh", payload, token=ADMIN)[0] == 200
     status, first = request(api, "/v1/coverage?provider=nvidia&limit=1000")
     assert status == 200 and len(first["records"]) == 1000
-    assert first["summary"]["total"] == 2004  # Includes three historical registry seeds.
+    assert first["summary"]["total"] == 2005  # Includes four reviewed NVIDIA registry seeds.
     status, bundle = request(api, "/v1/coverage/candidates?provider=nvidia")
-    assert status == 200 and len(bundle["target_candidates"]) == 2004
+    assert status == 200 and len(bundle["target_candidates"]) == 2005
     assert all(
         row["disabled"] and not row["activation_allowed"] for row in bundle["target_candidates"]
     )
@@ -135,7 +135,7 @@ def test_local_cli_refresh_attest_coverage_and_candidate_bundle(local, monkeypat
     )
     assert page["summary"]["total"] == 1 and page["records"][0]["evidence_eligible"]
     bundle = invoke(monkeypatch, capsys, local + ["discovery-candidates", "--provider", "nvidia"])
-    assert len(bundle["target_candidates"]) == 4 and not bundle["activation_allowed"]
+    assert len(bundle["target_candidates"]) == 5 and not bundle["activation_allowed"]
 
 
 def test_public_cli_requires_explicit_fixed_provider_and_modalities(local, monkeypatch, capsys):

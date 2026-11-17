@@ -5,6 +5,7 @@ import binascii
 import hashlib
 import hmac
 import json
+import math
 import re
 import sqlite3
 import time
@@ -15,6 +16,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from . import routing as selection
 from . import token_preflight
 from .config import Quota, SecretInventory, Target
 from .core import Broker, BrokerError, canonical, stamp, utcnow
@@ -33,7 +35,7 @@ from .gateway_providers import (
     safe_transport_diagnostics,
 )
 from .registry import Registry
-from .retry import parse_retry_after
+from .retry import complete_overload_refusal, parse_retry_after, retry_delay
 from .routing import RoutingState
 
 ProviderTransport = Callable[
@@ -260,7 +262,7 @@ def validate_task(
         extras["execution_policy"] = policy
     if "requirements" in raw:
         requirements = raw["requirements"]
-        if not isinstance(requirements, dict) or set(requirements) - {"features"}:
+        if not isinstance(requirements, dict) or set(requirements) - {"features", "profile"}:
             raise GatewayError("invalid_request", "invalid task requirements")
         features = requirements.get("features", [])
         if (
@@ -273,6 +275,13 @@ def validate_task(
         ):
             raise GatewayError("invalid_request", "invalid task features")
         extras["requirements"] = {"features": sorted(set(features))}
+        if "profile" in requirements:
+            if (
+                not isinstance(requirements["profile"], str)
+                or requirements["profile"] not in selection.PROFILES
+            ):
+                raise GatewayError("invalid_request", "invalid task profile")
+            extras["requirements"]["profile"] = requirements["profile"]
     if "priority" in raw:
         if type(raw["priority"]) is not int or not -100 <= raw["priority"] <= 100:
             raise GatewayError("invalid_request", "priority must be -100..100")
@@ -298,7 +307,7 @@ def validate_task(
         features = set(extras.get("requirements", {}).get("features", [])) | set(
             prepared.required_features
         )
-        extras["requirements"] = {"features": sorted(features)}
+        extras["requirements"] = {**extras.get("requirements", {}), "features": sorted(features)}
         pending: list[object] = [content]
         continuation = "google_continuation" in features
         while pending:
@@ -364,6 +373,7 @@ class Gateway:
         self.secret_resolver = secret_resolver
         self.transport = transport
         self.clock = clock
+        self.sleep: Callable[[float], None] = time.sleep
         self.secret_inventory = secret_inventory
         self.registry = registry or Registry.builtin()
         self.family_registry = family_registry or FamilyRegistry.builtin()
@@ -382,6 +392,7 @@ class Gateway:
         with closing(sqlite3.connect(self.db)) as con, con:
             con.execute("BEGIN IMMEDIATE")
             token_preflight.initialize(con)
+            selection.initialize(con)
             con.execute("""
                 CREATE TABLE IF NOT EXISTS gateway_tasks (
                     request_key TEXT PRIMARY KEY, payload_hmac TEXT NOT NULL,
@@ -772,7 +783,10 @@ class Gateway:
             ledger_attempt = self.broker.status(attempt["reservation_id"], expire_unsent=False)
             attempt["ledger_state"] = ledger_attempt["state"]
             attempt["ledger_basis"] = (
-                "settled_provider_usage"
+                "observed_http_request"
+                if ledger_attempt["state"] == "failed"
+                and attempt["usage_source"] == "observed_http_request"
+                else "settled_provider_usage"
                 if ledger_attempt["state"] in {"completed", "failed"}
                 else "rejected_zero_usage"
                 if ledger_attempt["state"] == "quota_rejected"
@@ -790,7 +804,9 @@ class Gateway:
             result["ledger_state"] = ledger["state"]
             result["ledger_dispatched_at"] = ledger["dispatched_at"]
             result["ledger_basis"] = (
-                "settled_provider_usage"
+                "observed_http_request"
+                if ledger["state"] == "failed" and result["usage_source"] == "observed_http_request"
+                else "settled_provider_usage"
                 if ledger["state"] in {"completed", "failed"}
                 else "held_estimate"
                 if ledger["state"] in {"dispatched", "unknown"}
@@ -1110,6 +1126,7 @@ class Gateway:
             "unknown",
             "completed",
             "completed_usage_unknown",
+            "failed",
             "quota_rejected",
             "quota_exhausted",
             "rejected",
@@ -1158,6 +1175,34 @@ class Gateway:
         if target.capacity.expires_at and target.capacity.expires_at <= self.clock():
             return "unknown"
         return target.capacity.kind
+
+    def observe_quality(
+        self,
+        provider: str,
+        model: str,
+        profile: str,
+        *,
+        passed: int,
+        total: int,
+        evaluation_id: str,
+        as_of: datetime,
+        valid_until: datetime,
+    ) -> None:
+        """Trusted operator evaluation input; never sourced from a model's own answer."""
+        self.registry.resolve(model, provider)
+        with self.broker._tx() as con:
+            selection.observe_quality(
+                con,
+                provider,
+                model,
+                profile,
+                passed=passed,
+                total=total,
+                evaluation_id=evaluation_id,
+                as_of=as_of,
+                valid_until=valid_until,
+                now=self.clock(),
+            )
 
     def _sort_key(
         self, target: Target, observations: list[dict[str, Any]] | None = None
@@ -1518,15 +1563,31 @@ class Gateway:
                 "latency_ms": health["latency_ms"],
                 "priority": target.priority,
             }
+            profile = data.get("requirements", {}).get(
+                "profile",
+                "coding"
+                if data["capability"] == "code_completion"
+                else "translation"
+                if data["capability"] == "translation"
+                else "general",
+            )
+            model_spec = self.registry.resolve(target.model, target.provider)
+            factors.update(
+                selection.score(
+                    con,
+                    target_id=target.id,
+                    provider=target.provider,
+                    model=target.model,
+                    profile=profile,
+                    task_profiles=model_spec.task_profiles,
+                    now=now,
+                    factors=factors,
+                )
+            )
+            # Legacy administrator preference is only a deterministic tie-break;
+            # it cannot override any difference in the numerical objective.
             key = (
-                *self._sort_key(target, observations)[:2],
-                1 if headroom is None else 0,
-                -(headroom or 0),
-                health["failures"],
-                factors["local_pressure"],
-                inflight,
-                health["latency_ms"] or 0,
-                # Renewal class/interval only break ties, never pose as an expiry.
+                -factors["score"],
                 CAPACITY_ORDER[self._capacity_kind(target)],
                 target.capacity.refresh_seconds
                 if self._capacity_kind(target) == "short_renewable"
@@ -1562,6 +1623,8 @@ class Gateway:
                 }
             )
         rows.sort(key=lambda row: row.pop("_key"))
+        for index, row in enumerate(rows):
+            row["ranking_factors"]["selection_order"] = index
         selected = next((row["target_id"] for row in rows if row["eligible"]), None)
         retries = [
             row["next_retry_at"] for row in rows if row["temporary"] and row["next_retry_at"]
@@ -1879,7 +1942,10 @@ class Gateway:
         excluded += [
             target.id for target in self.targets if self._credentials(target)["state"] == "missing"
         ]
-        for attempt in range(min(len(self.targets), data.get("max_attempts", 32))):
+        attempt_limit = min(data.get("max_attempts", 3), 32)
+        for attempt in range(attempt_limit):
+            if attempt and all(target.id in excluded for target in self.targets):
+                break
             if self.clock() >= execution_deadline:
                 self._update(
                     key,
@@ -2128,6 +2194,7 @@ class Gateway:
                 or target.model == "nvidia/nemotron-3.5-lightning-30b-a3b"
                 or spec.adapter == "openai_chat"
             )
+            response_parsed = False
             response_phase = "transport"
             try:
                 timeout = (
@@ -2241,7 +2308,28 @@ class Gateway:
                         or secret.casefold() in request_id.casefold()
                     ):
                         request_id = None
-                if status == 429:
+                if not typed and status == 200 and answer is not None:
+                    try:
+                        explicit = self._validated_usage(
+                            self.registry.reported_usage(spec, status, response)
+                        )
+                        # Keep accounting counters aligned with the adapter's validated tuple.
+                        # A discarded/out-of-bounds pair cannot regain authority via metadata.
+                        for metric, value in (
+                            ("input_tokens", input_tokens),
+                            ("output_tokens", output_tokens),
+                            ("neurons", neurons),
+                        ):
+                            if metric in explicit and explicit[metric] != value:
+                                explicit.pop(metric)
+                                explicit.pop("total_tokens", None)
+                        actual_resources = explicit
+                    except (ValueError, TypeError, ProviderError):
+                        # Preserve a valid answer, but rejected counters cannot settle holds.
+                        actual_resources = {}
+                        input_tokens = output_tokens = neurons = None
+                        diagnostics["usage_metadata_invalid"] = True
+                if status in {429, 503}:
                     retry = parse_retry_after(
                         response_headers.get("Retry-After") or response_headers.get("retry-after"),
                         self.clock(),
@@ -2252,6 +2340,7 @@ class Gateway:
                     error_code = safe_http_error_code(target.provider, status, response)
                 elif structured_result is None if typed else answer is None:
                     error_code = "provider_response_invalid"
+                response_parsed = True
             except (OSError, TimeoutError, ValueError, ProviderError, RecursionError) as exc:
                 if typed:
                     diagnostics["phase"] = response_phase
@@ -2308,6 +2397,36 @@ class Gateway:
             completed = status == 200 and (
                 structured_result is not None if typed else answer is not None
             )
+            terminal_failure = (
+                response_parsed
+                and structured_result is None
+                and answer is None
+                and not any(value is not None for value in (input_tokens, output_tokens, neurons))
+                and not (set(diagnostics) & {"phase", "adapter_metadata_invalid"})
+                and complete_overload_refusal(
+                    target.provider,
+                    data["capability"],
+                    status,
+                    response,
+                    response_headers,
+                    url=url,
+                    reject_if_busy=isinstance(payload, dict)
+                    and isinstance(payload.get("options"), dict)
+                    and payload["options"].get("rejectIfBusy") is True,
+                )
+            )
+            if terminal_failure:
+                delay = retry_delay(key, attempt, retry)
+                retry = math.ceil(delay)
+                actual_resources = {"requests": 1}
+                known_quota_usage = required_metrics == {"requests"}
+                diagnostics.update(
+                    terminal_error_response=True,
+                    response_complete=True,
+                    retryable_refusal=True,
+                    refusal_policy="synchronous_refusal_v1",
+                    next_retry_at=stamp(self.clock() + timedelta(seconds=retry)),
+                )
             self.routing.record(
                 target.id,
                 self.clock(),
@@ -2351,6 +2470,8 @@ class Gateway:
                 )
                 else "completed_usage_unknown"
                 if completed
+                else "failed"
+                if terminal_failure
                 else "unknown"
             )
             report: dict[str, Any] = {
@@ -2360,11 +2481,13 @@ class Gateway:
                 if quota_rejected
                 else "completed"
                 if completed and known_quota_usage
+                else "failed"
+                if terminal_failure and known_quota_usage
                 else "unknown",
                 "error_status": status if status is not None and status >= 400 else None,
                 "provider_request_id": request_id,
             }
-            if known_quota_usage and completed:
+            if known_quota_usage and (completed or terminal_failure):
                 usage = (
                     {name: actual_resources[name] for name in required_metrics}
                     if typed
@@ -2379,7 +2502,7 @@ class Gateway:
                 report["usage"] = usage
             if retry is not None:
                 report["retry_after_seconds"] = retry
-            if completed:
+            if completed or terminal_failure:
                 self.broker.mark_execution_finished(plan["reservation_id"])
             reported = False
             try:
@@ -2402,9 +2525,13 @@ class Gateway:
                 "reported_input_tokens": input_tokens,
                 "reported_output_tokens": output_tokens,
                 "reported_neurons": neurons,
-                "reported_resources_json": canonical(actual_resources) if typed else None,
+                "reported_resources_json": canonical(actual_resources)
+                if typed or terminal_failure or actual_resources
+                else None,
                 "usage_source": "documented_quota_rejection"
                 if quota_rejected and reported
+                else "observed_http_request"
+                if terminal_failure and reported
                 else "provider_reported"
                 if (typed and any(name != "requests" for name in actual_resources))
                 or any(value is not None for value in (input_tokens, output_tokens, neurons))
@@ -2424,6 +2551,26 @@ class Gateway:
                 excluded.append(target.id)
                 continue
             result = self._view(key)
+            if terminal_failure and reported and attempt + 1 < attempt_limit:
+                next_plan = self.explain(data)
+                next_retry = next_plan.get("next_retry_at") or diagnostics["next_retry_at"]
+                result.update(
+                    temporary=not next_plan.get("permanent_rejection"), next_retry_at=next_retry
+                )
+                if dispatch_guard is not None:
+                    # The durable queue persists the delay; never sleep while holding its lease.
+                    return result
+                if next_plan.get("selected_target_id") is not None:
+                    continue
+                wait = max(
+                    0.0, (datetime.fromisoformat(str(next_retry)) - self.clock()).total_seconds()
+                )
+                if (
+                    next_plan.get("temporary")
+                    and self.clock() + timedelta(seconds=wait) < execution_deadline
+                ):
+                    self.sleep(wait)
+                    continue
             if completed:
                 if typed:
                     result["result"] = structured_result
@@ -2457,6 +2604,7 @@ class Gateway:
         from_at: str | None = None,
         to_at: str | None = None,
         task_type: str | None = None,
+        group_by: str | None = None,
     ) -> list[dict[str, Any]]:
         if provider is not None and provider not in self.registry.providers:
             raise GatewayError("invalid_request", "invalid provider filter")
@@ -2495,18 +2643,45 @@ class Gateway:
             if value is not None:
                 conditions.append(f"{column}{op}?")
                 params.append(value)
-        resource_sums = "".join(
-            "sum(json_extract(g.reported_resources_json,'$."
-            + metric
-            + "')) AS reported_"
-            + metric
-            + ","
-            for metric in ("total_tokens", "audio_seconds", "images", "pages", "conversions")
+        if group_by not in {None, "day"}:
+            raise GatewayError("invalid_request", "invalid usage grouping")
+        total_tokens = "json_extract(g.reported_resources_json,'$.total_tokens')"
+        applicable = {
+            "total_tokens": "g.provider!='ocrspace' AND (g.task_type IS NULL OR g.task_type IN ('text_generation','code_completion','vision','translation','embedding','rerank','classification','moderation') OR json_extract(g.reported_resources_json,'$.total_tokens') IS NOT NULL)",
+            "audio_seconds": "g.task_type IN ('audio_transcription','audio_translation','tts') OR json_extract(g.reported_resources_json,'$.audio_seconds') IS NOT NULL",
+            "images": "g.task_type IN ('image_generation','vision') OR json_extract(g.reported_resources_json,'$.images') IS NOT NULL",
+            "pages": "g.task_type='ocr' OR json_extract(g.reported_resources_json,'$.pages') IS NOT NULL",
+            "conversions": "g.task_type='ocr' OR json_extract(g.reported_resources_json,'$.conversions') IS NOT NULL",
+        }
+        resource_sums = ""
+        for metric, condition in applicable.items():
+            expression = (
+                total_tokens
+                if metric == "total_tokens"
+                else "json_extract(g.reported_resources_json,'$." + metric + "')"
+            )
+            resource_sums += (
+                f"sum({expression}) AS reported_{metric},"
+                f"sum(CASE WHEN {condition} THEN ({expression}) IS NULL AND g.state!='quota_rejected' ELSE NULL END) AS {metric}_unknown_count,"
+            )
+        dimensions = (
+            "date(" + dispatch_time + ") AS date,"
+            if group_by == "day"
+            else "g.provider,g.model,COALESCE(g.task_type,'unknown') AS task_type,"
+        )
+        grouping = (
+            "date(" + dispatch_time + ") ORDER BY date"
+            if group_by == "day"
+            else "g.provider,g.model,g.task_type ORDER BY g.provider,g.model,task_type"
         )
         with closing(sqlite3.connect(self.db)) as con, con:
             con.row_factory = sqlite3.Row
             rows = con.execute(
-                "SELECT g.provider,g.model,COALESCE(g.task_type,'unknown') AS task_type,count(*) AS requests,"
+                "SELECT "
+                + dimensions
+                + "count(*) AS requests,"
+                + "sum(g.state IN ('completed','completed_usage_unknown')) AS completed_count,"
+                + "sum(g.state IN ('failed','quota_rejected')) AS failed_count,"
                 + resource_sums
                 + "sum(g.estimated_input_tokens) AS estimated_input_tokens,"
                 "sum(g.reported_input_tokens) AS reported_input_tokens,"
@@ -2515,17 +2690,17 @@ class Gateway:
                 "sum(c.ledger_input_tokens) AS ledger_input_tokens,"
                 "sum(c.ledger_neurons) AS ledger_neurons,"
                 "sum(g.input_bytes) AS input_bytes,"
-                "CASE WHEN g.provider='ocrspace' THEN NULL ELSE "
-                "sum(g.reported_input_tokens IS NULL AND g.state!='quota_rejected') "
-                "END AS input_unknown_count,"
-                "CASE WHEN g.provider='ocrspace' THEN NULL ELSE "
-                "sum(g.reported_output_tokens IS NULL AND g.state!='quota_rejected') "
-                "END AS output_unknown_count,"
-                "CASE WHEN g.provider='cloudflare' THEN "
-                "sum(g.reported_neurons IS NULL AND g.state!='quota_rejected') "
-                "ELSE NULL END AS neurons_unknown_count,"
+                "sum(CASE WHEN g.provider='ocrspace' THEN NULL ELSE "
+                "g.reported_input_tokens IS NULL AND g.state!='quota_rejected' "
+                "END) AS input_unknown_count,"
+                "sum(CASE WHEN g.provider='ocrspace' THEN NULL ELSE "
+                "g.reported_output_tokens IS NULL AND g.state!='quota_rejected' "
+                "END) AS output_unknown_count,"
+                "sum(CASE WHEN g.provider='cloudflare' THEN "
+                "g.reported_neurons IS NULL AND g.state!='quota_rejected' "
+                "ELSE NULL END) AS neurons_unknown_count,"
                 "sum(g.state='quota_rejected') AS quota_rejected_count,"
-                "sum(g.state IN ('unknown','dispatched','preparing')) AS outcome_unknown_count,"
+                "sum(g.state NOT IN ('completed','completed_usage_unknown','failed','quota_rejected')) AS outcome_unknown_count,"
                 "sum(g.response_truncated=1) AS truncated_count,"
                 "sum(r.state IN ('dispatched','unknown')) AS ledger_held_count "
                 "FROM ("
@@ -2542,9 +2717,7 @@ class Gateway:
                 "max(CASE WHEN metric='input_tokens' THEN amount END) AS ledger_input_tokens,"
                 "max(CASE WHEN metric='neurons' THEN amount END) AS ledger_neurons "
                 "FROM charges GROUP BY reservation_id) c ON c.reservation_id=g.reservation_id "
-                "WHERE "
-                + " AND ".join(conditions)
-                + " GROUP BY g.provider,g.model,g.task_type ORDER BY g.provider,g.model,task_type",
+                "WHERE " + " AND ".join(conditions) + " GROUP BY " + grouping,
                 params,
             ).fetchall()
         return [dict(row) for row in rows]

@@ -99,7 +99,7 @@ def project_wheel(release, *, extra=None, corrupt_source=False, metadata=None):
         contents["quota_broker/__init__.py"] = b"CHANGED = 1\n"
     contents[prefix + "METADATA"] = (
         metadata
-        or f"Metadata-Version: 2.3\nName: api-quota-broker\nVersion: {release['package_version']}\nRequires-Python: >=3.12\nRequires-Dist: cryptography>=44.0.0\nRequires-Dist: pypdf>=6.0.0\n\n".encode()
+        or f"Metadata-Version: 2.3\nName: api-quota-broker\nVersion: {release['package_version']}\nRequires-Python: >=3.12\nRequires-Dist: cryptography>=44.0.0\nRequires-Dist: pypdf>=7.0.0\n\n".encode()
     )
     contents[prefix + "WHEEL"] = b"Wheel-Version: 1.0\nRoot-Is-Purelib: true\nTag: py3-none-any\n\n"
     contents[prefix + "entry_points.txt"] = (
@@ -768,3 +768,15 @@ def test_cli_errors_do_not_reflect_input(argv, capsys):
     result = capsys.readouterr()
     assert "PRIVATE" not in result.out + result.err
     assert json.loads(result.out)["reason"] == "options"
+
+
+def test_project_wheel_rejects_old_pypdf_safety_requirement(tmp_path):
+    _, _, release = source_archive(tmp_path)
+    metadata = (
+        f"Metadata-Version: 2.3\nName: api-quota-broker\nVersion: {VERSION}\n"
+        "Requires-Python: >=3.12\nRequires-Dist: cryptography>=44.0.0\n"
+        "Requires-Dist: pypdf>=6.0.0\n\n"
+    ).encode()
+    with pytest.raises(runtime.RuntimeErrorSafe) as caught:
+        runtime._project_wheel(project_wheel(release, metadata=metadata), release)
+    assert caught.value.reason == "project_wheel_metadata"

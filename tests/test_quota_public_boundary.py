@@ -24,6 +24,8 @@ def test_public_routes_never_proxy_execution_admin_or_maintenance(tmp_path):
     gate = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(gate)
     requests = []
+    forwarded_headers = []
+    response_headers = []
 
     class InertUpstream(BaseHTTPRequestHandler):
         def log_message(self, *_args):
@@ -31,11 +33,14 @@ def test_public_routes_never_proxy_execution_admin_or_maintenance(tmp_path):
 
         def do_GET(self):
             requests.append(self.path)
+            forwarded_headers.append({name.lower(): value for name, value in self.headers.items()})
             payload = json.dumps({"fixture": True}).encode()
             self.send_response(200)
             self.send_header("Content-Length", str(len(payload)))
             self.end_headers()
             self.wfile.write(payload)
+
+        do_POST = do_GET
 
     upstream = ThreadingHTTPServer(("127.0.0.1", 0), InertUpstream)
     thread = threading.Thread(target=upstream.serve_forever, daemon=True)
@@ -54,22 +59,28 @@ def test_public_routes_never_proxy_execution_admin_or_maintenance(tmp_path):
         stderr=subprocess.DEVNULL,
     )
 
-    def get(path):
+    def get(path, *, scheme="https", host="momonong.me", method="GET"):
         connection = HTTPConnection("127.0.0.1", port, timeout=1)
         try:
             connection.request(
-                "GET",
+                method,
                 path,
                 headers={
-                    "Host": "momonong.me",
-                    "X-Forwarded-Proto": "https",
-                    "X-Forwarded-For": "127.0.0.1",
+                    "Host": host,
+                    "X-Forwarded-Proto": scheme,
+                    "X-Forwarded-For": "203.0.113.9",
                     "X-Remote-User": "admin",
                     "Authorization": "Bearer synthetic-no-authority",
+                    "Proxy-Authorization": "synthetic-no-authority",
+                    "Forwarded": "for=192.0.2.25",
+                    "X-Auth-User": "synthetic-no-authority",
+                    "X-Original-URL": "/quota/api/maintenance",
+                    "Cf-Access-Jwt-Assertion": "synthetic-no-authority",
                 },
             )
             response = connection.getresponse()
             response.read()
+            response_headers.append(dict(response.getheaders()))
             return response.status
         finally:
             connection.close()
@@ -86,6 +97,12 @@ def test_public_routes_never_proxy_execution_admin_or_maintenance(tmp_path):
                 time.sleep(0.02)
         assert requests == ["/quota/api/snapshot"]
         requests.clear()
+        assert get("/quota") == 308
+        assert response_headers[-1]["Location"] == "/quota/"
+        assert get("/quota/api/snapshot", scheme="http") == 308
+        assert response_headers[-1]["Location"] == "https://momonong.me/quota/api/snapshot"
+        get("/quota/api/snapshot", host="other.invalid")
+        assert requests == []
         for path in [
             "/quota/api/v1/tasks",
             "/quota/api/v1/jobs",
@@ -93,6 +110,7 @@ def test_public_routes_never_proxy_execution_admin_or_maintenance(tmp_path):
             "/quota/api/maintenance",
             "/quota/v1/queue/tick",
             "/quota/anything",
+            "/quota/api/advice/execute",
         ]:
             assert get(path) == 404
         assert requests == []
@@ -105,6 +123,19 @@ def test_public_routes_never_proxy_execution_admin_or_maintenance(tmp_path):
         ]:
             assert get(path) == 200
         assert len(requests) == 5
+        for path in ["/quota/api/login", "/quota/api/logout", "/quota/api/advice"]:
+            assert get(path, method="POST") == 200
+        assert len(requests) == 8
+        for headers in forwarded_headers:
+            assert headers["host"] == "momonong.me"
+            assert headers["x-forwarded-proto"] == "https"
+            assert headers["x-forwarded-for"] == "127.0.0.1"
+            assert not {"authorization", "proxy-authorization", "forwarded"} & headers.keys()
+            assert not any(
+                name.startswith(("x-remote-", "x-auth-", "x-original-", "cf-access-"))
+                for name in headers
+            )
+        assert response_headers[-1]["Cache-Control"] == "no-store"
     finally:
         process.terminate()
         process.wait(timeout=5)

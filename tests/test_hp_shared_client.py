@@ -404,3 +404,31 @@ def test_cross_file_deadline_failure_precedes_any_remote_status(payload, tmp_pat
             lambda _: pytest.fail("cross-file mismatch must precede even read-only SSH status"),
         )
     assert not (tmp_path / "state").exists()
+
+
+def test_remote_preserves_sanitized_integrity_gate_on_nonzero_exit(monkeypatch):
+    from contextlib import nullcontext
+
+    monkeypatch.setattr(
+        client, "private_identity", lambda name: nullcontext(Path("/tmp/fixture-identity"))
+    )
+    monkeypatch.setattr(
+        client.subprocess,
+        "run",
+        lambda *a, **k: SimpleNamespace(
+            returncode=1,
+            stdout=b'{"status":"stopped","code":"installed_extra_file","reason":"inspect_original_operation","provider_calls":0,"automatic_retry":false}',
+            stderr=b"not returned",
+        ),
+    )
+    result = client.remote(client.envelope("status"))
+    assert result["status"] == "stopped" and result["code"] == "installed_extra_file"
+    monkeypatch.setattr(
+        client.subprocess,
+        "run",
+        lambda *a, **k: SimpleNamespace(
+            returncode=255, stdout=b"private diagnostic", stderr=b"private"
+        ),
+    )
+    with pytest.raises(ValueError):
+        client.remote(client.envelope("status"))
