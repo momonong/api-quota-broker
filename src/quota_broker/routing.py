@@ -12,6 +12,43 @@ from .config import QUOTA_WINDOWS, RESOURCE_METRICS
 from .core import canonical, stamp
 
 
+def observation_freshness(item: dict[str, Any], now: datetime) -> str:
+    """An observed balance cannot survive its validity or known reset boundary."""
+    try:
+        since = datetime.fromisoformat(item["as_of"])
+        until = datetime.fromisoformat(item["valid_until"])
+        reset = datetime.fromisoformat(item["reset_at"]) if item.get("reset_at") else None
+        if since.tzinfo is None or until.tzinfo is None or (reset and reset.tzinfo is None):
+            return "invalid_interval"
+        if until <= since or (reset is not None and reset < since):
+            return "invalid_interval"
+        # A day counter with a month-long reset is contradictory evidence.
+        # Allow a 25-hour civil day plus clock margin; never roll it to a full balance.
+        window_limit = {
+            "rolling_minute": 120,
+            "rolling_hour": 7200,
+            "day": 26 * 3600,
+            "month": 32 * 86400,
+        }.get(str(item.get("window")))
+        if (
+            window_limit is not None
+            and reset is not None
+            and (reset - since).total_seconds() > window_limit
+        ):
+            return "window_mismatch"
+        if now < since:
+            return "not_yet_valid"
+        if reset is not None and now >= reset:
+            return "reset_reached"
+        if now >= until:
+            return "validity_expired"
+        if window_limit is not None and now >= since + timedelta(seconds=window_limit):
+            return "window_elapsed"
+        return "current"
+    except (KeyError, TypeError, ValueError):
+        return "invalid_interval"
+
+
 class RoutingState:
     def __init__(self, db: str):
         self.db = db
@@ -104,7 +141,7 @@ class RoutingState:
                     prior["failures"],
                     "task_rejected",
                 )
-            elif status == 429:
+            elif status in {429, 503} and (status == 429 or retry_after is not None):
                 state, until, reason = (
                     "open",
                     stamp(now + timedelta(seconds=max(1, retry_after or 60))),
@@ -270,16 +307,14 @@ class RoutingState:
             "SELECT coalesce(sum(h.amount),0) FROM observed_holds h JOIN reservations r ON r.id=h.reservation_id WHERE h.scope=? AND h.metric=? AND h.window=? AND r.id!=? AND (r.state IN ('reserved','dispatched','unknown') OR (r.state IN ('completed','failed') AND h.at>?))",
             (scope, item["metric"], item["window"], exclude_reservation or "", item["as_of"]),
         ).fetchone()[0]
+        freshness = observation_freshness(item, now)
         return {
             **item,
-            "current": bool(
-                item["as_of"]
-                and item["valid_until"]
-                and item["as_of"] <= stamp(now) < item["valid_until"]
-            ),
+            "current": freshness == "current",
+            "freshness_reason": freshness,
             "local_observation_hold": held,
             "effective_remaining": max(0, item["remaining"] - held)
-            if item["remaining"] is not None
+            if item["remaining"] is not None and freshness == "current"
             else None,
         }
 
@@ -356,3 +391,145 @@ def groq_quota_observations(
             }
         )
     return result
+
+
+PROFILES = frozenset({"general", "coding", "reasoning", "translation", "extraction"})
+ALGORITHM = "expiry_utility_v1"
+
+
+def initialize(con: sqlite3.Connection) -> None:
+    con.execute("""CREATE TABLE IF NOT EXISTS model_quality_evaluations (
+        provider TEXT NOT NULL, model TEXT NOT NULL, profile TEXT NOT NULL,
+        evaluation_id TEXT NOT NULL, passed INTEGER NOT NULL, total INTEGER NOT NULL,
+        as_of TEXT NOT NULL, valid_until TEXT NOT NULL,
+        PRIMARY KEY(provider,model,profile,evaluation_id))""")
+
+
+def observe_quality(
+    con: sqlite3.Connection,
+    provider: str,
+    model: str,
+    profile: str,
+    *,
+    passed: int,
+    total: int,
+    evaluation_id: str,
+    as_of: datetime,
+    valid_until: datetime,
+    now: datetime,
+) -> None:
+    if (
+        profile not in PROFILES
+        or type(passed) is not int
+        or type(total) is not int
+        or not 0 <= passed <= total <= 10000
+        or total == 0
+        or not isinstance(evaluation_id, str)
+        or not re.fullmatch(r"[A-Za-z0-9._-]{1,120}", evaluation_id)
+        or any(v.tzinfo is None for v in (as_of, valid_until, now))
+        or not as_of <= now < valid_until <= as_of + timedelta(days=90)
+    ):
+        raise ValueError("invalid quality evaluation")
+    values = (
+        provider,
+        model,
+        profile,
+        evaluation_id,
+        passed,
+        total,
+        stamp(as_of),
+        stamp(valid_until),
+    )
+    old = con.execute(
+        "SELECT * FROM model_quality_evaluations WHERE provider=? AND model=? AND profile=? AND evaluation_id=?",
+        values[:4],
+    ).fetchone()
+    if old is not None and tuple(old) != values:
+        raise ValueError("quality evaluation identity conflict")
+    con.execute("INSERT OR IGNORE INTO model_quality_evaluations VALUES(?,?,?,?,?,?,?,?)", values)
+
+
+def _bounded(value: Any, default: float) -> float:
+    return (
+        min(1.0, max(0.0, float(value)))
+        if type(value) in {int, float} and math.isfinite(value)
+        else default
+    )
+
+
+def score(
+    con: sqlite3.Connection,
+    *,
+    target_id: str,
+    provider: str,
+    model: str,
+    profile: str,
+    task_profiles: tuple[str, ...],
+    now: datetime,
+    factors: dict[str, Any],
+) -> dict[str, Any]:
+    """Maximize weighted expected value while urgently consuming expiring capacity.
+
+    The 60% expiry weight is a declared user preference, not a learned benchmark.
+    A one-day urgency horizon differentiates nearby daily resets continuously.
+    Beta posteriors regularize sparse observations and expose sample counts.
+    """
+    quality = con.execute(
+        "SELECT COALESCE(sum(passed),0),COALESCE(sum(total),0) FROM model_quality_evaluations WHERE provider=? AND model=? AND profile=? AND as_of<=? AND valid_until>?",
+        (provider, model, profile, stamp(now), stamp(now)),
+    ).fetchone()
+    passed, samples = int(quality[0]), int(quality[1])
+    # Recent actual attempts are read from the durable ledger. A rejection counts
+    # as availability failure; terminal success without token counters still succeeds.
+    outcomes = con.execute(
+        "SELECT state FROM gateway_attempts WHERE target_id=? AND dispatched_at>=? AND dispatched_at<=? ORDER BY dispatched_at DESC,attempt_no DESC LIMIT 100",
+        (target_id, stamp(now - timedelta(days=30)), stamp(now)),
+    ).fetchall()
+    successes = sum(r[0] in {"completed", "completed_usage_unknown"} for r in outcomes)
+    reliability = (successes + 2) / (len(outcomes) + 3)
+    # A just-observed failure may precede the attempt projection; do not reward it.
+    reliability /= 1 + 0.15 * min(int(factors.get("health_failures") or 0), 10)
+    horizon = factors.get("value_loss_seconds")
+    urgency = (
+        86400 / (86400 + max(0, horizon))
+        if isinstance(horizon, (int, float))
+        and not isinstance(horizon, bool)
+        and math.isfinite(horizon)
+        else 0.0
+    )
+    latency_ms = factors.get("latency_ms")
+    latency = (
+        1500 / (1500 + latency_ms)
+        if isinstance(latency_ms, (int, float))
+        and not isinstance(latency_ms, bool)
+        and math.isfinite(latency_ms)
+        and latency_ms >= 0
+        else 0.5
+    )
+    components = {
+        "expiry_urgency": urgency,
+        "task_fit": 1.0 if profile in task_profiles else 0.75 if profile == "general" else 0.5,
+        "quality": (passed + 1) / (samples + 2),
+        "reliability": reliability,
+        "free_headroom": _bounded(factors.get("observed_headroom"), 0.25),
+        "latency": latency,
+        "load": (1 - _bounded(factors.get("local_pressure"), 0))
+        / (1 + max(0, int(factors.get("inflight") or 0))),
+    }
+    utility = (
+        0.60 * urgency
+        + 0.17 * components["task_fit"] * components["quality"]
+        + 0.15 * reliability
+        + 0.05 * components["free_headroom"]
+        + 0.02 * latency
+        + 0.01 * components["load"]
+    )
+    return {
+        "algorithm": ALGORITHM,
+        "score": round(100 * utility, 8),
+        "components": components,
+        "task_profile": profile,
+        "quality_basis": "measured" if samples else "unmeasured",
+        "quality_samples": samples,
+        "reliability_samples": len(outcomes),
+    }

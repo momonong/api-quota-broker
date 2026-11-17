@@ -2,6 +2,8 @@
 
 import ast
 import shlex
+import subprocess
+import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -56,3 +58,40 @@ def test_shared_code_does_not_share_accounts_data_or_secrets():
     assert "/etc/api-quota-broker" not in unit
     assert "/var/lib/api-quota-broker" not in unit
     assert "SupplementaryGroups=" not in unit
+
+
+def test_gate_import_is_stdlib_only_and_has_no_host_or_credential_access():
+    script = r"""
+import ast, importlib, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+raw = path.read_bytes()
+tree = ast.parse(raw)
+for node in tree.body:
+    if isinstance(node, ast.Import):
+        names = [item.name for item in node.names]
+    elif isinstance(node, ast.ImportFrom):
+        names = [node.module]
+    else:
+        continue
+    for name in names:
+        assert name.split('.')[0] in sys.stdlib_module_names
+        importlib.import_module(name)
+def audit(event, args):
+    if event == 'open' or event.startswith(('socket.', 'subprocess.', 'os.', 'resource.')):
+        raise AssertionError('gate import attempted host access: ' + event)
+sys.addaudithook(audit)
+namespace = {'__name__': 'quota_gate_import_fixture', '__file__': str(path)}
+exec(compile(raw, str(path), 'exec'), namespace)
+assert callable(namespace['apply_buffer'])
+assert callable(namespace['main'])
+print('gate-import-no-host-access')
+"""
+    result = subprocess.run(
+        [sys.executable, "-I", "-B", "-c", script, str(ROOT / "deploy/quota-web/gate.py")],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "gate-import-no-host-access"

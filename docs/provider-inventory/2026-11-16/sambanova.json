@@ -1,0 +1,74 @@
+{
+  "schema_version": 1,
+  "provider": "sambanova",
+  "source": "https://api.sambanova.ai/v1/models",
+  "checked_at": "2026-11-16T15:45:02.240633+00:00",
+  "complete": true,
+  "models": [
+    {
+      "model": "GLM-5.3",
+      "capability": "unknown",
+      "hosting": "hosted",
+      "endpoint": null,
+      "protocol": null,
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": null,
+      "max_output_tokens": null,
+      "features": []
+    },
+    {
+      "model": "Meta-Llama-3.3-70B-Instruct",
+      "capability": "unknown",
+      "hosting": "hosted",
+      "endpoint": null,
+      "protocol": null,
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": null,
+      "max_output_tokens": null,
+      "features": []
+    },
+    {
+      "model": "MiniMax-M3.1-Flash",
+      "capability": "unknown",
+      "hosting": "hosted",
+      "endpoint": null,
+      "protocol": null,
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": null,
+      "max_output_tokens": null,
+      "features": []
+    },
+    {
+      "model": "gemma-4-31B-it",
+      "capability": "unknown",
+      "hosting": "hosted",
+      "endpoint": null,
+      "protocol": null,
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": null,
+      "max_output_tokens": null,
+      "features": []
+    },
+    {
+      "model": "gpt-oss-120b",
+      "capability": "unknown",
+      "hosting": "hosted",
+      "endpoint": null,
+      "protocol": null,
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": null,
+      "max_output_tokens": null,
+      "features": []
+    }
+  ]
+}

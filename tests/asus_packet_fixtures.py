@@ -8,10 +8,20 @@ import io
 import json
 import tarfile
 import zipfile
+from datetime import UTC, datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 HISTORY = ROOT / "tests/fixtures/asus-history"
+
+
+class HistoricalOpsClock(datetime):
+    """Clock for public October fixtures; production expiry checks stay unchanged."""
+
+    @classmethod
+    def now(cls, tz=None):
+        value = cls(2026, 10, 12, tzinfo=UTC)
+        return value.astimezone(tz) if tz is not None else value.replace(tzinfo=None)
 
 
 def load(name):

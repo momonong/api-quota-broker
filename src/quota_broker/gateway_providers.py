@@ -73,6 +73,8 @@ def official_request(
         }
         if model_id == RIVA:
             payload["temperature"] = 0
+        elif model_id == "z-ai/glm-5.3-flash":
+            payload["chat_template_kwargs"] = {"clear_thinking": True}
         else:
             payload["chat_template_kwargs"] = {"enable_thinking": False}
         return url, {"Authorization": "Bearer " + secret}, payload
@@ -115,6 +117,7 @@ def official_request(
             {
                 "prompt": content,
                 "max_tokens": max_output_tokens,
+                "options": {"rejectIfBusy": True},
             },
         )
     if provider == "ocrspace":
@@ -142,9 +145,15 @@ def provider_http(
         url == endpoint(model, "fixture")
         for model in MODELS.values()
         if model.provider != "cloudflare"
-    ) and not re.fullmatch(
-        r"https://api\.cloudflare\.com/client/v4/accounts/[A-Za-z0-9_-]+/ai/run/@cf/meta/llama-3\.2-1b-instruct",
-        url,
+    ) and not any(
+        re.fullmatch(
+            re.escape(model.endpoint_template).replace(
+                re.escape("{account_id}"), r"[A-Za-z0-9_-]+"
+            ),
+            url,
+        )
+        for model in MODELS.values()
+        if model.provider == "cloudflare"
     ):
         raise ProviderError("unapproved provider URL")
     if url == "https://api.groq.com/openai/v1/chat/completions":
@@ -689,6 +698,8 @@ def safe_response_diagnostics(
             and usage[field] >= 0
             for field in ("prompt_tokens", "completion_tokens")
         )
+    if provider == "cloudflare":
+        diagnostics.update(_cloudflare_shape_diagnostics(data, duplicate_fields, requested_model))
     error = data if data.get("object") == "error" else data.get("error")
     diagnostics["body_shape"] = (
         "top_level_error"
@@ -781,12 +792,278 @@ def explicit_quota_rejection(
     return False
 
 
+CLOUDFLARE_DIRECT_CHAT_MODELS = frozenset({"@cf/google/gemma-4-26b-a4b-it"})
+
+
+def cloudflare_text_envelope(
+    body: dict[str, Any], model_id: str | None, *, require_success: bool = False
+) -> dict[str, Any] | None:
+    """Select one documented envelope; direct output is model-scoped, never fallback."""
+    if "error" in body or body.get("errors") or body.get("success") is False:
+        return None
+    if "result" in body:
+        if (require_success and body.get("success") is not True) or any(
+            key in body for key in ("id", "choices", "response", "object", "created", "model")
+        ):
+            return None
+        value = body["result"]
+        if (
+            not isinstance(value, dict)
+            or "error" in value
+            or value.get("errors")
+            or value.get("success") is False
+        ):
+            return None
+        return value
+    if (
+        model_id not in CLOUDFLARE_DIRECT_CHAT_MODELS
+        or any(key in body for key in ("success", "errors", "response"))
+        or _request_id(body.get("id")) is None
+        or body.get("object") != "chat.completion"
+        or type(body.get("created")) is not int
+        or not 0 <= body["created"] <= 10**12
+        or catalog_model_id_reason(body.get("model")) is not None
+    ):
+        return None
+    choices = body.get("choices")
+    if not isinstance(choices, list) or len(choices) != 1 or not isinstance(choices[0], dict):
+        return None
+    choice = choices[0]
+    message = choice.get("message")
+    if (
+        type(choice.get("index")) is not int
+        or choice["index"] != 0
+        or not isinstance(choice.get("finish_reason"), str)
+        or choice.get("finish_reason") not in {"stop", "length"}
+        or not isinstance(message, dict)
+        or message.get("role") != "assistant"
+    ):
+        return None
+    return body
+
+
+def _cloudflare_shape_diagnostics(
+    body: dict[str, Any], duplicate_fields: bool, requested_model: str | None
+) -> dict[str, str | bool]:
+    """Fixed shape vocabulary only: never values, body keys, IDs, or error prose."""
+    wrapped = "result" in body
+    result = body.get("result") if wrapped else body
+    item = result if isinstance(result, dict) else {}
+    mixed = wrapped and any(
+        key in body for key in ("id", "choices", "response", "object", "created", "model")
+    )
+    envelope = (
+        "duplicate_fields"
+        if duplicate_fields
+        else "error"
+        if "error" in body or body.get("errors") or body.get("success") is False
+        else "mixed"
+        if mixed
+        else "result"
+        if wrapped
+        else "direct_chat_completion"
+        if body.get("object") == "chat.completion"
+        else "other_object"
+    )
+    choices = item.get("choices")
+    choice_shape = (
+        "missing"
+        if "choices" not in item
+        else "non_list"
+        if not isinstance(choices, list)
+        else "empty"
+        if not choices
+        else "one"
+        if len(choices) == 1
+        else "multiple"
+    )
+    choice = choices[0] if isinstance(choices, list) and len(choices) == 1 else None
+    message = choice.get("message") if isinstance(choice, dict) else None
+    message = message if isinstance(message, dict) else {}
+    legacy = "response" in item and "choices" not in item
+    content = item.get("response") if legacy else message.get("content")
+    present = "response" in item if legacy else "content" in message
+    content_shape = (
+        "missing"
+        if not present
+        else "null"
+        if content is None
+        else "text"
+        if isinstance(content, str) and content.strip()
+        else "empty_text"
+        if isinstance(content, str)
+        else "other"
+    )
+    outer, nested = body.get("usage"), item.get("usage")
+    usage_shape = (
+        "conflicting"
+        if isinstance(outer, dict) and isinstance(nested, dict) and outer != nested
+        else "invalid"
+        if any(v is not None and not isinstance(v, dict) for v in (outer, nested))
+        else "object"
+        if isinstance(outer, dict) or isinstance(nested, dict)
+        else "missing"
+    )
+    candidate = cloudflare_text_envelope(body, requested_model, require_success=True)
+    return {
+        "cloudflare_text_schema_valid": not duplicate_fields
+        and candidate is not None
+        and cloudflare_result_text(candidate) is not None,
+        "cloudflare_envelope": envelope,
+        "cloudflare_choice_shape": choice_shape,
+        "cloudflare_content_shape": content_shape,
+        "cloudflare_nontext_message": bool(
+            message.get("tool_calls")
+            or message.get("function_call")
+            or message.get("refusal") is not None
+            or message.get("audio")
+        ),
+        "cloudflare_usage_shape": usage_shape,
+    }
+
+
+def cloudflare_result_text(result: object) -> str | None:
+    """Two documented native text schemas, with no ambiguous mixed fallback."""
+    if not isinstance(result, dict):
+        return None
+    if "choices" not in result:
+        answer = result.get("response")
+        return answer if isinstance(answer, str) else None
+    if "response" in result:
+        return None
+    choices = result["choices"]
+    if not isinstance(choices, list) or len(choices) != 1 or not isinstance(choices[0], dict):
+        return None
+    message = choices[0].get("message")
+    if not isinstance(message, dict) or message.get("role", "assistant") != "assistant":
+        return None
+    if (
+        message.get("tool_calls")
+        or message.get("function_call") is not None
+        or message.get("refusal") is not None
+        or message.get("audio") is not None
+    ):
+        return None
+    answer = message.get("content")
+    return answer if isinstance(answer, str) and answer.strip() else None
+
+
+def cloudflare_result_usage(body: dict[str, Any], result: object) -> dict[str, Any] | None:
+    """Only explicit, nonconflicting counters; absence is never zero usage."""
+    outer = body.get("usage")
+    nested = result.get("usage") if isinstance(result, dict) else None
+    if isinstance(outer, dict) and isinstance(nested, dict) and outer != nested:
+        return None
+    value = nested if isinstance(nested, dict) else outer
+    return value if isinstance(value, dict) else None
+
+
+def reported_usage(provider: str, status: int, raw: bytes) -> dict[str, int]:
+    """Read explicit counters only; a prompt/output pair never invents a total."""
+    if status != 200 or provider not in {
+        "google",
+        "cloudflare",
+        "nvidia",
+        "groq",
+        "mistral",
+        "openrouter",
+        "openai_chat",
+    }:
+        return {}
+    if not isinstance(raw, bytes) or len(raw) > MAX_RESPONSE_BYTES:
+        raise ProviderError("provider usage invalid")
+
+    def unique(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in result:
+                raise ProviderError("provider usage invalid")
+            result[key] = value
+        return result
+
+    def invalid_constant(value: str) -> Any:
+        raise ProviderError("provider usage invalid")
+
+    try:
+        data = json.loads(raw, object_pairs_hook=unique, parse_constant=invalid_constant)
+    except (TypeError, ValueError, RecursionError):
+        raise ProviderError("provider usage invalid") from None
+    if not isinstance(data, dict):
+        raise ProviderError("provider usage invalid")
+    if provider == "cloudflare":
+        nested = data.get("result")
+        inner = nested.get("usage") if isinstance(nested, dict) else None
+        outer = data.get("usage")
+        if any(value is not None and not isinstance(value, dict) for value in (outer, inner)):
+            raise ProviderError("provider usage invalid")
+        usage = cloudflare_result_usage(data, nested)
+        if usage is None and (inner is not None or outer is not None):
+            raise ProviderError("provider usage invalid")
+    else:
+        usage = data.get("usageMetadata" if provider == "google" else "usage")
+    if usage is None:
+        return {}
+    if not isinstance(usage, dict):
+        raise ProviderError("provider usage invalid")
+    fields = (
+        {
+            "promptTokenCount": "input_tokens",
+            "candidatesTokenCount": "output_tokens",
+            "totalTokenCount": "total_tokens",
+        }
+        if provider == "google"
+        else {
+            "prompt_tokens": "input_tokens",
+            "completion_tokens": "output_tokens",
+            "total_tokens": "total_tokens",
+            **({"neurons": "neurons"} if provider == "cloudflare" else {}),
+        }
+    )
+    result = {}
+    for field in (*fields, *(("thoughtsTokenCount",) if provider == "google" else ())):
+        value = usage.get(field)
+        if value is None:
+            continue
+        if type(value) is not int or not 0 <= value <= 10**12:
+            raise ProviderError("provider usage invalid")
+        if field in fields:
+            result[fields[field]] = value
+    if "total_tokens" in result:
+        pair = (result.get("input_tokens"), result.get("output_tokens"))
+        if provider == "google":
+            # Google totals may also include thinking and other token categories.
+            if result["total_tokens"] < sum(value for value in pair if value is not None) + (
+                usage.get("thoughtsTokenCount") or 0
+            ):
+                raise ProviderError("provider usage invalid")
+        elif any(value is None for value in pair) or result["total_tokens"] != sum(
+            value for value in pair if value is not None
+        ):
+            raise ProviderError("provider usage invalid")
+    return result
+
+
 def interpret(
     provider: str, status: int, raw: bytes, *, model_id: str | None = None
 ) -> tuple[str | None, int | None, int | None, int | None, str | None]:
+    def unique(items: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in items:
+            if key in result:
+                raise ValueError("ambiguous provider JSON")
+            result[key] = value
+        return result
+
+    def invalid_constant(value: str) -> Any:
+        raise ValueError("invalid provider JSON")
+
     try:
-        data = json.loads(raw)
-    except (ValueError, TypeError):
+        data = (
+            json.loads(raw, object_pairs_hook=unique, parse_constant=invalid_constant)
+            if provider == "cloudflare"
+            else json.loads(raw)
+        )
+    except (ValueError, TypeError, RecursionError):
         data = {}
     if not isinstance(data, dict):
         data = {}
@@ -810,7 +1087,7 @@ def interpret(
             output_tokens = _nonnegative(usage.get("completion_tokens"))
             if (
                 provider in {"groq", "mistral"}
-                or model_id == "nvidia/nemotron-3.5-lightning-30b-a3b"
+                or model_id in {"nvidia/nemotron-3.5-lightning-30b-a3b", "z-ai/glm-5.3-flash"}
             ) and (
                 input_tokens is None
                 or output_tokens is None
@@ -854,23 +1131,25 @@ def interpret(
                         answer = "".join(texts)
         request_id = _request_id(data.get("responseId"))
     elif provider == "cloudflare":
-        result = data.get("result")
+        result = cloudflare_text_envelope(data, model_id)
+        if result is None:
+            return (None, None, None, None, None)
         # The Workers AI REST envelope puts model output, including optional
         # usage, under result. Some routes expose usage at the outer level.
-        outer_usage = data.get("usage")
-        nested_usage = result.get("usage") if isinstance(result, dict) else None
-        usage = nested_usage if isinstance(nested_usage, dict) else outer_usage
-        if (
-            isinstance(outer_usage, dict)
-            and isinstance(nested_usage, dict)
-            and outer_usage != nested_usage
-        ):
-            usage = None
+        usage = cloudflare_result_usage(data, result)
         if isinstance(usage, dict):
             input_tokens = _nonnegative(usage.get("prompt_tokens"))
             output_tokens = _nonnegative(usage.get("completion_tokens"))
             neurons = _nonnegative(usage.get("neurons"))
-        if isinstance(result, dict) and isinstance(result.get("response"), str):
-            answer = result["response"]
+            if "total_tokens" in usage and (
+                input_tokens is None
+                or output_tokens is None
+                or _nonnegative(usage["total_tokens"]) != input_tokens + output_tokens
+            ):
+                input_tokens = output_tokens = None
+        if data.get("success") is not False and not data.get("errors"):
+            answer = cloudflare_result_text(result)
         request_id = _request_id(data.get("request_id"))
+        if request_id is None and isinstance(result, dict):
+            request_id = _request_id(result.get("id"))
     return (answer if status == 200 else None, input_tokens, output_tokens, neurons, request_id)

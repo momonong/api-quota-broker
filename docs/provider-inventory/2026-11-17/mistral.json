@@ -1,0 +1,912 @@
+{
+  "schema_version": 1,
+  "provider": "mistral",
+  "source": "https://api.mistral.ai/v1/models",
+  "checked_at": "2026-11-16T16:03:54.172309+00:00",
+  "complete": true,
+  "models": [
+    {
+      "model": "codestral-2508",
+      "capability": "code_completion",
+      "hosting": "hosted",
+      "endpoint": "https://api.mistral.ai/v1/fim/completions",
+      "protocol": "mistral_fim",
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 256000,
+      "max_output_tokens": null,
+      "features": [
+        "tool_calling"
+      ]
+    },
+    {
+      "model": "codestral-2508",
+      "capability": "text_generation",
+      "hosting": "hosted",
+      "endpoint": "https://api.mistral.ai/v1/chat/completions",
+      "protocol": "openai_inference",
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 256000,
+      "max_output_tokens": null,
+      "features": [
+        "tool_calling"
+      ]
+    },
+    {
+      "model": "codestral-embed",
+      "capability": "unknown",
+      "hosting": "hosted",
+      "endpoint": null,
+      "protocol": null,
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 8192,
+      "max_output_tokens": null,
+      "features": []
+    },
+    {
+      "model": "codestral-embed-2505",
+      "capability": "unknown",
+      "hosting": "hosted",
+      "endpoint": null,
+      "protocol": null,
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 8192,
+      "max_output_tokens": null,
+      "features": []
+    },
+    {
+      "model": "codestral-latest",
+      "capability": "code_completion",
+      "hosting": "hosted",
+      "endpoint": "https://api.mistral.ai/v1/fim/completions",
+      "protocol": "mistral_fim",
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 256000,
+      "max_output_tokens": null,
+      "features": [
+        "tool_calling"
+      ]
+    },
+    {
+      "model": "codestral-latest",
+      "capability": "text_generation",
+      "hosting": "hosted",
+      "endpoint": "https://api.mistral.ai/v1/chat/completions",
+      "protocol": "openai_inference",
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 256000,
+      "max_output_tokens": null,
+      "features": [
+        "tool_calling"
+      ]
+    },
+    {
+      "model": "labs-leanstral-1-5",
+      "capability": "text_generation",
+      "hosting": "hosted",
+      "endpoint": "https://api.mistral.ai/v1/chat/completions",
+      "protocol": "openai_inference",
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 262144,
+      "max_output_tokens": null,
+      "features": [
+        "image_input",
+        "reasoning",
+        "tool_calling",
+        "vision"
+      ]
+    },
+    {
+      "model": "labs-leanstral-1-5-1",
+      "capability": "text_generation",
+      "hosting": "hosted",
+      "endpoint": "https://api.mistral.ai/v1/chat/completions",
+      "protocol": "openai_inference",
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 262144,
+      "max_output_tokens": null,
+      "features": [
+        "image_input",
+        "reasoning",
+        "tool_calling",
+        "vision"
+      ]
+    },
+    {
+      "model": "magistral-medium-latest",
+      "capability": "text_generation",
+      "hosting": "hosted",
+      "endpoint": "https://api.mistral.ai/v1/chat/completions",
+      "protocol": "openai_inference",
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 262144,
+      "max_output_tokens": null,
+      "features": [
+        "image_input",
+        "reasoning",
+        "tool_calling",
+        "vision"
+      ]
+    },
+    {
+      "model": "magistral-small-latest",
+      "capability": "text_generation",
+      "hosting": "hosted",
+      "endpoint": "https://api.mistral.ai/v1/chat/completions",
+      "protocol": "openai_inference",
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 262144,
+      "max_output_tokens": null,
+      "features": [
+        "image_input",
+        "reasoning",
+        "tool_calling",
+        "vision"
+      ]
+    },
+    {
+      "model": "ministral-14b-2512",
+      "capability": "text_generation",
+      "hosting": "hosted",
+      "endpoint": "https://api.mistral.ai/v1/chat/completions",
+      "protocol": "openai_inference",
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 262144,
+      "max_output_tokens": null,
+      "features": [
+        "image_input",
+        "tool_calling",
+        "vision"
+      ]
+    },
+    {
+      "model": "ministral-14b-latest",
+      "capability": "text_generation",
+      "hosting": "hosted",
+      "endpoint": "https://api.mistral.ai/v1/chat/completions",
+      "protocol": "openai_inference",
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 262144,
+      "max_output_tokens": null,
+      "features": [
+        "image_input",
+        "tool_calling",
+        "vision"
+      ]
+    },
+    {
+      "model": "ministral-3b-2512",
+      "capability": "text_generation",
+      "hosting": "hosted",
+      "endpoint": "https://api.mistral.ai/v1/chat/completions",
+      "protocol": "openai_inference",
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 131072,
+      "max_output_tokens": null,
+      "features": [
+        "image_input",
+        "tool_calling",
+        "vision"
+      ]
+    },
+    {
+      "model": "ministral-3b-latest",
+      "capability": "text_generation",
+      "hosting": "hosted",
+      "endpoint": "https://api.mistral.ai/v1/chat/completions",
+      "protocol": "openai_inference",
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 131072,
+      "max_output_tokens": null,
+      "features": [
+        "image_input",
+        "tool_calling",
+        "vision"
+      ]
+    },
+    {
+      "model": "ministral-8b-2512",
+      "capability": "text_generation",
+      "hosting": "hosted",
+      "endpoint": "https://api.mistral.ai/v1/chat/completions",
+      "protocol": "openai_inference",
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 262144,
+      "max_output_tokens": null,
+      "features": [
+        "image_input",
+        "tool_calling",
+        "vision"
+      ]
+    },
+    {
+      "model": "ministral-8b-latest",
+      "capability": "text_generation",
+      "hosting": "hosted",
+      "endpoint": "https://api.mistral.ai/v1/chat/completions",
+      "protocol": "openai_inference",
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 262144,
+      "max_output_tokens": null,
+      "features": [
+        "image_input",
+        "tool_calling",
+        "vision"
+      ]
+    },
+    {
+      "model": "mistral-code-fim-latest",
+      "capability": "code_completion",
+      "hosting": "hosted",
+      "endpoint": "https://api.mistral.ai/v1/fim/completions",
+      "protocol": "mistral_fim",
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 256000,
+      "max_output_tokens": null,
+      "features": [
+        "tool_calling"
+      ]
+    },
+    {
+      "model": "mistral-code-fim-latest",
+      "capability": "text_generation",
+      "hosting": "hosted",
+      "endpoint": "https://api.mistral.ai/v1/chat/completions",
+      "protocol": "openai_inference",
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 256000,
+      "max_output_tokens": null,
+      "features": [
+        "tool_calling"
+      ]
+    },
+    {
+      "model": "mistral-code-latest",
+      "capability": "code_completion",
+      "hosting": "hosted",
+      "endpoint": "https://api.mistral.ai/v1/fim/completions",
+      "protocol": "mistral_fim",
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 256000,
+      "max_output_tokens": null,
+      "features": [
+        "tool_calling"
+      ]
+    },
+    {
+      "model": "mistral-code-latest",
+      "capability": "text_generation",
+      "hosting": "hosted",
+      "endpoint": "https://api.mistral.ai/v1/chat/completions",
+      "protocol": "openai_inference",
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 256000,
+      "max_output_tokens": null,
+      "features": [
+        "tool_calling"
+      ]
+    },
+    {
+      "model": "mistral-embed",
+      "capability": "unknown",
+      "hosting": "hosted",
+      "endpoint": null,
+      "protocol": null,
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 8192,
+      "max_output_tokens": null,
+      "features": []
+    },
+    {
+      "model": "mistral-embed-2312",
+      "capability": "unknown",
+      "hosting": "hosted",
+      "endpoint": null,
+      "protocol": null,
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 8192,
+      "max_output_tokens": null,
+      "features": []
+    },
+    {
+      "model": "mistral-medium",
+      "capability": "text_generation",
+      "hosting": "hosted",
+      "endpoint": "https://api.mistral.ai/v1/chat/completions",
+      "protocol": "openai_inference",
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 262144,
+      "max_output_tokens": null,
+      "features": [
+        "image_input",
+        "reasoning",
+        "tool_calling",
+        "vision"
+      ]
+    },
+    {
+      "model": "mistral-medium-2604",
+      "capability": "text_generation",
+      "hosting": "hosted",
+      "endpoint": "https://api.mistral.ai/v1/chat/completions",
+      "protocol": "openai_inference",
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 262144,
+      "max_output_tokens": null,
+      "features": [
+        "image_input",
+        "reasoning",
+        "tool_calling",
+        "vision"
+      ]
+    },
+    {
+      "model": "mistral-medium-3",
+      "capability": "text_generation",
+      "hosting": "hosted",
+      "endpoint": "https://api.mistral.ai/v1/chat/completions",
+      "protocol": "openai_inference",
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 262144,
+      "max_output_tokens": null,
+      "features": [
+        "image_input",
+        "reasoning",
+        "tool_calling",
+        "vision"
+      ]
+    },
+    {
+      "model": "mistral-medium-3-5",
+      "capability": "text_generation",
+      "hosting": "hosted",
+      "endpoint": "https://api.mistral.ai/v1/chat/completions",
+      "protocol": "openai_inference",
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 262144,
+      "max_output_tokens": null,
+      "features": [
+        "image_input",
+        "reasoning",
+        "tool_calling",
+        "vision"
+      ]
+    },
+    {
+      "model": "mistral-medium-3.5",
+      "capability": "text_generation",
+      "hosting": "hosted",
+      "endpoint": "https://api.mistral.ai/v1/chat/completions",
+      "protocol": "openai_inference",
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 262144,
+      "max_output_tokens": null,
+      "features": [
+        "image_input",
+        "reasoning",
+        "tool_calling",
+        "vision"
+      ]
+    },
+    {
+      "model": "mistral-medium-latest",
+      "capability": "text_generation",
+      "hosting": "hosted",
+      "endpoint": "https://api.mistral.ai/v1/chat/completions",
+      "protocol": "openai_inference",
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 262144,
+      "max_output_tokens": null,
+      "features": [
+        "image_input",
+        "reasoning",
+        "tool_calling",
+        "vision"
+      ]
+    },
+    {
+      "model": "mistral-moderation-2603",
+      "capability": "classification",
+      "hosting": "hosted",
+      "endpoint": "https://api.mistral.ai/v1/classifications",
+      "protocol": "mistral_classification",
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 131071,
+      "max_output_tokens": null,
+      "features": []
+    },
+    {
+      "model": "mistral-moderation-2603",
+      "capability": "moderation",
+      "hosting": "hosted",
+      "endpoint": "https://api.mistral.ai/v1/moderations",
+      "protocol": "mistral_moderation",
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 131071,
+      "max_output_tokens": null,
+      "features": []
+    },
+    {
+      "model": "mistral-ocr-2512",
+      "capability": "ocr",
+      "hosting": "hosted",
+      "endpoint": "https://api.mistral.ai/v1/ocr",
+      "protocol": "mistral_ocr",
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 16384,
+      "max_output_tokens": null,
+      "features": [
+        "image_input",
+        "tool_calling",
+        "vision"
+      ]
+    },
+    {
+      "model": "mistral-ocr-3",
+      "capability": "ocr",
+      "hosting": "hosted",
+      "endpoint": "https://api.mistral.ai/v1/ocr",
+      "protocol": "mistral_ocr",
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 16384,
+      "max_output_tokens": null,
+      "features": [
+        "image_input",
+        "tool_calling",
+        "vision"
+      ]
+    },
+    {
+      "model": "mistral-ocr-3-0",
+      "capability": "ocr",
+      "hosting": "hosted",
+      "endpoint": "https://api.mistral.ai/v1/ocr",
+      "protocol": "mistral_ocr",
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 16384,
+      "max_output_tokens": null,
+      "features": [
+        "image_input",
+        "tool_calling",
+        "vision"
+      ]
+    },
+    {
+      "model": "mistral-ocr-4",
+      "capability": "ocr",
+      "hosting": "hosted",
+      "endpoint": "https://api.mistral.ai/v1/ocr",
+      "protocol": "mistral_ocr",
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 16384,
+      "max_output_tokens": null,
+      "features": [
+        "image_input",
+        "tool_calling",
+        "vision"
+      ]
+    },
+    {
+      "model": "mistral-ocr-4-1",
+      "capability": "ocr",
+      "hosting": "hosted",
+      "endpoint": "https://api.mistral.ai/v1/ocr",
+      "protocol": "mistral_ocr",
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 16384,
+      "max_output_tokens": null,
+      "features": [
+        "image_input",
+        "tool_calling",
+        "vision"
+      ]
+    },
+    {
+      "model": "mistral-ocr-latest",
+      "capability": "ocr",
+      "hosting": "hosted",
+      "endpoint": "https://api.mistral.ai/v1/ocr",
+      "protocol": "mistral_ocr",
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 16384,
+      "max_output_tokens": null,
+      "features": [
+        "image_input",
+        "tool_calling",
+        "vision"
+      ]
+    },
+    {
+      "model": "mistral-small-2603",
+      "capability": "text_generation",
+      "hosting": "hosted",
+      "endpoint": "https://api.mistral.ai/v1/chat/completions",
+      "protocol": "openai_inference",
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 262144,
+      "max_output_tokens": null,
+      "features": [
+        "image_input",
+        "reasoning",
+        "tool_calling",
+        "vision"
+      ]
+    },
+    {
+      "model": "mistral-small-latest",
+      "capability": "text_generation",
+      "hosting": "hosted",
+      "endpoint": "https://api.mistral.ai/v1/chat/completions",
+      "protocol": "openai_inference",
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 262144,
+      "max_output_tokens": null,
+      "features": [
+        "image_input",
+        "reasoning",
+        "tool_calling",
+        "vision"
+      ]
+    },
+    {
+      "model": "mistral-vibe-cli-fast",
+      "capability": "text_generation",
+      "hosting": "hosted",
+      "endpoint": "https://api.mistral.ai/v1/chat/completions",
+      "protocol": "openai_inference",
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 262144,
+      "max_output_tokens": null,
+      "features": [
+        "image_input",
+        "reasoning",
+        "tool_calling",
+        "vision"
+      ]
+    },
+    {
+      "model": "mistral-vibe-cli-latest",
+      "capability": "text_generation",
+      "hosting": "hosted",
+      "endpoint": "https://api.mistral.ai/v1/chat/completions",
+      "protocol": "openai_inference",
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 262144,
+      "max_output_tokens": null,
+      "features": [
+        "image_input",
+        "reasoning",
+        "tool_calling",
+        "vision"
+      ]
+    },
+    {
+      "model": "mistral-vibe-cli-with-tools",
+      "capability": "text_generation",
+      "hosting": "hosted",
+      "endpoint": "https://api.mistral.ai/v1/chat/completions",
+      "protocol": "openai_inference",
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 262144,
+      "max_output_tokens": null,
+      "features": [
+        "image_input",
+        "reasoning",
+        "tool_calling",
+        "vision"
+      ]
+    },
+    {
+      "model": "voxtral-mini-2602",
+      "capability": "audio_transcription",
+      "hosting": "hosted",
+      "endpoint": "https://api.mistral.ai/v1/audio/transcriptions",
+      "protocol": "mistral_audio_transcription",
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 16384,
+      "max_output_tokens": null,
+      "features": []
+    },
+    {
+      "model": "voxtral-mini-latest",
+      "capability": "audio_transcription",
+      "hosting": "hosted",
+      "endpoint": "https://api.mistral.ai/v1/audio/transcriptions",
+      "protocol": "mistral_audio_transcription",
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 16384,
+      "max_output_tokens": null,
+      "features": []
+    },
+    {
+      "model": "voxtral-mini-realtime-2602",
+      "capability": "realtime_audio_transcription",
+      "hosting": "hosted",
+      "endpoint": null,
+      "protocol": "mistral_audio_realtime",
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 32768,
+      "max_output_tokens": null,
+      "features": []
+    },
+    {
+      "model": "voxtral-mini-realtime-latest",
+      "capability": "realtime_audio_transcription",
+      "hosting": "hosted",
+      "endpoint": null,
+      "protocol": "mistral_audio_realtime",
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 32768,
+      "max_output_tokens": null,
+      "features": []
+    },
+    {
+      "model": "voxtral-mini-transcribe-3",
+      "capability": "audio_transcription",
+      "hosting": "hosted",
+      "endpoint": "https://api.mistral.ai/v1/audio/transcriptions",
+      "protocol": "mistral_audio_transcription",
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 65536,
+      "max_output_tokens": null,
+      "features": []
+    },
+    {
+      "model": "voxtral-mini-transcribe-3-0",
+      "capability": "audio_transcription",
+      "hosting": "hosted",
+      "endpoint": "https://api.mistral.ai/v1/audio/transcriptions",
+      "protocol": "mistral_audio_transcription",
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 65536,
+      "max_output_tokens": null,
+      "features": []
+    },
+    {
+      "model": "voxtral-mini-transcribe-realtime-2602",
+      "capability": "realtime_audio_transcription",
+      "hosting": "hosted",
+      "endpoint": null,
+      "protocol": "mistral_audio_realtime",
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 32768,
+      "max_output_tokens": null,
+      "features": []
+    },
+    {
+      "model": "voxtral-mini-transcribe-realtime-3",
+      "capability": "realtime_audio_transcription",
+      "hosting": "hosted",
+      "endpoint": null,
+      "protocol": "mistral_audio_realtime",
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 65536,
+      "max_output_tokens": null,
+      "features": []
+    },
+    {
+      "model": "voxtral-mini-transcribe-realtime-3-0",
+      "capability": "realtime_audio_transcription",
+      "hosting": "hosted",
+      "endpoint": null,
+      "protocol": "mistral_audio_realtime",
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 65536,
+      "max_output_tokens": null,
+      "features": []
+    },
+    {
+      "model": "voxtral-mini-tts-2603",
+      "capability": "tts",
+      "hosting": "hosted",
+      "endpoint": "https://api.mistral.ai/v1/audio/speech",
+      "protocol": "mistral_tts",
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 4096,
+      "max_output_tokens": null,
+      "features": [
+        "tool_calling"
+      ]
+    },
+    {
+      "model": "voxtral-mini-tts-3",
+      "capability": "tts",
+      "hosting": "hosted",
+      "endpoint": "https://api.mistral.ai/v1/audio/speech",
+      "protocol": "mistral_tts",
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 4096,
+      "max_output_tokens": null,
+      "features": []
+    },
+    {
+      "model": "voxtral-mini-tts-3-0",
+      "capability": "tts",
+      "hosting": "hosted",
+      "endpoint": "https://api.mistral.ai/v1/audio/speech",
+      "protocol": "mistral_tts",
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 4096,
+      "max_output_tokens": null,
+      "features": []
+    },
+    {
+      "model": "voxtral-mini-tts-latest",
+      "capability": "tts",
+      "hosting": "hosted",
+      "endpoint": "https://api.mistral.ai/v1/audio/speech",
+      "protocol": "mistral_tts",
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 4096,
+      "max_output_tokens": null,
+      "features": [
+        "tool_calling"
+      ]
+    },
+    {
+      "model": "voxtral-small-2507",
+      "capability": "text_generation",
+      "hosting": "hosted",
+      "endpoint": "https://api.mistral.ai/v1/chat/completions",
+      "protocol": "openai_inference",
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 32768,
+      "max_output_tokens": null,
+      "features": [
+        "audio_input",
+        "tool_calling"
+      ]
+    },
+    {
+      "model": "voxtral-small-latest",
+      "capability": "text_generation",
+      "hosting": "hosted",
+      "endpoint": "https://api.mistral.ai/v1/chat/completions",
+      "protocol": "openai_inference",
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 32768,
+      "max_output_tokens": null,
+      "features": [
+        "audio_input",
+        "tool_calling"
+      ]
+    },
+    {
+      "model": "voxtral-small-transcribe-3",
+      "capability": "audio_transcription",
+      "hosting": "hosted",
+      "endpoint": "https://api.mistral.ai/v1/audio/transcriptions",
+      "protocol": "mistral_audio_transcription",
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 65536,
+      "max_output_tokens": null,
+      "features": []
+    },
+    {
+      "model": "voxtral-small-transcribe-3-0",
+      "capability": "audio_transcription",
+      "hosting": "hosted",
+      "endpoint": "https://api.mistral.ai/v1/audio/transcriptions",
+      "protocol": "mistral_audio_transcription",
+      "free_eligibility": "unknown",
+      "free_source": null,
+      "status": "listed",
+      "context_tokens": 65536,
+      "max_output_tokens": null,
+      "features": []
+    }
+  ]
+}

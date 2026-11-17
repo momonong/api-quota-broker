@@ -344,11 +344,51 @@ class ProjectAccess:
         Absolute evidence validity works with every supported ledger timezone.
         Expired optional dimensions are historical data, not new requirements.
         """
-        required = set(target.required_capacity) or {(q.metric, q.window) for q in target.quotas}
-        required.update((o["metric"], o["window"]) for o in observations if o["current"])
+        local_capacity = target.required_capacity_declared and not target.required_capacity
+        required = (
+            set()
+            if local_capacity
+            else set(target.required_capacity) or {(q.metric, q.window) for q in target.quotas}
+        )
+        required.update(
+            (o["metric"], o["window"])
+            for o in observations
+            if o["current"] and (not local_capacity or o["effective_remaining"] is not None)
+        )
         reasons = []
-        if not target.available(self.gateway.clock()) or not required:
+        now = self.gateway.clock()
+        if not target.available(now) or (not required and not local_capacity):
             reasons.append("project_capacity:unavailable")
+        if local_capacity:
+            if (
+                target.quota_basis != "local_safety_cap"
+                or target.billing_evidence_state != "disabled"
+                or not target.secret_ref
+                or self.gateway._credentials(target)["state"] != "present"
+                or not {("requests", "rolling_minute"), ("requests", "day")}
+                <= {(q.metric, q.window) for q in target.quotas}
+            ):
+                reasons.append("project_capacity:unavailable")
+            if any(q.metric == "neurons" for q in target.quotas):
+                estimates = [target.neuron_estimate] if target.neuron_estimate else []
+                estimates.extend(e for e in target.resource_estimates if e.metric == "neurons")
+                if not any(
+                    e.verified_at <= now < e.expires_at
+                    and target.max_output_tokens <= e.max_output_tokens
+                    for e in estimates
+                ):
+                    reasons.append("project_capacity:neurons:bound")
+            if costs is None:
+                # Catalog has no task cost: require positive local headroom only.
+                # Plan/reserve/dispatch enforce exact costs in the shared Gateway;
+                # re-adding a reservation's own charge here would double-count it.
+                with closing(sqlite3.connect(self.gateway.db)) as con:
+                    con.row_factory = sqlite3.Row
+                    if any(
+                        self.gateway._quota_used(con, q, now, 0)[0] >= q.limit
+                        for q in target.quotas
+                    ):
+                        reasons.append("project_capacity:local_budget")
         for metric, window in sorted(required):
             matches = [o for o in observations if (o["metric"], o["window"]) == (metric, window)]
             cost = 1 if costs is None else costs.get((metric, window))
@@ -390,6 +430,7 @@ class ProjectAccess:
             "local_safety_caps",
             "provider_quota_facts",
             "required_capacity",
+            "required_capacity_declared",
             "capacity",
             "quota_observations",
             "local_ledger_usage",
@@ -464,7 +505,7 @@ class ProjectAccess:
         if kind == "jobs":
             data.setdefault("priority", 0)
             data.setdefault("wait_policy", "wait")
-            data.setdefault("max_attempts", 32)
+            data.setdefault("max_attempts", 3)
         with (
             closing(sqlite3.connect(self.gateway.db, timeout=15, isolation_level=None)) as con,
             con,
@@ -480,9 +521,19 @@ class ProjectAccess:
                 if data.get("deadline") is not None and data["deadline"] != deadline:
                     raise GatewayError("conflict", "project key already has another deadline")
                 data.update(request_key=internal, deadline=deadline)
-                if not isinstance(fingerprint, str) or not hmac.compare_digest(
+                matched = isinstance(fingerprint, str) and hmac.compare_digest(
                     fingerprint, self._payload_hmac(data)
-                ):
+                )
+                if not matched and kind == "jobs" and "max_attempts" not in body:
+                    legacy = {**data, "max_attempts": 32}
+                    if isinstance(fingerprint, str) and hmac.compare_digest(
+                        fingerprint, self._payload_hmac(legacy)
+                    ):
+                        # Preserve the accepted identity, fingerprint and original
+                        # budget. This does not create a new claim or reset attempts.
+                        data = legacy
+                        matched = True
+                if not matched:
                     raise GatewayError(
                         "conflict", "project key already bound or requires reconciliation"
                     )

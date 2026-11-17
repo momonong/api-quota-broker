@@ -230,7 +230,7 @@ def test_runtime_preflight_rejects_other_invalid_bindings(problem):
     elif problem == "access":
         documents["access.json"] = {"version": 1, "principals": [{"scopes": ["execute"]}]}
     elif problem == "missing_capacity":
-        documents["gateway.json"]["targets"][0]["required_capacity"] = []
+        documents["gateway.json"]["targets"][0].pop("required_capacity")
     elif problem == "wrong_secret":
         documents["gateway.json"]["targets"][0]["secret_ref"] = "OPENROUTER_API_KEY"
     elif problem == "inventory_scope":

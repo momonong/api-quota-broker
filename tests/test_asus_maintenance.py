@@ -8,11 +8,11 @@ import sqlite3
 import sys
 import tarfile
 import types
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
-from asus_packet_fixtures import normal_review
+from asus_packet_fixtures import HistoricalOpsClock, normal_review
 
 ROOT = Path(__file__).resolve().parents[1]
 HISTORICAL_NOW = datetime(2026, 10, 12, tzinfo=UTC)
@@ -368,6 +368,7 @@ def filesystem_transaction(tmp_path, monkeypatch):
     # Transaction fixture is unprivileged; native UID/capability behavior has its
     # own tests and sealed ASUS r3 receipt, rather than pretending this is root.
     monkeypatch.setattr(ops, "runtime_capabilities", lambda: None)
+    monkeypatch.setattr(ops, "datetime", HistoricalOpsClock)
     # Freeze only the historical profile's admission check, never production time/evidence.
     normal_config = ops.normal_config
     monkeypatch.setattr(
@@ -605,8 +606,9 @@ def later_packet():
     return archive, buf.getvalue(), verifier
 
 
+@pytest.mark.parametrize("extra_member", [False, True])
 def test_repeated_code_deploy_does_not_install_uploaded_root_code(
-    filesystem_transaction, monkeypatch
+    filesystem_transaction, monkeypatch, extra_member
 ):
     entry, _, root = filesystem_transaction
     first = ops.execute(entry, req())
@@ -618,6 +620,11 @@ def test_repeated_code_deploy_does_not_install_uploaded_root_code(
     incoming = root / ("aqb-release-" + later)
     incoming.mkdir(mode=0o700)
     archive, wheel, verifier = later_packet()
+    if extra_member:
+        buffer = io.BytesIO(archive)
+        with tarfile.open(fileobj=buffer, mode="a") as extra:
+            extra.addfile(tarfile.TarInfo("unreviewed-extra-member"), io.BytesIO(b""))
+        archive = buffer.getvalue()
     for name, raw in [("source.tar", archive), ("project.whl", wheel)]:
         (incoming / name).write_bytes(raw)
         (incoming / name).chmod(0o600)
@@ -635,6 +642,11 @@ def test_repeated_code_deploy_does_not_install_uploaded_root_code(
     )
     monkeypatch.setattr(ops.Native, "upload", REAL_UPLOAD)
     second = ops.execute(entry, {"operation": "deploy", "request_id": later})
+    if extra_member:
+        assert second["maintenance_state"] == "blocked" and second["code"] == "package_invalid"
+        assert os.readlink(ops.APP / "current") == first_current
+        assert (ops.BASE / "export_client_credential.py").read_bytes() == trusted_exporter
+        return
     assert second["maintenance_state"] == "passed", second
     assert os.readlink(ops.APP / "current") != first_current
     assert (ops.SYSTEM / ops.CLIENT).read_bytes() == trusted_unit
@@ -709,6 +721,8 @@ def test_authorized_continuation_preserves_original_and_blocks_new_ids(tmp_path,
         "unknown",
         "nested",
         "asset_link",
+        "missing_inventory",
+        "inventory_link",
         "source_link",
         "destination_link",
         "destination_asset_link",
@@ -718,7 +732,7 @@ def test_dashboard_runtime_asset_copy_rejects_unsafe_layout(tmp_path, kind):
     source = tmp_path / "source"
     destination = tmp_path / "destination"
     source.mkdir()
-    for name in ("index.html", "dashboard.css", "dashboard.js"):
+    for name in ("index.html", "dashboard.css", "dashboard.js", "provider-inventory.json"):
         (source / name).write_text("synthetic " + name)
     if kind == "unknown":
         (source / "unreviewed.js").write_text("not in asset contract")
@@ -727,6 +741,11 @@ def test_dashboard_runtime_asset_copy_rejects_unsafe_layout(tmp_path, kind):
     elif kind == "asset_link":
         (source / "dashboard.js").unlink()
         (source / "dashboard.js").symlink_to(source / "index.html")
+    elif kind == "missing_inventory":
+        (source / "provider-inventory.json").unlink()
+    elif kind == "inventory_link":
+        (source / "provider-inventory.json").unlink()
+        (source / "provider-inventory.json").symlink_to(source / "index.html")
     elif kind == "source_link":
         linked = tmp_path / "source-link"
         linked.symlink_to(source)
@@ -743,7 +762,7 @@ def test_dashboard_runtime_asset_copy_rejects_unsafe_layout(tmp_path, kind):
 def test_dashboard_runtime_asset_copy_preserves_exact_bytes_and_permissions(tmp_path):
     source = tmp_path / "source"
     source.mkdir()
-    for name in ("index.html", "dashboard.css", "dashboard.js"):
+    for name in ("index.html", "dashboard.css", "dashboard.js", "provider-inventory.json"):
         (source / name).write_text("synthetic " + name)
     destination = tmp_path / "destination"
     ops.copy_dashboard_assets(source, destination)
@@ -751,7 +770,20 @@ def test_dashboard_runtime_asset_copy_preserves_exact_bytes_and_permissions(tmp_
         "index.html",
         "dashboard.css",
         "dashboard.js",
+        "provider-inventory.json",
     }
     for path in destination.iterdir():
         assert path.read_bytes() == (source / path.name).read_bytes()
         assert path.stat().st_mode & 0o777 == 0o644
+
+
+def test_historical_metadata_exact_safety_margin_remains_blocked(filesystem_transaction):
+    entry, commands, _root = filesystem_transaction
+    metadata = ops.CONFIG.parent / "credentials/doppler-metadata.json"
+    value = json.loads(metadata.read_bytes())
+    value["expires_at"] = (HISTORICAL_NOW + timedelta(minutes=10)).isoformat()
+    metadata.write_bytes(ops.wire(value))
+    before = ops.DB.read_bytes()
+    result = ops.execute(entry, req())
+    assert result["maintenance_state"] == "blocked" and result["code"] == "expiry_invalid"
+    assert commands == [] and ops.DB.read_bytes() == before

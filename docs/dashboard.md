@@ -140,3 +140,14 @@ public 模式精確核對設定的 Host、Origin（POST 必須提供 Origin）�
 排序的 `capacity.expires_at` 仍是證據期限；可選 `capacity.credit_expires_at` 才是精確、帶時區的 credit 到期時間。日期精度的 grant 保留於獨立監看帳戶，不轉成精確執行期限。已確認到期的 credit 拒絕使用；合格路由優先依已核對的精確 credit 到期／quota 重置時間，再比較有效剩餘比例；週期長度不能充當下一次重置倒數。建議列出資料因素，沒有模型呼叫。
 
 新的 Dashboard upstream 身分必須由 Broker `AccessPolicyFile` 授予獨立 read/plan；不得再用 legacy execution client token。部署模板已使用獨立 encrypted credential 及同 UID 的 `/run/api-quota-dashboard/read_plan_token` 0600 副本。這一節描述 source 行為，不代表正式主機已啟用。
+
+
+## 用量視覺化（2026-11-17 未部署候選）
+
+總用量加入每日嘗試與結果、每日已知 tokens、供應商分布，保留可展開的每日明細。日分組採 UTC、以實際 dispatched_at 歸日；介面的日期篩選仍依帶時區的 from（含）/to（不含）送出。這是經 Broker 的生成嘗試，重試計多筆，不等於業務工作數或供應商完整帳單。
+
+有回報的數值保留可加總部分，缺失筆數另列；`≥` 是已知下限。已確認零、單位不適用、舊來源未提供完整性、來源不可用四者分開呈現。登出、來源失敗或重新載入不保留上一份圖表冒充現在資料。供應商帳戶回報與本機帳本以同一組篩選結果連結，帳戶不能查到用量時仍顯示未知。
+
+上游 `GET /v1/usage?group_by=day` 提供日期彙總；aggregate 保持 provider/model/task_type 維度。每日來源失敗不抹掉可用的 aggregate，另以 `timeline_state=unavailable` 表示。舊來源缺失的欄位保持缺席，明確 null 才能表達不適用；不從模型名字猜消耗單位。
+
+模型盤點靜態資料更新至 2026-11-16～17 的已取得清單，保留官方文件與退場型號等不同範圍。Cloudflare/Hugging Face 顯示 partial。篩選與模型出現不授權執行，不複製同廠其他模型的帳戶資格或配額。

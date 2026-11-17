@@ -192,6 +192,8 @@ class Broker:
             ]
         if target.required_capacity:
             value["required_capacity"] = sorted(target.required_capacity)
+        elif target.required_capacity_declared:
+            value["required_capacity_declared"] = True
         if target.neuron_estimate is not None:
             value["neuron_estimate"] = target.neuron_estimate.view()
         # Preserve v0.1 snapshots when older direct-client targets have no secret ref.
@@ -277,6 +279,7 @@ class Broker:
                         else []
                     ),
                     "provider_quota_facts": [f.view() for f in target.provider_quota_facts],
+                    "required_capacity_declared": target.required_capacity_declared,
                     "required_capacity": [
                         {"metric": metric, "window": window}
                         for metric, window in target.required_capacity
@@ -290,7 +293,7 @@ class Broker:
         return result
 
     def mark_execution_finished(self, reservation_id: str) -> None:
-        """Executor-only proof of a received valid result; never alters quota charges."""
+        """Executor-only proof of a received result or complete refusal; never alters quota charges."""
         with self._tx() as con:
             row = con.execute(
                 "SELECT state,dispatched_at FROM reservations WHERE id=?", (reservation_id,)

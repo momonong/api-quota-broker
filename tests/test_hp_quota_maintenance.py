@@ -445,3 +445,71 @@ def test_launcher_copies_pinned_metadata_to_private_service_owned_files(
     target.write_bytes(b"[]")
     with pytest.raises(ValueError, match="metadata_digest"):
         launcher.private_metadata(operator.root / "releases/old", tmp_path / "other")
+
+
+LEGACY_45_OMITTED = {
+    "app/quota_broker/crypto_admin.py",
+    "app/quota_broker/crypto_config.py",
+    "app/quota_broker/encrypted_transport.py",
+    "app/quota_broker/execution_policy.py",
+    "app/quota_broker/local_jobs.py",
+    "app/quota_broker/secure_client.py",
+}
+
+
+def legacy_45_baseline(host):
+    h, operator, data = host
+    release = operator.root / "releases/old"
+    rows = h.parse((release / "manifest.json").read_bytes())
+    for path in LEGACY_45_OMITTED:
+        (release / path).unlink()
+    rows = [row for row in rows if row["path"] not in LEGACY_45_OMITTED]
+    assert len(rows) == 45
+    (release / "manifest.json").write_bytes(h.canonical(rows))
+    data["expected_manifest_sha256"] = h.digest(h.canonical(rows))
+    return h, operator, data, rows
+
+
+def test_exact_legacy_45_baseline_can_upgrade_to_51_and_rollback(host):
+    h, operator, data, original = legacy_45_baseline(host)
+    assert operator.current()[2] == original
+    assert len(h.validate(data)[0]) == 51
+    result = operator.handle(request("publish", data))
+    assert result["status"] == "complete" and len(operator.current()[2]) == 51
+    result = operator.handle(request("rollback", operation=data["operation_id"]))
+    assert result["status"] == "rolled_back" and operator.current()[2] == original
+
+
+@pytest.mark.parametrize("fault", ["missing", "mixed", "extra", "index_drift", "order"])
+def test_legacy_45_compatibility_preserves_exact_inventory_and_hashes(host, fault):
+    h, operator, data, rows = legacy_45_baseline(host)
+    release = operator.root / "releases/old"
+    if fault in {"missing", "mixed"}:
+        removed = rows.pop(0)
+        (release / removed["path"]).unlink()
+        if fault == "mixed":
+            path = "app/quota_broker/crypto_config.py"
+            raw = b"pass\n"
+            (release / path).write_bytes(raw)
+            rows.append({"path": path, "size": len(raw), "sha256": h.digest(raw)})
+            rows.sort(key=lambda row: row["path"])
+    elif fault == "extra":
+        (release / "app/quota_broker/undeclared.py").write_bytes(b"pass\n")
+    elif fault == "index_drift":
+        (release / "app/quota_broker/dashboard_assets/index.html").write_bytes(b"overlay")
+    else:
+        rows.reverse()
+    (release / "manifest.json").write_bytes(h.canonical(rows))
+    data["expected_manifest_sha256"] = h.digest(h.canonical(rows))
+    with pytest.raises(h.Refused):
+        operator.handle(request("publish", data))
+    assert not (operator.state / (data["operation_id"] + ".json")).exists()
+    assert (operator.root / "current").readlink() == Path("releases/old")
+
+
+def test_legacy_baseline_support_does_not_accept_legacy_incoming_packets():
+    h = helper()
+    candidate = package(h)
+    candidate["files"] = [row for row in candidate["files"] if row["path"] not in LEGACY_45_OMITTED]
+    with pytest.raises(h.Refused, match="exact_files_required"):
+        h.validate(candidate)

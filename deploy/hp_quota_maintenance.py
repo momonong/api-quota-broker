@@ -94,6 +94,22 @@ ALLOWED = (
 )
 
 
+# Pre-encryption dashboard releases shipped this exact 45-file inventory.
+LEGACY_ALLOWED = tuple(
+    path
+    for path in ALLOWED
+    if path
+    not in {
+        "app/quota_broker/crypto_admin.py",
+        "app/quota_broker/crypto_config.py",
+        "app/quota_broker/encrypted_transport.py",
+        "app/quota_broker/execution_policy.py",
+        "app/quota_broker/local_jobs.py",
+        "app/quota_broker/secure_client.py",
+    }
+)
+
+
 class Refused(ValueError):
     pass
 
@@ -384,7 +400,10 @@ class Operator:
             total += len(raw)
             paths.append(path)
         legacy = tuple(p for p in ALLOWED if p != "app/quota_broker/task_matching.py")
-        need(tuple(paths) in (ALLOWED, legacy) and total <= MAX_TOTAL, "installed_file_set")
+        need(
+            tuple(paths) in (ALLOWED, legacy, LEGACY_ALLOWED) and total <= MAX_TOTAL,
+            "installed_file_set",
+        )
         # Reject undeclared extra code/data and any writable or aliased directory.
         actual = []
         for parent, dirs, files in os.walk(location, followlinks=False):

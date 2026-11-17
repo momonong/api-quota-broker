@@ -102,6 +102,10 @@ def _rank(row: dict[str, Any]) -> tuple[Any, ...]:
     return (
         not row["capability_verified"],
         not row["safe"],
+        -(_number(ranking.get("score")) or 0),
+        _number(ranking.get("selection_order"))
+        if _number(ranking.get("selection_order")) is not None
+        else math.inf,
         not (row["safe"] or row["free_plan_verified"]),
         not (row["safe"] or row["free_plan_basis"] == "account_plan"),
         not row.get("account_grant_verified", False),
@@ -538,6 +542,20 @@ def match_models(
                         else None,
                         "value_loss_basis": basis if exact else None,
                         "observed_headroom": _number(ranking.get("observed_headroom")),
+                        **{
+                            key: ranking[key]
+                            for key in (
+                                "algorithm",
+                                "selection_order",
+                                "score",
+                                "components",
+                                "quality_basis",
+                                "quality_samples",
+                                "task_profile",
+                                "reliability_samples",
+                            )
+                            if key in ranking
+                        },
                     },
                 }
             )
@@ -568,7 +586,7 @@ def match_models(
         "execution_allowed": False,
         "paid_allowed": False,
         "mode": "match",
-        "policy": "capability_then_verified_free_capacity_then_expiry_then_headroom",
+        "policy": "constrained_expiry_utility_v1",
         "source": advice["source"] if advice else snapshot["source"],
         "decision": "recommend" if selected else "ask_user",
         "selected_target": selected,
@@ -580,5 +598,5 @@ def match_models(
         "reasons": ["current_authoritative_free_capacity"]
         if selected
         else ["no_confirmed_safe_target"],
-        "quality_basis": "capabilities_only_not_quality_benchmark",
+        "quality_basis": "task_scoped_evaluations_when_available_else_unmeasured",
     }

@@ -4,7 +4,7 @@
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Momonong Quota · 配額與路由</title>
 <link rel="stylesheet" href="./dashboard.css"><script src="./dashboard.js" defer></script>
-</head>
+<link rel="icon" type="image/x-icon" href="/sites/_icons/v1/quota.ico"><link rel="icon" type="image/svg+xml" sizes="any" href="/sites/_icons/v1/quota.svg"><link rel="apple-touch-icon" sizes="180x180" href="/sites/_icons/v1/quota-180.png"></head>
 <body>
 <a class="skip-link" href="#main">跳到工作台</a>
 <div id="demo-notice" class="demo-notice" role="status" hidden><strong>合成資料預覽</strong><span>所有模型、餘額與用量均為測試範例，不代表真實帳戶。</span></div>
@@ -68,7 +68,7 @@
       <form id="usage-form" class="filter-bar"><div><label for="usage-period">時間範圍</label><select id="usage-period"><option value="all">全部紀錄</option><option value="today">今天</option><option value="7">最近 7 天</option><option value="30">最近 30 天</option><option value="custom">自訂日期</option></select></div><div><label for="usage-provider">供應商</label><select id="usage-provider"><option value="">全部供應商</option></select></div><div><label for="usage-model">模型</label><select id="usage-model"><option value="">全部模型</option></select></div><div><label for="usage-task">任務類別</label><select id="usage-task"><option value="">全部類別</option><option value="unknown">類別未記錄</option><option value="text_generation">文字生成</option><option value="translation">翻譯</option><option value="ocr">文字辨識</option></select></div><button type="submit">套用篩選</button><div id="usage-dates" class="date-range" hidden><div><label for="usage-from">開始日期（含）</label><input id="usage-from" type="date"></div><div><label for="usage-to">結束日期（含）</label><input id="usage-to" type="date"></div></div></form>
       <p id="activity-source" class="meta"></p><p id="usage-coverage" class="meta"></p><p id="usage-filter-note" class="section-note">新紀錄依實際任務能力分類；歷史未記錄類別的嘗試保留為「類別未記錄」。</p>
       <section class="panel provider-usage-panel" aria-labelledby="provider-usage-title"><div class="section-head"><h2 id="provider-usage-title">供應商回報與帳戶核對用量（含外部呼叫範圍說明）</h2><span id="provider-usage-status" aria-live="polite"></span></div><div id="provider-usage"></div><p class="section-note">供應商帳戶／金鑰層級的用量涵蓋所有經該帳戶或金鑰發出的呼叫（含未經 Broker 的外部使用）；未提供唯讀用量 API 的供應商維持「未知」，絕不當作零消耗。</p></section>
-      <section class="panel usage-panel" aria-labelledby="usage-title"><div class="section-head"><h2 id="usage-title">本機記錄用量</h2><span id="usage-status" aria-live="polite"></span></div><div id="usage-totals" class="usage-totals"></div><div id="usage"></div><p class="section-note">requests 與各資源單位分開統計。已回報數字不等於完整實際消耗；部分回報或完整性未知會另標示。</p></section>
+      <section class="panel usage-panel" aria-labelledby="usage-title"><div class="section-head"><h2 id="usage-title">本機記錄用量</h2><span id="usage-status" aria-live="polite"></span></div><div id="usage-totals" class="usage-totals"></div><div id="usage-charts" aria-live="polite"></div><div id="usage"></div><p class="section-note">requests 與各資源單位分開統計。已回報數字不等於完整實際消耗；部分回報或完整性未知會另標示。</p></section>
       <section class="panel recent-panel" aria-labelledby="recent-title"><div class="section-head"><h2 id="recent-title">最近工作</h2><span>僅供活動核對，不作完整統計</span></div><div id="recent"></div><p class="section-note">此處為未套用篩選的最近工作；只顯示狀態與時間。</p></section>
     </section>
     <section id="view-advice" role="tabpanel" aria-labelledby="tab-advice" hidden>

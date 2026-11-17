@@ -14,6 +14,18 @@ def dashboard(tmp_path):
     from quota_broker.dashboard_demo import create_demo
 
     source = create_demo(tmp_path, clock=lambda: NOW)
+    # These fixtures explicitly exercise authoritative capacity, not local budgets.
+    catalog = source.catalog
+
+    def authoritative_catalog():
+        rows = catalog()
+        for row in rows:
+            row["required_capacity"] = [
+                {"metric": q["metric"], "window": q["window"]} for q in row["local_safety_caps"]
+            ]
+        return rows
+
+    source.catalog = authoritative_catalog
     return Dashboard(source, clock=lambda: NOW), source
 
 

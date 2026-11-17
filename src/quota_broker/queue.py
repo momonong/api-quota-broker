@@ -24,6 +24,7 @@ from cryptography.fernet import Fernet, InvalidToken
 
 from .core import canonical, stamp
 from .gateway import GatewayError, validate_task
+from .retry import retry_delay
 
 PENDING = {"queued", "waiting"}
 TERMINAL = {"completed", "failed", "expired", "cancelled", "unknown"}
@@ -332,8 +333,62 @@ class DurableQueue:
             total += max(1, count)
         return total
 
+    @staticmethod
+    def _refusal_settled(
+        con: sqlite3.Connection, item: sqlite3.Row, ledger: sqlite3.Row | None
+    ) -> bool:
+        """Require a persisted complete-refusal proof and its exact ledger linkage."""
+        if (
+            ledger is None
+            or item["state"] != "failed"
+            or not item["dispatched_at"]
+            or not item["completed_at"]
+        ):
+            return False
+        try:
+            diag = json.loads(item["diagnostics_json"] or "{}")
+            resources = json.loads(item["reported_resources_json"] or "null")
+            reservation = con.execute(
+                "SELECT * FROM reservations WHERE id=?", (item["reservation_id"],)
+            ).fetchone()
+            snapshot = json.loads(reservation["target_snapshot"])
+        except (ValueError, TypeError, KeyError):
+            return False
+        return bool(
+            diag.get("refusal_policy") == "synchronous_refusal_v1"
+            and diag.get("retryable_refusal") is True
+            and diag.get("terminal_error_response") is True
+            and diag.get("response_complete") is True
+            and not set(diag) & {"phase", "adapter_metadata_invalid"}
+            and item["http_status"] in {429, 503}
+            and item["usage_source"] == "observed_http_request"
+            and resources == {"requests": 1}
+            and type(resources.get("requests")) is int
+            and all(
+                item[field] is None
+                for field in (
+                    "reported_input_tokens",
+                    "reported_output_tokens",
+                    "reported_neurons",
+                    "finish_reason",
+                    "response_truncated",
+                )
+            )
+            and reservation["state"] in {"failed", "unknown"}
+            and reservation["error_status"] == item["http_status"]
+            and reservation["dispatched_at"]
+            and reservation["target_id"] == item["target_id"]
+            and snapshot["provider"] == item["provider"]
+            and snapshot["model"] == item["model"]
+            and reservation["request_key"] == f"gw:{item['request_key']}:{item['attempt_no']}"
+            and con.execute(
+                "SELECT 1 FROM execution_completion WHERE reservation_id=?",
+                (item["reservation_id"],),
+            ).fetchone()
+        )
+
     def _execution(self, con: sqlite3.Connection, row: sqlite3.Row) -> str:
-        """Read dispatch evidence; only a settled explicit refusal proves no execution."""
+        """Read durable evidence: only unsent work or a verified refusal is replay-safe."""
         key = row["execution_key"]
         if key is None or not row["run_started"]:
             return "unsent"
@@ -359,6 +414,7 @@ class DurableQueue:
         # Gateway task is the last-attempt summary. Use individual attempts when
         # available so a final refusal cannot hide an earlier uncertain dispatch.
         items = attempts or [task]
+        safe_reservations: set[str] = set()
         for item in items:
             reservation = item["reservation_id"]
             ledger = (
@@ -372,7 +428,8 @@ class DurableQueue:
                 ledger is not None
                 and ledger["state"] == "quota_rejected"
                 and item["state"] == "quota_rejected"
-            ):
+            ) or (attempts and self._refusal_settled(con, item, ledger)):
+                safe_reservations.add(reservation)
                 continue
             if item["dispatched_at"] or item["state"] in {
                 "dispatched",
@@ -396,13 +453,14 @@ class DurableQueue:
             if "request_key" in columns:
                 prefix = "gw:" + key + ":"
                 orphan_rows = con.execute(
-                    "SELECT state,dispatched_at FROM reservations WHERE substr(request_key,1,?)=?",
+                    "SELECT id,state,dispatched_at FROM reservations WHERE substr(request_key,1,?)=?",
                     (len(prefix), prefix),
                 )
                 if any(
                     item["dispatched_at"]
                     or item["state"] not in {"reserved", "cancelled", "expired"}
                     for item in orphan_rows
+                    if item["id"] not in safe_reservations
                 ):
                     return "unknown"
         # A ledger dispatch can precede insertion/update of Gateway attempts.
@@ -424,6 +482,92 @@ class DurableQueue:
             ):
                 return "unknown"
         return "unsent"
+
+    def _settled_google_failure(self, con: sqlite3.Connection, row: sqlite3.Row) -> bool:
+        """Accept a terminal refusal only with its exact settled ledger evidence."""
+        executions = con.execute(
+            "SELECT execution_key FROM queue_attempts WHERE request_key=?", (row["request_key"],)
+        ).fetchall()
+        key = row["execution_key"]
+        if len(executions) != 1 or executions[0][0] != key:
+            return False
+        task = con.execute("SELECT * FROM gateway_tasks WHERE request_key=?", (key,)).fetchone()
+        attempts = con.execute(
+            "SELECT * FROM gateway_attempts WHERE request_key=?", (key,)
+        ).fetchall()
+        if task is None or len(attempts) != 1:
+            return False
+        attempt = attempts[0]
+        if any(
+            task[field] != attempt[field]
+            for field in ("reservation_id", "provider", "model", "target_id", "task_type")
+        ):
+            return False
+        for item in (task, attempt):
+            diag = json.loads(item["diagnostics_json"] or "{}")
+            resources = json.loads(item["reported_resources_json"] or "null")
+            if (
+                item["state"] != "failed"
+                or item["provider"] != "google"
+                or item["task_type"] != "text_generation"
+                or item["http_status"] != 503
+                or item["error_code"] != "provider_http_error"
+                or item["usage_source"] != "observed_http_request"
+                or resources != {"requests": 1}
+                or type(resources.get("requests")) is not int
+                or not item["dispatched_at"]
+                or not item["completed_at"]
+                or any(
+                    item[field] is not None
+                    for field in (
+                        "reported_input_tokens",
+                        "reported_output_tokens",
+                        "reported_neurons",
+                        "provider_request_id",
+                        "finish_reason",
+                        "response_truncated",
+                    )
+                )
+                or set(diag) & {"phase", "adapter_metadata_invalid"}
+                or diag.get("body_shape") != "nested_error"
+                or diag.get("content_type") != "application/json"
+                or diag.get("terminal_error_response") is not True
+                or diag.get("response_complete") is not True
+            ):
+                return False
+        ledger = con.execute(
+            "SELECT * FROM reservations WHERE id=?", (attempt["reservation_id"],)
+        ).fetchone()
+        if (
+            ledger is None
+            or ledger["state"] != "failed"
+            or ledger["error_status"] != 503
+            or not ledger["dispatched_at"]
+            or ledger["target_id"] != task["target_id"]
+            or ledger["provider_request_id"] is not None
+        ):
+            return False
+        snapshot = json.loads(ledger["target_snapshot"])
+        if (
+            snapshot["provider"] != "google"
+            or snapshot["model"] != task["model"]
+            or {q["metric"] for q in snapshot["quotas"]} != {"requests"}
+        ):
+            return False
+        prefix = "gw:" + key + ":"
+        reservations = con.execute(
+            "SELECT id FROM reservations WHERE substr(request_key,1,?)=?", (len(prefix), prefix)
+        ).fetchall()
+        if len(reservations) != 1 or reservations[0][0] != ledger["id"]:
+            return False
+        charges = con.execute(
+            "SELECT bucket,metric,amount FROM charges WHERE reservation_id=?", (ledger["id"],)
+        ).fetchall()
+        return (
+            bool(charges)
+            and {r[0] for r in charges} == {q["bucket"] for q in snapshot["quotas"]}
+            and all(r[1] == "requests" and r[2] == 1 for r in charges)
+        )
 
     def _finish(
         self,
@@ -480,13 +624,13 @@ class DurableQueue:
         supplied = {
             **raw,
             "wait_policy": raw.get("wait_policy", "wait"),
-            "max_attempts": raw.get("max_attempts", 32),
+            "max_attempts": raw.get("max_attempts", 3),
         }
         data = validator(supplied)
         priority = data.get("priority", raw.get("priority", 0))
         deadline = data.get("deadline", raw.get("deadline"))
         wait_policy = data.get("wait_policy", raw.get("wait_policy", "wait"))
-        max_attempts = data.get("max_attempts", raw.get("max_attempts", 32))
+        max_attempts = data.get("max_attempts", raw.get("max_attempts", 3))
         if type(priority) is not int or not -1000 <= priority <= 1000:
             raise GatewayError("invalid_request", "queue priority must be -1000..1000")
         if wait_policy not in {"wait", "reject"}:
@@ -510,7 +654,17 @@ class DurableQueue:
             self._maintenance(con)
             prior = con.execute("SELECT * FROM queue_jobs WHERE request_key=?", (key,)).fetchone()
             if prior:
-                if not hmac.compare_digest(prior["payload_hmac"], fingerprint):
+                matched = hmac.compare_digest(prior["payload_hmac"], fingerprint)
+                if not matched and "max_attempts" not in raw and prior["max_attempts"] == 32:
+                    # The historical omitted default was 32; preserve its identity
+                    # and stored budget without widening any newly created job.
+                    legacy = hmac.new(
+                        self._fingerprint_key,
+                        canonical({**data, "max_attempts": 32}).encode(),
+                        hashlib.sha256,
+                    ).hexdigest()
+                    matched = hmac.compare_digest(prior["payload_hmac"], legacy)
+                if not matched:
                     raise GatewayError("conflict", "queue key already used for different task")
                 return self._view(con, prior)
             count = con.execute(
@@ -611,11 +765,23 @@ class DurableQueue:
             return None
         return current
 
-    def _wait(self, con: sqlite3.Connection, row: sqlite3.Row, retry_at: str | None) -> None:
+    def _wait(
+        self,
+        con: sqlite3.Connection,
+        row: sqlite3.Row,
+        retry_at: str | None,
+        *,
+        backoff_attempt: int | None = None,
+    ) -> None:
         if row["wait_policy"] == "reject":
             self._finish(con, row, "failed", error="temporarily_unavailable")
             return
-        when = self.clock() + timedelta(seconds=self.retry_seconds)
+        delay = (
+            self.retry_seconds
+            if backoff_attempt is None
+            else retry_delay(row["request_key"], backoff_attempt, base_seconds=self.retry_seconds)
+        )
+        when = self.clock() + timedelta(seconds=delay)
         if retry_at:
             try:
                 when = max(when, _date(retry_at))
@@ -729,7 +895,12 @@ class DurableQueue:
                 if current:
                     self._finish(con, current, "unknown", error="execution_uncertain")
             return self.status(row["request_key"])
-        retry_plan = self.gateway.explain(data) if outcome.get("state") == "quota_exhausted" else {}
+        retryable = (outcome.get("diagnostics") or {}).get("retryable_refusal") is True
+        retry_plan = (
+            self.gateway.explain(data)
+            if outcome.get("state") == "quota_exhausted" or retryable
+            else {}
+        )
         with self._tx() as con:
             current = self._row(con, row["request_key"])
             state = outcome.get("state")
@@ -740,6 +911,17 @@ class DurableQueue:
             late_known_result = (
                 current["state"] == "unknown" and current["error_code"] == "execution_uncertain"
             )
+            if (
+                state == "failed"
+                and same_execution
+                and (running_owner or late_known_result)
+                and outcome.get("usage_source") == "observed_http_request"
+                and (outcome.get("diagnostics") or {}).get("terminal_error_response") is True
+                and not (outcome.get("diagnostics") or {}).get("retryable_refusal")
+                and self._settled_google_failure(con, current)
+            ):
+                self._finish(con, current, "failed", error="provider_http_error", result=outcome)
+                return self._view(con, self._row(con, row["request_key"]))
             if (
                 state in {"completed", "completed_usage_unknown"}
                 and same_execution
@@ -769,13 +951,20 @@ class DurableQueue:
                         con, current, "unknown", error="execution_uncertain", result=outcome
                     )
             elif (
-                (outcome.get("temporary") or state == "quota_exhausted")
+                (outcome.get("temporary") or state == "quota_exhausted" or retryable)
                 and self._execution(con, current) == "unsent"
                 and self._budget_used(con, row["request_key"]) < current["max_attempts"]
                 and not retry_plan.get("permanent_rejection")
             ):
                 self._wait(
-                    con, current, retry_plan.get("next_retry_at") or outcome.get("next_retry_at")
+                    con,
+                    current,
+                    retry_plan.get("next_retry_at")
+                    or outcome.get("next_retry_at")
+                    or (outcome.get("diagnostics") or {}).get("next_retry_at"),
+                    backoff_attempt=self._budget_used(con, row["request_key"]) - 1
+                    if retryable
+                    else None,
                 )
             else:
                 self._finish(con, current, "failed", error="execution_failed", result=outcome)

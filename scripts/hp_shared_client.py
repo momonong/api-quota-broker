@@ -237,9 +237,13 @@ def remote(request):
             check=False,
             env=ssh_environment(),
         )
-    need(result.returncode == 0, "transport_unknown_query_original_operation")
     need(len(result.stdout) <= 65536, "response_bound")
-    return sanitize_response(parse(result.stdout))
+    response = sanitize_response(parse(result.stdout))
+    need(
+        result.returncode == 0 or response["status"] == "stopped",
+        "transport_unknown_query_original_operation",
+    )
+    return response
 
 
 def _intent(state, operation):

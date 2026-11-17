@@ -9,6 +9,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from asus_packet_fixtures import HistoricalOpsClock
 
 ROOT = Path(__file__).parents[1]
 
@@ -30,6 +31,7 @@ PRIVATE = "PUBLIC_PRIVATE_FAILURE_FIXTURE_DO_NOT_PROJECT"
 
 
 def virtual_host(monkeypatch, mod, *, agent=False):
+    monkeypatch.setattr(mod, "datetime", HistoricalOpsClock)
     events = []
     gateway = b"PUBLIC_GATEWAY_FIXTURE"
     old_dir = ROOT / "tests/fixtures/asus-history/r11"

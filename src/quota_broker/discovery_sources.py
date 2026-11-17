@@ -1,6 +1,6 @@
 """Validated public evidence and disabled candidates; never resolves credentials.
 
-Only two fixed anonymous model-list endpoints can be fetched. Importing a
+Only fixed anonymous model-list endpoints can be fetched. Importing a
 snapshot is a separate local administrator operation and performs no network IO.
 """
 
@@ -24,9 +24,25 @@ MAX_SNAPSHOT_BYTES = 5 * 1024 * 1024
 MAX_MODELS = 10_000
 MAX_ACCOUNT_VALIDITY = timedelta(days=30)
 PROVIDERS = frozenset(
-    {"nvidia", "google", "cloudflare", "groq", "mistral", "openrouter", "ocrspace"}
+    {
+        "nvidia",
+        "google",
+        "cloudflare",
+        "groq",
+        "mistral",
+        "openrouter",
+        "ocrspace",
+        "openai",
+        "sambanova",
+        "cerebras",
+        "huggingface",
+    }
 )
 SOURCE_HOSTS = {
+    "openai": {"api.openai.com", "platform.openai.com", "developers.openai.com"},
+    "sambanova": {"api.sambanova.ai", "docs.sambanova.ai"},
+    "cerebras": {"api.cerebras.ai", "inference-docs.cerebras.ai"},
+    "huggingface": {"router.huggingface.co", "huggingface.co"},
     "nvidia": {"docs.api.nvidia.com", "build.nvidia.com", "integrate.api.nvidia.com"},
     "google": {"ai.google.dev", "generativelanguage.googleapis.com"},
     "cloudflare": {"developers.cloudflare.com", "api.cloudflare.com"},
@@ -36,6 +52,15 @@ SOURCE_HOSTS = {
     "ocrspace": {"ocr.space", "api.ocr.space"},
 }
 PUBLIC_URLS = {
+    **{
+        (provider, modality): url
+        for provider, url in {
+            "sambanova": "https://api.sambanova.ai/v1/models",
+            "cerebras": "https://api.cerebras.ai/public/v1/models",
+            "huggingface": "https://router.huggingface.co/v1/models",
+        }.items()
+        for modality in ("text", "all")
+    },
     ("nvidia", "text"): "https://integrate.api.nvidia.com/v1/models",
     ("nvidia", "all"): "https://integrate.api.nvidia.com/v1/models",
     ("openrouter", "text"): "https://openrouter.ai/api/v1/models",
@@ -115,7 +140,7 @@ def _url(value: Any, provider: str, *, endpoint: bool = False) -> str:
         hosts = ENDPOINT_HOSTS if endpoint else SOURCE_HOSTS
         if (
             parsed.scheme != "https"
-            or parsed.hostname not in hosts[provider]
+            or parsed.hostname not in hosts.get(provider, set())
             or parsed.netloc != parsed.hostname
             or parsed.username is not None
             or parsed.password is not None

@@ -2,6 +2,7 @@
 
 import importlib.util
 import json
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -212,9 +213,58 @@ finally:shutil.rmtree(root)
 """
 
 
+def require_mapped_user_namespace():
+    unshare = shutil.which("unshare")
+    if unshare is None:
+        pytest.skip("Linux mapped user namespace requires the unshare executable")
+    # Probe only OS mapping support, before running any project acceptance code.
+    result = subprocess.run(
+        [
+            unshare,
+            "--user",
+            "--map-auto",
+            "--map-root-user",
+            sys.executable,
+            "-c",
+            "import os; assert os.getuid() == os.getgid() == 0; print('quota_namespace_ready')",
+        ],
+        capture_output=True,
+        timeout=10,
+        check=False,
+    )
+    unavailable = {
+        b"newuidmap: write to uid_map failed: Operation not permitted",
+        b"newgidmap: write to gid_map failed: Operation not permitted",
+        b"unshare: unshare failed: Operation not permitted",
+    }
+    if result.returncode != 0 and result.stderr.strip() in unavailable:
+        pytest.skip("Linux mapped user namespace unavailable: " + result.stderr.decode().strip())
+    assert result.returncode == 0, result.stderr.decode()
+    assert result.stdout.strip() == b"quota_namespace_ready", (
+        "user namespace probe did not complete"
+    )
+
+
+@pytest.mark.parametrize("failure", ["mapping_denied", "unexpected_probe_failure"])
+def test_namespace_preflight_only_skips_identified_os_mapping_denial(monkeypatch, failure):
+    monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/unshare")
+    stderr = (
+        b"newuidmap: write to uid_map failed: Operation not permitted\n"
+        if failure == "mapping_denied"
+        else b"Traceback: synthetic Python probe code error\n"
+    )
+    monkeypatch.setattr(
+        subprocess, "run", lambda *args, **kwargs: subprocess.CompletedProcess([], 1, b"", stderr)
+    )
+    expected = pytest.skip.Exception if failure == "mapping_denied" else AssertionError
+    with pytest.raises(expected):
+        require_mapped_user_namespace()
+
+
 def test_native_partial_writes_use_owned_inodes_and_preserve_existing_unit():
     if sys.platform != "linux":
         pytest.skip("Linux namespace acceptance")
+    require_mapped_user_namespace()
     result = subprocess.run(
         [
             "unshare",

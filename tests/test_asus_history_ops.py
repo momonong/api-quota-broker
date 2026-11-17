@@ -7,11 +7,13 @@ import socket
 import sqlite3
 import sys
 import threading
+from datetime import UTC, datetime, timedelta
 from itertools import pairwise
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from asus_packet_fixtures import HistoricalOpsClock
 
 ROOT = Path(__file__).parents[1]
 
@@ -36,6 +38,12 @@ e, p, r, projection, installer = map(
 old_test = load("test_asus_integrated_history", "tests")
 KEY = "a" * 32
 PRIVATE = "PUBLIC_PRIVATE_FIXTURE_MUST_NOT_PROJECT"
+
+
+@pytest.fixture(autouse=True)
+def historical_reader_clock(monkeypatch):
+    # Only the synthetic reader scenario uses October's still-valid policy.
+    monkeypatch.setattr(r, "datetime", HistoricalOpsClock)
 
 
 def report(db):
@@ -493,3 +501,22 @@ def test_reader_raw_os_error_is_meaningful_without_private_exception_text(tmp_pa
     )
     assert result["code"] == "audit_required_input_inaccessible" and result["check"] == "ledger"
     assert PRIVATE not in json.dumps(result)
+
+
+@pytest.mark.parametrize("offset,expected", [(-1, "passed"), (0, "blocked"), (1, "blocked")])
+def test_reader_fixed_expiry_boundary_preserves_gate(tmp_path, monkeypatch, offset, expected):
+    state, audit, db, facade, projected, calls = setup(tmp_path)
+    expires = datetime(2026, 11, 5, 4, 33, 31, tzinfo=UTC)
+    now = expires + timedelta(microseconds=offset)
+    monkeypatch.setattr(
+        r, "datetime", SimpleNamespace(now=lambda tz: now, fromisoformat=datetime.fromisoformat)
+    )
+    before = db.read_bytes()
+    value = control(state, audit, facade, projected, calls)
+    assert value["status"] == expected
+    assert db.read_bytes() == before
+    if expected == "blocked":
+        assert value["code"] == "audit_ops_pin_drift" and value["check"] == "ops_policy"
+        assert calls == []
+    else:
+        assert calls == ["readonly_sqlite"]

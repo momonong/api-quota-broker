@@ -18,9 +18,52 @@ class Model:
     use_restrictions: str
     source: str
     verified_at: str
+    task_profiles: tuple[str, ...] = ()
 
 
 MODELS = {
+    "z-ai/glm-5.3-flash": Model(
+        provider="nvidia",
+        model="z-ai/glm-5.3-flash",
+        task_profiles=("coding", "reasoning"),
+        author="Z.ai",
+        host="NVIDIA API Catalog",
+        context_tokens=1_048_576,
+        max_output_tokens=4096,
+        capability="text_generation",
+        origin="https://integrate.api.nvidia.com",
+        endpoint_template="https://integrate.api.nvidia.com/v1/chat/completions",
+        free_kind="developer_prototyping_subject_to_verified_account_limits",
+        use_restrictions=(
+            "4096 is a local output cap, not a provider maximum. "
+            "Verify account eligibility and limits; coding suitability is a model-card claim, "
+            "not a measured broker benchmark."
+        ),
+        source="https://docs.api.nvidia.com/nim/reference/z-ai-glm-5-3-flash",
+        verified_at="2026-11-16",
+    ),
+    "@cf/google/gemma-4-26b-a4b-it": Model(
+        provider="cloudflare",
+        model="@cf/google/gemma-4-26b-a4b-it",
+        author="Google",
+        host="Cloudflare Workers AI",
+        context_tokens=256_000,
+        max_output_tokens=4096,
+        capability="text_generation",
+        origin="https://api.cloudflare.com",
+        endpoint_template=(
+            "https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/run/"
+            "@cf/google/gemma-4-26b-a4b-it"
+        ),
+        free_kind="daily_free_allocation_subject_to_account_plan",
+        use_restrictions=(
+            "4096 is a local output cap, not a provider maximum. "
+            "Verify account plan and remaining daily Neurons; Workers Paid can bill "
+            "beyond the free allocation."
+        ),
+        source="https://developers.cloudflare.com/workers-ai/models/gemma-4-26b-a4b-it/",
+        verified_at="2026-11-16",
+    ),
     "nvidia/nemotron-3.5-lightning-30b-a3b": Model(
         provider="nvidia",
         model="nvidia/nemotron-3.5-lightning-30b-a3b",

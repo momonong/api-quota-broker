@@ -79,7 +79,7 @@ const snapshot={source:{kind:'demo',label:'合成測試',as_of:stamp,fetched_at:
 const report={source:{state:'available',label:'合成完整帳本',as_of:stamp},filters:{},rows:[{provider:'synthetic',model:'text-fixture',task_type:'unknown',requests:12,reported_input_tokens:100,reported_output_tokens:40,reported_total_tokens:140,reported_neurons:null,outcome_unknown_count:1}]};
 get('task-kind').value='text_generation';get('input-modality').value='text';get('output-modality').value='text';get('output').value='128';get('usage-period').value='all';
 let fetchHandler=path=>response(path==='./api/snapshot'?structuredClone(snapshot):structuredClone(report));
-const context={document:{getElementById:get,createElement:tag=>new Element(tag),createTextNode:text=>String(text)},fetch:async(path,options)=>{calls.push({path,options});return fetchHandler(path,options);},Intl,Date,crypto:{randomUUID:()=> 'synthetic'},console};
+const context={document:{getElementById:get,createElement:tag=>new Element(tag),createElementNS:(ns,tag)=>new Element(tag),createTextNode:text=>String(text)},fetch:async(path,options)=>{calls.push({path,options});return fetchHandler(path,options);},Intl,Date,crypto:{randomUUID:()=> 'synthetic'},console};
 vm.createContext(context);vm.runInContext(fs.readFileSync(process.argv[1],'utf8'),context);
 const tick=()=>new Promise(resolve=>setImmediate(resolve));
 """
@@ -273,13 +273,13 @@ def test_unavailable_inventory_keeps_configured_models_and_media_units_separate(
  assert.match(get('providers').textContent,/text-fixture/);
  assert.match(get('model-count').textContent,/完整登錄清單不可用/);
  assert.doesNotMatch(get('providers').textContent,/vision-fixture/);
- context.renderUsage({...report,rows:[{...report.rows[0],reported_audio_seconds:2.5,reported_images:2,reported_pages:3,reported_conversions:0}]});
+ context.renderUsage({...report,rows:[{...report.rows[0],reported_audio_seconds:2.5,audio_seconds_unknown_count:0,reported_images:2,images_unknown_count:0,reported_pages:3,pages_unknown_count:0,reported_conversions:0,conversions_unknown_count:0,total_tokens_unknown_count:0}]});
  assert.match(get('usage-totals').textContent,/音訊 2.5 秒/);
  assert.match(get('usage-totals').textContent,/圖片 2 張圖片/);
  assert.match(get('usage-totals').textContent,/文件 3 頁/);
  assert.match(get('usage-totals').textContent,/轉換 0 次轉換/);
  assert.match(get('usage-totals').textContent,/總 tokens 140 total tokens/);
- context.renderUsage({...report,rows:[{...report.rows[0],reported_audio_seconds:null,reported_images:0,reported_pages:null,reported_conversions:null}]});
+ context.renderUsage({...report,rows:[{...report.rows[0],reported_audio_seconds:null,reported_images:0,images_unknown_count:0,reported_pages:null,reported_conversions:null}]});
  assert.match(get('usage-totals').textContent,/音訊 — 秒 · 含未回報值/);
  assert.match(get('usage-totals').textContent,/圖片 0 張圖片/);
 })().catch(error=>{console.error(error);process.exitCode=1;});
@@ -309,13 +309,13 @@ def test_partial_reported_tokens_are_not_presented_as_complete_usage():
 (async()=>{
  await tick();
  context.renderUsage({...report,rows:[{...report.rows[0],reported_input_tokens:123,input_unknown_count:1,output_unknown_count:0,neurons_unknown_count:0}]});
- assert.match(get('usage-totals').textContent,/已回報輸入 — input tokens/);
- assert.match(get('usage-totals').textContent,/部分.*完整性/);
+ assert.match(get('usage-totals').textContent,/已回報輸入 ≥123 input tokens/);
+ assert.match(get('usage-totals').textContent,/另 1 筆未知/);
  assert.match(get('usage').textContent,/123（部分）/);
  assert.match(get('usage-totals').textContent,/生成嘗試 12 requests/);
  context.renderUsage({...report,rows:[{...report.rows[0],reported_input_tokens:123}]});
  assert.match(get('usage').textContent,/123（完整性未知）/);
- assert.match(get('usage-totals').textContent,/已回報輸入 — input tokens/);
+ assert.match(get('usage-totals').textContent,/已回報輸入 ≥123 input tokens/);
  context.renderUsage({...report,rows:[{...report.rows[0],reported_input_tokens:123,input_unknown_count:0}]});
  assert.match(get('usage-totals').textContent,/已回報輸入 123 input tokens/);
 })().catch(error=>{console.error(error);process.exitCode=1;});
@@ -564,5 +564,156 @@ def test_live_overlay_facts_show_their_own_audit_time_instead_of_runtime_asof():
  assert.match(text,/帳戶核對 2026\/10\/12/);
  assert.doesNotMatch(text,/帳戶核對 2026\/11\/1/);
  assert.match(text,/最後觀測帳戶點數 0 USD/);
+})().catch(e=>{console.error(e);process.exitCode=1;});
+""")
+
+
+def test_usage_charts_keep_known_lower_bounds_and_missing_coverage_distinct():
+    run_ui_script(r"""
+(async()=>{
+ await tick();
+ const complete={...report.rows[0],requests:3,completed_count:1,failed_count:1,outcome_unknown_count:1,
+   reported_total_tokens:140,total_tokens_unknown_count:1,reported_input_tokens:100,input_unknown_count:1,
+   reported_audio_seconds:null,audio_seconds_unknown_count:0,reported_images:0,images_unknown_count:0};
+ const incomplete={...complete,provider:'other',requests:1,reported_total_tokens:null,total_tokens_unknown_count:1};
+ const timeline=[{date:'2026-11-01',requests:3,completed_count:1,failed_count:1,outcome_unknown_count:1,
+   reported_total_tokens:140,total_tokens_unknown_count:1,ledger_held_count:1},
+   {date:'2026-11-03',requests:1,completed_count:1,failed_count:0,outcome_unknown_count:0,
+   reported_total_tokens:null,total_tokens_unknown_count:1,ledger_held_count:0}];
+ context.renderUsage({...report,rows:[complete,incomplete],timeline,timeline_state:'available'});
+ assert.match(get('usage-totals').textContent,/已回報總 tokens ≥140 total tokens · 另 2 筆未知/);
+ assert.match(get('usage-totals').textContent,/已回報音訊 — 秒 · 不適用/);
+ assert.match(get('usage-totals').textContent,/已回報圖片 0 張圖片/);
+ assert.match(get('usage-charts').textContent,/每日生成嘗試/);
+ assert.match(get('usage-charts').textContent,/每日已回報 tokens/);
+ assert.match(get('usage-charts').textContent,/供應商分布/);
+ assert.match(get('usage-charts').textContent,/synthetic.*3 requests.*75%/);
+ assert.match(get('usage-charts').textContent,/2026-11-03.*未知/);
+ const walk=e=>[e,...(e.children||[]).filter(x=>typeof x!=='string').flatMap(walk)];
+ const svgs=walk(get('usage-charts')).filter(x=>x.tagName==='svg'&&x.attrs.role==='img');
+ assert.equal(svgs.length,2);assert.ok(svgs.every(x=>x.attrs.role==='img'&&x.attrs['aria-label']));
+ assert.ok(walk(get('usage-charts')).some(x=>x.tagName==='table'),'daily accessible data table');
+ context.renderUsage({...report,rows:[],timeline:[],timeline_state:'available'});
+ assert.match(get('usage-charts').textContent,/沒有本機生成嘗試/);
+ assert.equal(walk(get('usage-charts')).filter(x=>x.tagName==='svg').length,0);
+ context.renderUsage({...report,rows:null,timeline:null,timeline_state:'unavailable'});
+ assert.match(get('usage-charts').textContent,/來源未接入/);
+ assert.doesNotMatch(get('usage-charts').textContent,/140|75%/);
+})().catch(e=>{console.error(e);process.exitCode=1;});
+""")
+
+
+def test_usage_unknown_holds_and_failed_reload_do_not_show_old_chart_values():
+    run_ui_script(r"""
+(async()=>{
+ await tick();
+ context.renderUsage({...report,provider_usage:{state:'available',local_ledger_state:'unavailable',providers:[
+   {provider:'synthetic',state:'unknown',reported_metrics:[],local_recorded_generation_attempts:null,ledger_held_count:null}]}});
+ assert.match(get('provider-usage').textContent,/本機保留中（尚未結算）：未知/);
+ assert.doesNotMatch(get('provider-usage').textContent,/本機保留中（尚未結算）：0/);
+ get('usage-charts').textContent='stale chart data';
+ fetchHandler=async()=>{throw new Error('transport failure');};
+ await get('usage-form').handlers.submit({preventDefault(){}});await tick();
+ assert.doesNotMatch(get('usage-charts').textContent,/stale chart data/);
+ assert.match(get('usage-charts').textContent,/無法取得/);
+ assert.doesNotMatch(get('provider-usage').textContent,/本機保留中/,'old provider amounts cleared with the filter request');
+})().catch(e=>{console.error(e);process.exitCode=1;});
+""")
+
+
+def test_matching_exposes_backend_score_without_claiming_unmeasured_quality():
+    run_ui_script(r"""
+(async()=>{
+ await tick();
+ const rank={algorithm:'expiry_utility_v1',score:72.5,components:{expiry_urgency:0.9,task_fit:0.8,quality:0.5,reliability:0.75,free_headroom:0,latency:0.4,load:1},quality_basis:'unmeasured',quality_samples:0,task_profile:'coding',reliability_samples:4};
+ const candidate={provider:'synthetic',model:'text-fixture',safe:true,reasons:[],ranking:rank,remaining:[]};
+ fetchHandler=()=>response({source:snapshot.source,decision:'recommend',matched_models:1,selected_target:candidate,candidates:[candidate]});
+ await get('match-form').handlers.submit({preventDefault(){},submitter:get('match-submit')});
+ assert.match(get('match-result').textContent,/排序分數 72.5 \/ 100/);
+ assert.match(get('match-result').textContent,/品質尚未量測/);
+ assert.match(get('match-result').textContent,/免費餘裕 0/);
+ assert.match(get('match-result').textContent,/健康度樣本：4/);
+ rank.score=0;rank.quality_basis='measured';rank.quality_samples=3;
+ await get('match-form').handlers.submit({preventDefault(){},submitter:get('match-submit')});
+ assert.match(get('match-result').textContent,/排序分數 0 \/ 100/);
+ assert.match(get('match-result').textContent,/品質量測樣本：3/);
+})().catch(e=>{console.error(e);process.exitCode=1;});
+""")
+
+
+def test_explicit_not_applicable_resources_do_not_hide_complete_or_partial_values():
+    run_ui_script(r"""
+(async()=>{
+ await tick();
+ const total=label=>get('usage-totals').children.find(e=>e.textContent.startsWith(label)).textContent;
+ const na={...report.rows[0],reported_images:null,images_unknown_count:null,reported_audio_seconds:null,audio_seconds_unknown_count:null};
+ context.renderUsage({...report,rows:[na]});
+ assert.equal(total('已回報圖片'),'已回報圖片 — 張圖片 · 不適用');
+ assert.equal(total('已回報音訊'),'已回報音訊 — 秒 · 不適用');
+ assert.match(get('usage').textContent,/—（不適用）/);
+ context.renderUsage({...report,rows:[na,{...na,reported_images:3,images_unknown_count:0}]});
+ assert.equal(total('已回報圖片'),'已回報圖片 3 張圖片');
+ context.renderUsage({...report,rows:[na,{...na,reported_images:0,images_unknown_count:0}]});
+ assert.equal(total('已回報圖片'),'已回報圖片 0 張圖片');
+ context.renderUsage({...report,rows:[na,{...na,reported_images:3,images_unknown_count:2}]});
+ assert.equal(total('已回報圖片'),'已回報圖片 ≥3 張圖片 · 另 2 筆未知');
+ context.renderUsage({...report,rows:[na,{...na,reported_images:3,images_unknown_count:null}]});
+ assert.equal(total('已回報圖片'),'已回報圖片 ≥3 張圖片 · 完整性未知');
+ const missing={...na};delete missing.images_unknown_count;
+ context.renderUsage({...report,rows:[na,missing]});
+ assert.match(total('已回報圖片'),/含未回報值 · 完整性未知/);
+ context.renderUsage({...report,rows:[{...na,reported_images:3,images_unknown_count:0},missing]});
+ assert.equal(total('已回報圖片'),'已回報圖片 ≥3 張圖片 · 完整性未知');
+ const missingValue={...na,images_unknown_count:0};delete missingValue.reported_images;
+ context.renderUsage({...report,rows:[na,missingValue]});
+ assert.match(total('已回報圖片'),/含未回報值 · 完整性未知/);
+ context.renderUsage({...report,rows:null});
+ assert.equal(get('usage-totals').textContent,'');
+ assert.doesNotMatch(get('usage-charts').textContent,/3 張圖片/);
+})().catch(e=>{console.error(e);process.exitCode=1;});
+""")
+
+
+def test_provider_not_applicable_coverage_is_distinct_from_unknown_and_known_zero():
+    run_ui_script(r"""
+(async()=>{
+ await tick();
+ const provider={provider:'synthetic',state:'unknown',reported_metrics:[],local_recorded_generation_attempts:2,ledger_held_count:0,
+   local_reported_metrics:[{metric:'images',reported:null,unknown_count:null,coverage:'not_applicable'},
+   {metric:'audio_seconds',reported:0,unknown_count:0,coverage:'complete'},
+   {metric:'total_tokens',reported:5,unknown_count:null,coverage:'unknown'}]};
+ context.renderUsage({...report,provider_usage:{local_ledger_state:'available',providers:[provider]}});
+ const text=get('provider-usage').textContent;
+ assert.match(text,/本機已回報 張圖片：不適用/);
+ assert.doesNotMatch(text,/張圖片：不適用 · 完整性未知/);
+ assert.match(text,/本機已回報 秒：0/);
+ assert.doesNotMatch(text,/本機已回報 秒：≥0/);
+ assert.match(text,/本機已回報 total tokens：≥5 · 完整性未知/);
+})().catch(e=>{console.error(e);process.exitCode=1;});
+""")
+
+
+def test_provider_distribution_uses_csp_safe_geometry_for_real_ratios():
+    run_ui_script(r"""
+(async()=>{
+ await tick();
+ context.renderUsage({...report,rows:[{...report.rows[0],provider:'google',requests:6},
+   {...report.rows[0],provider:'groq',requests:2},{...report.rows[0],provider:'mistral',requests:1}]});
+ const walk=e=>[e,...(e.children||[]).filter(x=>typeof x!=='string').flatMap(walk)];
+ const nodes=walk(get('usage-charts'));
+ const tracks=nodes.filter(e=>e.className==='usage-provider-track');
+ const bars=tracks.map(track=>walk(track).find(e=>e.tagName==='rect'));
+ assert.equal(bars.length,3);
+ assert.ok(bars.every(Boolean),'distribution bars use SVG geometry under the production CSP');
+ assert.deepEqual(bars.map(e=>Number(e.attrs.width)),[66.7,22.2,11.1]);
+ assert.ok(nodes.every(e=>e.attrs.style===undefined),'no inline style blocked by the production CSP');
+ assert.ok(tracks.every(e=>e.attrs['aria-hidden']==='true'),'visible labels carry the values');
+ const text=get('usage-charts').textContent;
+ assert.match(text,/google.*6 requests · 66.7%/);
+ assert.match(text,/groq.*2 requests · 22.2%/);
+ assert.match(text,/mistral.*1 requests · 11.1%/);
+ context.renderUsage({...report,rows:[{...report.rows[0],requests:0}]});
+ const zero=walk(get('usage-charts')).find(e=>e.tagName==='rect');
+ assert.equal(Number(zero.attrs.width),0,'known zero draws no filled stub');
 })().catch(e=>{console.error(e);process.exitCode=1;});
 """)

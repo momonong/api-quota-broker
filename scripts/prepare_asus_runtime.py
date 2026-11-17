@@ -111,11 +111,11 @@ RUNTIME = (
     ),
     _wheel(
         "pypdf",
-        "6.19.0",
+        "7.0.0",
         "py3-none-any",
-        "3c/2c/c43c03eaf630435f023f1dc61ec4a4a78951ad5530a62c71cc89bde307b7",
-        "7e5d6e730e7dae87d560a2cee218b852f6498c8be61966f3cd02ead971e48d14",
-        395480,
+        "8a/21/e83122a25e334c718a4da67004fa94acd7215fe9f8e63a9d7c7f979eb52b",
+        "112a2c7cbabefd8dfe498f7a13977e575e762d58cdb0d832acb8886922602c6f",
+        413949,
     ),
 )
 BUILD_TOOLS = (
@@ -529,7 +529,7 @@ def _check_source(source: Path, release: dict[str, Any]) -> None:
         or project["project"]["version"] != release["package_version"]
         or project["build-system"]
         != {"requires": ["hatchling>=1.25"], "build-backend": "hatchling.build"}
-        or project["project"]["dependencies"] != ["cryptography>=44.0.0", "pypdf>=6.0.0"]
+        or project["project"]["dependencies"] != ["cryptography>=44.0.0", "pypdf>=7.0.0"]
         or project["tool"]["hatch"]
         != {"build": {"targets": {"wheel": {"packages": ["src/quota_broker"]}}}}
     ):
@@ -572,7 +572,7 @@ def _project_wheel(raw: bytes, release: dict[str, Any]) -> str:
             or metadata["Version"] != version
             or metadata["Requires-Python"] != ">=3.12"
             or set(metadata.get_all("Requires-Dist", []))
-            != {"cryptography>=44.0.0", "pypdf>=6.0.0"}
+            != {"cryptography>=44.0.0", "pypdf>=7.0.0"}
         ):
             raise RuntimeErrorSafe("project_wheel_metadata")
         wheel = BytesParser().parsebytes(contents[prefix + "WHEEL"])
